@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux/Windows: the default Ooura path (double golden model + the
+          # float32 tests still on Ooura).
+          - { os: ubuntu-latest,  name: linux-ooura }
+          - { os: windows-latest, name: windows-ooura }
+          # macOS: float32 defaults to the Apple vDSP backend, so this leg runs
+          # the backend-parity suite through vDSP for real.
+          - { os: macos-latest,   name: macos-vdsp }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDSPTAP_WERROR=ON
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Test
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+  build-embedded-m55:
+    name: cortex-m55-cmsis (compile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Arm GNU toolchain
+        uses: carlosperate/arm-none-eabi-gcc-action@v1
+
+      - name: Configure (M55, CMSIS Helium backend ON by default)
+        run: >
+          cmake -S . -B build-m55
+          -DCMAKE_TOOLCHAIN_FILE=cmake/arm-cortex-m55-mps3.cmake
+          -DCMAKE_BUILD_TYPE=Release
+          -DDSPTAP_BUILD_TESTS=OFF
+
+      - name: Build the DspTap FFT library (CMSIS-DSP Helium)
+        run: cmake --build build-m55 --config Release --target dsptap_fft
