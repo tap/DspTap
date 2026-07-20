@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDSPTAP_WERROR=ON
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DTAP_DSP_WERROR=ON
 
       - name: Build
         run: cmake --build build --config Release
@@ -45,7 +45,7 @@ jobs:
           cmake -S . -B build-m55
           -DCMAKE_TOOLCHAIN_FILE=cmake/arm-cortex-m55-mps3.cmake
           -DCMAKE_BUILD_TYPE=Release
-          -DDSPTAP_BUILD_TESTS=OFF
+          -DTAP_DSP_BUILD_TESTS=OFF
 
       - name: Build the DspTap FFT library (CMSIS-DSP Helium)
-        run: cmake --build build-m55 --config Release --target dsptap_fft
+        run: cmake --build build-m55 --config Release --target tap_dsp_fft

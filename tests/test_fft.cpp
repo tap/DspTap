@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2025-2026 Timothy Place and the DspTap contributors.
 //
-// Locks down the dsptap::basic_real_fft contract: round-trip identity, the
+// Locks down the tap::dsp::basic_real_fft contract: round-trip identity, the
 // packed-spectrum layout (DC / Nyquist in slots 0 and 1), the documented
 // W = exp(+2*pi*i/N) sign convention, Parseval energy conservation, and
 // float/double cross-precision agreement. FDAF correctness later depends on
@@ -14,7 +14,7 @@
 
 #include <gtest/gtest.h>
 
-#include "dsptap/fft.h"
+#include "tap/dsp/fft.h"
 
 namespace {
 
@@ -43,7 +43,7 @@ namespace {
     TYPED_TEST_SUITE(real_fft_test, sample_types);
 
     TYPED_TEST(real_fft_test, SizeAndBinCount) {
-        dsptap::basic_real_fft<TypeParam> fft(1024);
+        tap::dsp::basic_real_fft<TypeParam> fft(1024);
         EXPECT_EQ(fft.size(), 1024u);
         EXPECT_EQ(fft.num_bins(), 513u);
     }
@@ -51,8 +51,8 @@ namespace {
     TYPED_TEST(real_fft_test, RoundTripReproducesInput) {
         constexpr size_t n = 1024;
 
-        dsptap::basic_real_fft<TypeParam> fft(n);
-        const auto                        x = random_signal<TypeParam>(n, 42);
+        tap::dsp::basic_real_fft<TypeParam> fft(n);
+        const auto                          x = random_signal<TypeParam>(n, 42);
 
         std::vector<TypeParam> spectrum(n);
         std::vector<TypeParam> back(n);
@@ -67,8 +67,8 @@ namespace {
     TYPED_TEST(real_fft_test, RoundTripInPlaceAndAliased) {
         constexpr size_t n = 256;
 
-        dsptap::basic_real_fft<TypeParam> fft(n);
-        const auto                        x = random_signal<TypeParam>(n, 7);
+        tap::dsp::basic_real_fft<TypeParam> fft(n);
+        const auto                          x = random_signal<TypeParam>(n, 7);
 
         // forward()/inverse() explicitly permit output aliasing input.
         auto buf = x;
@@ -83,8 +83,8 @@ namespace {
     TYPED_TEST(real_fft_test, ImpulseHasFlatSpectrum) {
         constexpr size_t n = 64;
 
-        dsptap::basic_real_fft<TypeParam> fft(n);
-        std::vector<TypeParam>            x(n, TypeParam(0));
+        tap::dsp::basic_real_fft<TypeParam> fft(n);
+        std::vector<TypeParam>              x(n, TypeParam(0));
         x[0] = TypeParam(1);
 
         fft.forward_inplace(x.data());
@@ -100,7 +100,7 @@ namespace {
     TYPED_TEST(real_fft_test, DcAndNyquistPacking) {
         constexpr size_t n = 64;
 
-        dsptap::basic_real_fft<TypeParam> fft(n);
+        tap::dsp::basic_real_fft<TypeParam> fft(n);
 
         // Constant input: all energy in DC = data[0].
         std::vector<TypeParam> dc(n, TypeParam(1));
@@ -126,8 +126,8 @@ namespace {
         constexpr size_t n = 128;
         constexpr size_t k = 5;
 
-        dsptap::basic_real_fft<TypeParam> fft(n);
-        const double                      w = 2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(n);
+        tap::dsp::basic_real_fft<TypeParam> fft(n);
+        const double w = 2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(n);
 
         std::vector<TypeParam> cosine(n);
         std::vector<TypeParam> sine(n);
@@ -158,8 +158,8 @@ namespace {
     TYPED_TEST(real_fft_test, ParsevalEnergyConservation) {
         constexpr size_t n = 512;
 
-        dsptap::basic_real_fft<TypeParam> fft(n);
-        const auto                        x = random_signal<TypeParam>(n, 1234);
+        tap::dsp::basic_real_fft<TypeParam> fft(n);
+        const auto                          x = random_signal<TypeParam>(n, 1234);
 
         double time_energy = 0.0;
         for (size_t i = 0; i < n; ++i) {
@@ -192,10 +192,10 @@ namespace {
             xf[i] = static_cast<float>(xd[i]);
         }
 
-        dsptap::real_fft   fft64(n);
-        dsptap::real_fft32 fft32(n);
-        auto               sd = xd;
-        auto               sf = xf;
+        tap::dsp::real_fft   fft64(n);
+        tap::dsp::real_fft32 fft32(n);
+        auto                 sd = xd;
+        auto                 sf = xf;
         fft64.forward_inplace(sd.data());
         fft32.forward_inplace(sf.data());
 

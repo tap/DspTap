@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2025-2026 Timothy Place and the DspTap contributors.
 //
-// Parity oracle for the optional float32 FFT backends (DSPTAP_FFT_CMSIS on the
-// M55, DSPTAP_FFT_ACCELERATE on Apple; see include/dsptap/fft.h and README.md).
+// Parity oracle for the optional float32 FFT backends (TAP_DSP_FFT_CMSIS on the
+// M55, TAP_DSP_FFT_ACCELERATE on Apple; see include/tap/dsp/fft.h and README.md).
 // When one is active, basic_real_fft<float> routes through that backend; this
 // test pins it to Ooura's rdft_f — the golden model — bin-for-bin at the two
 // certified geometries (512-pt canceller, 2048-pt suppressor analysis).
@@ -26,12 +26,12 @@
 
 #include <gtest/gtest.h>
 
-#include "dsptap/fft.h"
+#include "tap/dsp/fft.h"
 
 namespace {
 
     // Direct Ooura float reference, independent of the C++ wrapper's backend:
-    // rdft_f is the extern "C" symbol regardless of DSPTAP_FFT_CMSIS, so it is
+    // rdft_f is the extern "C" symbol regardless of TAP_DSP_FFT_CMSIS, so it is
     // always the golden model to compare the wrapper against.
     struct ooura_ref {
         int                m_n;
@@ -60,7 +60,7 @@ namespace {
 
     class fft_backend_parity : public ::testing::TestWithParam<int> {};
 
-    // Forward transform of the wrapper (CMSIS when DSPTAP_FFT_CMSIS) must match
+    // Forward transform of the wrapper (CMSIS when TAP_DSP_FFT_CMSIS) must match
     // the Ooura reference to single-precision rounding, in the packed layout
     // and sign convention the whole DSP chain assumes.
     TEST_P(fft_backend_parity, ForwardMatchesOoura) {
@@ -71,8 +71,8 @@ namespace {
         ooura_ref          oref(n);
         oref.forward(ref.data());
 
-        dsptap::basic_real_fft<float> fft(static_cast<size_t>(n));
-        std::vector<float>            got = x;
+        tap::dsp::basic_real_fft<float> fft(static_cast<size_t>(n));
+        std::vector<float>              got = x;
         fft.forward_inplace(got.data());
 
         float peak = 0.0f;
@@ -93,8 +93,8 @@ namespace {
     TEST_P(fft_backend_parity, RoundTripReproducesInput) {
         const int n = GetParam();
 
-        dsptap::basic_real_fft<float> fft(static_cast<size_t>(n));
-        const auto                    x = broadband(n, 0x1234567u);
+        tap::dsp::basic_real_fft<float> fft(static_cast<size_t>(n));
+        const auto                      x = broadband(n, 0x1234567u);
 
         std::vector<float> spectrum(static_cast<size_t>(n));
         std::vector<float> back(static_cast<size_t>(n));

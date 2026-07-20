@@ -6,9 +6,9 @@ dependency — consumed as a git submodule by the individual libraries.
 
 Today it holds one primitive:
 
-## `dsptap::real_fft` — real FFT with a fixed numeric contract
+## `tap::dsp::real_fft` — real FFT with a fixed numeric contract
 
-`include/dsptap/fft.h` wraps the vendored [Ooura split-radix real
+`include/tap/dsp/fft.h` wraps the vendored [Ooura split-radix real
 FFT](third_party/ooura/) behind a small, well-specified interface, with
 **optional, mutually-exclusive float32 backends** that re-present the *exact*
 same numeric contract for speed on specific hardware:
@@ -16,8 +16,8 @@ same numeric contract for speed on specific hardware:
 | Backend | Build option | Target | Notes |
 |---------|-------------|--------|-------|
 | Ooura (default) | — | everywhere | the golden model; double is **always** Ooura |
-| CMSIS-DSP Helium | `DSPTAP_FFT_CMSIS` | bare-metal Cortex-M55 (MVE) | ~3× fewer instructions/transform |
-| Apple vDSP | `DSPTAP_FFT_ACCELERATE` | macOS / Apple Silicon | ~3× faster/transform |
+| CMSIS-DSP Helium | `TAP_DSP_FFT_CMSIS` | bare-metal Cortex-M55 (MVE) | ~3× fewer instructions/transform |
+| Apple vDSP | `TAP_DSP_FFT_ACCELERATE` | macOS / Apple Silicon | ~3× faster/transform |
 
 The two float32 backends conjugate imaginary bins and rescale so every
 intermediate spectrum matches the Ooura build to single-precision rounding —
@@ -26,10 +26,10 @@ accelerated float paths. `tests/test_fft_backend.cpp` pins each backend to
 Ooura's `rdft_f` bin-for-bin at the certified geometries (N = 512, 2048).
 
 ```cpp
-#include "dsptap/fft.h"
+#include "tap/dsp/fft.h"
 
-dsptap::real_fft   fft(1024);   // double, the desktop/golden profile
-dsptap::real_fft32 fft32(1024); // float,  the embedded / accelerated profile
+tap::dsp::real_fft   fft(1024);   // double, the desktop/golden profile
+tap::dsp::real_fft32 fft32(1024); // float,  the embedded / accelerated profile
 
 std::vector<double> x(1024, 0.0);
 fft.forward_inplace(x.data());        // packed spectrum, W = exp(+2πi/N)
@@ -67,15 +67,15 @@ QEMU is done in the consuming library's embedded harness.
 
 ```cmake
 add_subdirectory(submodules/dsptap)   # or however it is pinned
-target_link_libraries(my_dsp PRIVATE DspTap::DspTap)
+target_link_libraries(my_dsp PRIVATE tap::dsp)
 ```
 
-`DspTap::DspTap` is an INTERFACE target (the headers + the compiled Ooura
-static lib `DspTap::fft`); it does not build the tests when added as a
-subdirectory (`DSPTAP_BUILD_TESTS` defaults OFF unless top-level). The
+`tap::dsp` is an INTERFACE target (the headers + the compiled Ooura
+static lib `tap::dsp_fft`); it does not build the tests when added as a
+subdirectory (`TAP_DSP_BUILD_TESTS` defaults OFF unless top-level). The
 per-platform float32 backend defaults follow the target: vDSP on Apple, CMSIS
 on the bare-metal M55 profile, Ooura elsewhere — override with
-`-DDSPTAP_FFT_ACCELERATE=OFF` etc.
+`-DTAP_DSP_FFT_ACCELERATE=OFF` etc.
 
 ## Provenance
 
@@ -86,7 +86,7 @@ convolution). The C++ wrappers had begun to diverge — MuTap grew the templated
 double-engine wrapper with no backends — so a bug fix or a new backend in one
 would silently miss the other. DspTap is the consolidation: one wrapper, one
 contract, one home for the next backend. The unified wrapper is MuTap's
-backend-capable `basic_real_fft`, generalized to the `dsptap` namespace.
+backend-capable `basic_real_fft`, generalized to the `tap::dsp` namespace.
 
 See [`third_party/ooura/readme.txt`](third_party/ooura/readme.txt) and
 [`third_party/cmsis-dsp/VENDOR.md`](third_party/cmsis-dsp/VENDOR.md) for the

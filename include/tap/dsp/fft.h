@@ -21,7 +21,7 @@
 // Ooura C functions. rdft comes from third_party/ooura/fftsg.c (double);
 // rdft_f is the same source instantiated for float (fftsg_float.c) so both
 // precisions can link into one binary. They are built into the DspTap::fft
-// static library; the DspTap::DspTap INTERFACE target links it automatically.
+// static library; the tap::dsp INTERFACE target links it automatically.
 // cdft/cdft_f (the complex transform) are declared for consumers that need raw
 // Ooura access; the wrappers below use only rdft/rdft_f.
 extern "C" {
@@ -35,27 +35,27 @@ void cdft_f(int n, int isgn, float* a, int* ip, float* w);
 // may be defined (they are mutually exclusive), and each applies ONLY to float
 // — double always stays Ooura, the golden model, so the double-precision
 // reference battery is unaffected:
-//   DSPTAP_FFT_CMSIS       CMSIS-DSP Helium on the bare-metal Cortex-M55
-//   DSPTAP_FFT_ACCELERATE  Apple's vDSP (Accelerate) on macOS
+//   TAP_DSP_FFT_CMSIS       CMSIS-DSP Helium on the bare-metal Cortex-M55
+//   TAP_DSP_FFT_ACCELERATE  Apple's vDSP (Accelerate) on macOS
 // Each wrapper below re-presents its backend in Ooura's EXACT numeric contract
 // (same packed layout, exp(+i) sign convention, unnormalized inverse), so every
 // intermediate spectrum matches the Ooura build to float epsilon and the whole
 // float32 test battery stays a valid oracle. Measured vs autovectorized Ooura:
 // ~3x fewer instructions on the M55, ~3x faster on Apple Silicon per transform.
-#if defined(DSPTAP_FFT_CMSIS) && defined(DSPTAP_FFT_ACCELERATE)
-#error "DSPTAP_FFT_CMSIS and DSPTAP_FFT_ACCELERATE are mutually exclusive"
+#if defined(TAP_DSP_FFT_CMSIS) && defined(TAP_DSP_FFT_ACCELERATE)
+#error "TAP_DSP_FFT_CMSIS and TAP_DSP_FFT_ACCELERATE are mutually exclusive"
 #endif
-#if defined(DSPTAP_FFT_CMSIS)
+#if defined(TAP_DSP_FFT_CMSIS)
 #include "arm_math.h"
 #endif
-#if defined(DSPTAP_FFT_ACCELERATE)
+#if defined(TAP_DSP_FFT_ACCELERATE)
 #include <Accelerate/Accelerate.h>
 #endif
-#if defined(DSPTAP_FFT_CMSIS) || defined(DSPTAP_FFT_ACCELERATE)
-#define DSPTAP_FFT_FLOAT_BACKEND 1
+#if defined(TAP_DSP_FFT_CMSIS) || defined(TAP_DSP_FFT_ACCELERATE)
+#define TAP_DSP_FFT_FLOAT_BACKEND 1
 #endif
 
-namespace dsptap {
+namespace tap::dsp {
 
     namespace detail {
         inline void ooura_rdft(int n, int isgn, double* a, int* ip, double* w) {
@@ -65,7 +65,7 @@ namespace dsptap {
             rdft_f(n, isgn, a, ip, w);
         }
 
-#if defined(DSPTAP_FFT_CMSIS)
+#if defined(TAP_DSP_FFT_CMSIS)
         // Wraps CMSIS-DSP's radix-4/8 Helium real FFT to reproduce Ooura's
         // exact float32 contract. CMSIS uses the engineering convention
         // exp(-i2*pi/N) and a 1/N-normalized inverse; Ooura uses exp(+i2*pi/N)
@@ -111,9 +111,9 @@ namespace dsptap {
             int                        m_n = 0;
         };
 
-#endif // DSPTAP_FFT_CMSIS
+#endif // TAP_DSP_FFT_CMSIS
 
-#if defined(DSPTAP_FFT_ACCELERATE)
+#if defined(TAP_DSP_FFT_ACCELERATE)
         // Wraps Apple's vDSP real FFT (Accelerate) to reproduce Ooura's exact
         // float32 contract. vDSP works in split-complex form, in the
         // engineering convention exp(-i2*pi/N), with a 2x-scaled forward; we
@@ -178,10 +178,10 @@ namespace dsptap {
             int                                              m_n     = 0;
             int                                              m_log2n = 0;
         };
-#endif // DSPTAP_FFT_ACCELERATE
+#endif // TAP_DSP_FFT_ACCELERATE
 
-#if defined(DSPTAP_FFT_FLOAT_BACKEND)
-#if defined(DSPTAP_FFT_CMSIS)
+#if defined(TAP_DSP_FFT_FLOAT_BACKEND)
+#if defined(TAP_DSP_FFT_CMSIS)
         using float_fft_engine = cmsis_real_fft_f32;
 #else
         using float_fft_engine = accelerate_real_fft_f32;
@@ -226,7 +226,7 @@ namespace dsptap {
         explicit basic_real_fft(size_t size)
             : m_size(static_cast<int>(size)) {
             assert(size >= 4 && (size & (size - 1)) == 0);
-#if defined(DSPTAP_FFT_FLOAT_BACKEND)
+#if defined(TAP_DSP_FFT_FLOAT_BACKEND)
             if constexpr (std::is_same_v<Sample, float>) {
                 m_engine.init(m_size); // Ooura workspace stays unallocated
                 return;
@@ -242,7 +242,7 @@ namespace dsptap {
 
         /// In-place forward FFT: time-domain Sample[size] -> packed spectrum Sample[size].
         void forward_inplace(Sample* data) noexcept {
-#if defined(DSPTAP_FFT_FLOAT_BACKEND)
+#if defined(TAP_DSP_FFT_FLOAT_BACKEND)
             if constexpr (std::is_same_v<Sample, float>) {
                 m_engine.forward_inplace(data);
                 return;
@@ -254,7 +254,7 @@ namespace dsptap {
         /// In-place inverse FFT: packed spectrum Sample[size] -> time-domain Sample[size],
         /// UNSCALED — multiply by 2/size for a normalized round trip.
         void inverse_inplace(Sample* data) noexcept {
-#if defined(DSPTAP_FFT_FLOAT_BACKEND)
+#if defined(TAP_DSP_FFT_FLOAT_BACKEND)
             if constexpr (std::is_same_v<Sample, float>) {
                 m_engine.inverse_inplace(data);
                 return;
@@ -292,7 +292,7 @@ namespace dsptap {
         int                 m_size;
         std::vector<int>    m_ip;
         std::vector<Sample> m_w;
-#if defined(DSPTAP_FFT_FLOAT_BACKEND)
+#if defined(TAP_DSP_FFT_FLOAT_BACKEND)
         detail::float_engine_t<Sample> m_engine;
 #endif
     };
@@ -304,4 +304,4 @@ namespace dsptap {
     /// Hexagon HVX), where hardware floating point is single-precision only.
     using real_fft32 = basic_real_fft<float>;
 
-} // namespace dsptap
+} // namespace tap::dsp
