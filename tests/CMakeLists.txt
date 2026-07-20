@@ -19,13 +19,13 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-add_executable(dsptap_tests
+add_executable(tap_dsp_tests
     test_fft.cpp
     test_fft_backend.cpp)
-target_link_libraries(dsptap_tests PRIVATE
-    DspTap::DspTap
-    dsptap_warnings)
+target_link_libraries(tap_dsp_tests PRIVATE
+    tap::dsp
+    tap_dsp_warnings)
 
-target_link_libraries(dsptap_tests PRIVATE GTest::gtest_main)
+target_link_libraries(tap_dsp_tests PRIVATE GTest::gtest_main)
 include(GoogleTest)
-gtest_discover_tests(dsptap_tests DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 900)
+gtest_discover_tests(tap_dsp_tests DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 900)
