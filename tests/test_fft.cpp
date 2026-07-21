@@ -209,4 +209,53 @@ namespace {
         EXPECT_LT(std::sqrt(err / ref), 1e-6);
     }
 
+    // The double-engine float-I/O convenience overloads (used by AmbiTap's HRTF
+    // analysis): a float-buffer round trip through the double FFT reproduces the
+    // input to float precision.
+    TEST(RealFftFloatIO, RoundTripReproducesInput) {
+        constexpr size_t n = 256;
+
+        tap::dsp::real_fft fft(n); // double engine
+        const auto         xd = random_signal<double>(n, 555);
+        std::vector<float> xf(n);
+        for (size_t i = 0; i < n; ++i) {
+            xf[i] = static_cast<float>(xd[i]);
+        }
+
+        std::vector<float> spectrum(n);
+        std::vector<float> back(n);
+        fft.forward(xf.data(), spectrum.data());
+        fft.inverse(spectrum.data(), back.data());
+
+        for (size_t i = 0; i < n; ++i) {
+            EXPECT_NEAR(back[i], xf[i], 2e-5f) << "sample " << i;
+        }
+    }
+
+    // The float-I/O forward is exactly the double forward with a float cast at
+    // the end — i.e. it really runs on the double engine, not a float one.
+    TEST(RealFftFloatIO, RunsOnTheDoubleEngine) {
+        constexpr size_t n = 256;
+
+        tap::dsp::real_fft fft(n);
+        const auto         xd = random_signal<double>(n, 777);
+        std::vector<float> xf(n);
+        for (size_t i = 0; i < n; ++i) {
+            xf[i] = static_cast<float>(xd[i]);
+        }
+
+        std::vector<double> spec_d(n);
+        for (size_t i = 0; i < n; ++i) {
+            spec_d[i] = static_cast<double>(xf[i]);
+        }
+        fft.forward_inplace(spec_d.data());
+
+        std::vector<float> spec_f(n);
+        fft.forward(xf.data(), spec_f.data());
+
+        for (size_t i = 0; i < n; ++i) {
+            EXPECT_FLOAT_EQ(spec_f[i], static_cast<float>(spec_d[i])) << "bin " << i;
+        }
+    }
+
 } // namespace

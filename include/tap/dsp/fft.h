@@ -280,6 +280,43 @@ namespace tap::dsp {
             }
         }
 
+        /// Float-I/O convenience on the DOUBLE engine: run the double-precision
+        /// transform over float buffers (copy in, transform, copy out), so a
+        /// caller holding float data can use the double FFT without maintaining
+        /// its own double staging buffer — e.g. AmbiTap's binaural HRTF analysis,
+        /// which wants double-precision spectra from float impulse responses.
+        /// Only the double instantiation offers these; basic_real_fft<float>
+        /// already takes float in the same-type forward()/inverse() above. These
+        /// allocate a staging buffer (a setup-time path), unlike the noexcept,
+        /// allocation-free in-place transforms.
+        void forward(const float* input, float* output)
+            requires std::is_same_v<Sample, double>
+        {
+            std::vector<double> buf(static_cast<size_t>(m_size));
+            for (int i = 0; i < m_size; ++i) {
+                buf[static_cast<size_t>(i)] = static_cast<double>(input[i]);
+            }
+            forward_inplace(buf.data());
+            for (int i = 0; i < m_size; ++i) {
+                output[i] = static_cast<float>(buf[static_cast<size_t>(i)]);
+            }
+        }
+
+        /// Float-I/O inverse on the double engine, scaled by 2/size like inverse().
+        void inverse(const float* input, float* output)
+            requires std::is_same_v<Sample, double>
+        {
+            std::vector<double> buf(static_cast<size_t>(m_size));
+            for (int i = 0; i < m_size; ++i) {
+                buf[static_cast<size_t>(i)] = static_cast<double>(input[i]);
+            }
+            inverse_inplace(buf.data());
+            const double scale = 2.0 / static_cast<double>(m_size);
+            for (int i = 0; i < m_size; ++i) {
+                output[i] = static_cast<float>(buf[static_cast<size_t>(i)] * scale);
+            }
+        }
+
       private:
         void copy(const Sample* input, Sample* output) noexcept {
             if (input != output) {
