@@ -4,7 +4,7 @@ Shared DSP primitives for the **Tap** family of audio libraries. Header-only,
 plain portable C++ (C++20, standard library only), no Max/Min or framework
 dependency — consumed as a git submodule by the individual libraries.
 
-Today it holds one primitive:
+Today it holds two primitives:
 
 ## `tap::dsp::real_fft` — real FFT with a fixed numeric contract
 
@@ -48,6 +48,41 @@ Key contract points (full detail in the header docstring):
   the out-of-place `inverse()` applies the `2/N` for you.
 - Transforms are `noexcept` and allocation-free after construction — real-time
   safe. Size must be a power of two, `≥ 4`, fixed at construction.
+
+## `tap::dsp::yin` — YIN pitch detector
+
+`include/tap/dsp/yin.h` implements the time-domain YIN estimator (de Cheveigné
+& Kawahara 2002, steps 1–5): squared-difference function, cumulative-mean
+normalization, absolute threshold with local-minimum descent, and parabolic
+interpolation for sub-sample period precision. Header-only, allocation-free
+after construction, `noexcept` on the analysis path.
+
+```cpp
+#include "tap/dsp/yin.h"
+
+tap::dsp::yin   det(800, 20, 800);   // window, tau_min, tau_max — double golden model
+tap::dsp::yin32 det32(800, 20, 800); // float, the embedded profile
+
+const auto r = det.analyze(frame);   // frame_size() == window + tau_max samples
+if (r.voiced()) {
+    const double freq = sample_rate / r.period; // fractional-sample period
+}
+```
+
+Key contract points (full detail in the header docstring):
+
+- **Geometry** fixed at construction: integration `window`, searched lag range
+  `[tau_min, tau_max]` (bound from your frequency range as `τ = sr / f`), with
+  `window ≥ tau_max`; `analyze()` reads `window + tau_max` samples, oldest first.
+- **Result**: fractional period in samples (0 = unvoiced) plus the normalized
+  aperiodicity at the chosen lag (global minimum when unvoiced).
+- **Threshold**: the paper's absolute threshold on the normalized difference,
+  default 0.1, settable at runtime.
+- Both precisions run the identical algorithm; the test battery pins sine/
+  sawtooth accuracy (sub-cent in double), octave robustness, unvoiced
+  rejection, and float/double agreement. The difference-function inner loop is
+  the designated Helium-MVE / HVX backend candidate behind this same contract,
+  mirroring the FFT's golden-model-plus-backends pattern.
 
 ## Build
 
