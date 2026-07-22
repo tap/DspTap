@@ -22,6 +22,8 @@ FetchContent_MakeAvailable(googletest)
 add_executable(tap_dsp_tests
     test_fft.cpp
     test_fft_backend.cpp
+    test_psola.cpp
+    test_pvoc.cpp
     test_yin.cpp)
 target_link_libraries(tap_dsp_tests PRIVATE
     tap::dsp

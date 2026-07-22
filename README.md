@@ -4,7 +4,7 @@ Shared DSP primitives for the **Tap** family of audio libraries. Header-only,
 plain portable C++ (C++20, standard library only), no Max/Min or framework
 dependency — consumed as a git submodule by the individual libraries.
 
-Today it holds two primitives:
+Today it holds four primitives:
 
 ## `tap::dsp::real_fft` — real FFT with a fixed numeric contract
 
@@ -83,6 +83,39 @@ Key contract points (full detail in the header docstring):
   rejection, and float/double agreement. The difference-function inner loop is
   the designated Helium-MVE / HVX backend candidate behind this same contract,
   mirroring the FFT's golden-model-plus-backends pattern.
+
+## `tap::dsp::psola` — pitch-synchronous overlap-add shifter
+
+`include/tap/dsp/psola.h` is the real-time TD-PSOLA resynthesis stage:
+Hann grains two source periods long, extracted at period-spaced analysis marks
+and overlap-added at period/ratio-spaced synthesis marks with sub-sample
+(Hermite) placement. Detection-agnostic — the caller supplies the period (from
+`tap::dsp::yin` or any tracker); fixed latency of `2 * max_period + 2` samples.
+
+```cpp
+tap::dsp::psola shifter(900);            // deepest period it will be given
+double y = shifter.process(x, period, ratio); // per sample; ratio 2 = octave up
+```
+
+Know what PSOLA is: it resamples the source's **spectral envelope** at the new
+harmonic spacing — which is why it preserves formants on voice, and why a pure
+tone shifted far from any new harmonic thins toward silence. Feed it
+harmonic-rich material; both behaviors are pinned by the tests.
+
+## `tap::dsp::pvoc` — phase-vocoder pitch shifter
+
+`include/tap/dsp/pvoc.h` is an STFT pitch shifter (Hann, 4× overlap, built on
+`tap::dsp::real_fft` so the float profile rides the vDSP/CMSIS backends) using
+Laroche–Dolson-style **peak-region shifting**: each spectral peak's region is
+translated rigidly by an integer bin offset and rotated by one accumulated
+residual phase, so phase relationships across the peak stay intact. At
+ratio 1 the output reconstructs the input's waveform delayed by exactly one
+FFT frame (pinned by the tests). Latency = the FFT size (1024 default).
+
+```cpp
+tap::dsp::pvoc shifter(1024);
+double y = shifter.process(x, ratio);    // per sample; ratio sampled per hop
+```
 
 ## Build
 
