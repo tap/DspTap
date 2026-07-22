@@ -15,6 +15,13 @@
 // that scheme measurably loses half the level on fractional ratios, a failure
 // this class's own test battery pins.
 //
+// Optional formant preservation (set_formant) uses the classic source-filter
+// method from the published speech-processing literature: an LPC spectral
+// envelope (autocorrelation method + Levinson-Durbin, order 48) is estimated
+// from each analysis frame, and every relocated bin is rescaled by
+// envelope(target) / envelope(source) — the excitation moves, the envelope
+// stays. Implemented from the literature only, per the project's IP policy.
+//
 // Transient smearing on percussive material remains the known trade of the
 // phase-vocoder class. The transform is tap::dsp::basic_real_fft, so the float
 // profile rides the vDSP / CMSIS-Helium backends where the build enables them.
@@ -64,6 +71,9 @@ namespace tap::dsp {
         static constexpr Sample k_min_ratio = Sample(0.25);
         static constexpr Sample k_max_ratio = Sample(4);
         static constexpr int    k_overlap   = 4;
+        static constexpr int    k_lpc_order = 48;   // ~sr/1000 at the intended rates
+        static constexpr double k_env_floor = 1e-6; // |A| guard when inverting the envelope
+        static constexpr double k_max_boost = 16.0; // per-bin formant-correction gain cap
 
         /// @pre fft_size is a power of two, >= 64.
         explicit basic_pvoc(size_t fft_size = 1024)
@@ -97,6 +107,12 @@ namespace tap::dsp {
             m_mag.assign(static_cast<size_t>(m_bins), 0.0);
             m_true_bin.assign(static_cast<size_t>(m_bins), 0.0);
             m_peaks.reserve(static_cast<size_t>(m_bins));
+            m_lpc_time.assign(static_cast<size_t>(m_n_size), Sample(0));
+            m_lpc_work.assign(static_cast<size_t>(m_n_size), Sample(0));
+            m_lpc_r.assign(static_cast<size_t>(k_lpc_order) + 1, 0.0);
+            m_lpc_a.assign(static_cast<size_t>(k_lpc_order) + 1, 0.0);
+            m_lpc_tmp.assign(static_cast<size_t>(k_lpc_order) + 1, 0.0);
+            m_env.assign(static_cast<size_t>(m_bins), 1.0);
             clear();
         }
 
@@ -105,6 +121,14 @@ namespace tap::dsp {
 
         /// Emission delay of the shifter, in samples: one FFT frame.
         size_t latency() const noexcept { return static_cast<size_t>(m_n_size); }
+
+        /// Enable LPC formant preservation: relocated bins are rescaled so the
+        /// spectral envelope stays where the source put it while the excitation
+        /// shifts. Off by default (the shifter then moves envelope and all).
+        /// At ratio == 1 the correction is exactly unity, so identity holds
+        /// either way. The LPC recursion runs in double in both profiles.
+        void set_formant(bool on) noexcept { m_formant = on; }
+        bool formant() const noexcept { return m_formant; }
 
         /// Zero all running state (buffers, phases, counters).
         void clear() noexcept {
@@ -148,7 +172,13 @@ namespace tap::dsp {
                 m_frame[static_cast<size_t>(i)] =
                     m_input[static_cast<size_t>((start + i) % in_size)] * m_window[static_cast<size_t>(i)];
             }
+            if (m_formant) {
+                m_lpc_time = m_frame; // keep the windowed time frame; the FFT is in-place
+            }
             m_fft.forward_inplace(m_frame.data());
+            if (m_formant) {
+                compute_envelope();
+            }
 
             // per-bin magnitude and instantaneous frequency (engineering-convention
             // phases: conjugate fft.h's exp(+i) imaginary parts on unpack)
@@ -222,8 +252,16 @@ namespace tap::dsp {
                     if (j < 1 || j > m_bins - 2) {
                         continue;
                     }
-                    const double re = static_cast<double>(m_frame[static_cast<size_t>(2 * k)]);
-                    const double im = -static_cast<double>(m_frame[static_cast<size_t>(2 * k + 1)]);
+                    double re = static_cast<double>(m_frame[static_cast<size_t>(2 * k)]);
+                    double im = -static_cast<double>(m_frame[static_cast<size_t>(2 * k + 1)]);
+                    if (m_formant) {
+                        // keep the envelope in place: excitation from bin k now sits
+                        // at bin j, so trade envelope(source) for envelope(target)
+                        const double g = std::clamp(m_env[static_cast<size_t>(j)] / m_env[static_cast<size_t>(k)],
+                                                    1.0 / k_max_boost, k_max_boost);
+                        re *= g;
+                        im *= g;
+                    }
                     m_synth[static_cast<size_t>(2 * j)] += static_cast<Sample>(re * cs - im * sn);
                     m_synth[static_cast<size_t>(2 * j + 1)] -= static_cast<Sample>(re * sn + im * cs); // conjugate back
                 }
@@ -238,6 +276,64 @@ namespace tap::dsp {
             for (int i = 0; i < m_n_size; ++i) {
                 const size_t slot = static_cast<size_t>((start + i) % an);
                 m_accum[slot] += m_synth[static_cast<size_t>(i)] * m_window[static_cast<size_t>(i)] * norm;
+            }
+        }
+
+        /// LPC spectral envelope of the current analysis frame (autocorrelation
+        /// method + Levinson-Durbin, evaluated over all bins with one extra FFT
+        /// of the prediction polynomial). m_env[k] = 1 / max(|A(e^jw_k)|, floor);
+        /// only ratios of m_env are used, so the LPC gain term cancels out.
+        void compute_envelope() noexcept {
+            const int p = k_lpc_order;
+
+            for (int lag = 0; lag <= p; ++lag) {
+                double acc = 0.0;
+                for (int n = 0; n < m_n_size - lag; ++n) {
+                    acc += static_cast<double>(m_lpc_time[static_cast<size_t>(n)])
+                           * static_cast<double>(m_lpc_time[static_cast<size_t>(n + lag)]);
+                }
+                m_lpc_r[static_cast<size_t>(lag)] = acc;
+            }
+            if (m_lpc_r[0] <= 0.0) {
+                std::fill(m_env.begin(), m_env.end(), 1.0); // silent frame: flat envelope
+                return;
+            }
+            m_lpc_r[0] *= 1.0 + 1e-9; // tiny ridge keeps the recursion well-posed
+
+            // Levinson-Durbin, always in double (order-48 float recursion is not safe)
+            std::fill(m_lpc_a.begin(), m_lpc_a.end(), 0.0);
+            m_lpc_a[0]   = 1.0;
+            double error = m_lpc_r[0];
+            for (int i = 1; i <= p; ++i) {
+                double acc = m_lpc_r[static_cast<size_t>(i)];
+                for (int j = 1; j < i; ++j) {
+                    acc += m_lpc_a[static_cast<size_t>(j)] * m_lpc_r[static_cast<size_t>(i - j)];
+                }
+                const double k = -acc / error;
+                for (int j = 0; j <= i; ++j) {
+                    m_lpc_tmp[static_cast<size_t>(j)] =
+                        m_lpc_a[static_cast<size_t>(j)] + k * m_lpc_a[static_cast<size_t>(i - j)];
+                }
+                std::copy(m_lpc_tmp.begin(), m_lpc_tmp.begin() + i + 1, m_lpc_a.begin());
+                error *= (1.0 - k * k);
+                if (error <= 0.0) {
+                    break;
+                }
+            }
+
+            // |A| over the bins: FFT of the prediction polynomial (same size, same engine)
+            std::fill(m_lpc_work.begin(), m_lpc_work.end(), Sample(0));
+            for (int i = 0; i <= p; ++i) {
+                m_lpc_work[static_cast<size_t>(i)] = static_cast<Sample>(m_lpc_a[static_cast<size_t>(i)]);
+            }
+            m_fft.forward_inplace(m_lpc_work.data());
+            m_env[0] = 1.0 / std::max(std::abs(static_cast<double>(m_lpc_work[0])), k_env_floor);
+            m_env[static_cast<size_t>(m_bins - 1)] =
+                1.0 / std::max(std::abs(static_cast<double>(m_lpc_work[1])), k_env_floor);
+            for (int k = 1; k < m_bins - 1; ++k) {
+                const double re               = static_cast<double>(m_lpc_work[static_cast<size_t>(2 * k)]);
+                const double im               = static_cast<double>(m_lpc_work[static_cast<size_t>(2 * k + 1)]);
+                m_env[static_cast<size_t>(k)] = 1.0 / std::max(std::sqrt(re * re + im * im), k_env_floor);
             }
         }
 
@@ -259,6 +355,13 @@ namespace tap::dsp {
         std::vector<double> m_mag;
         std::vector<double> m_true_bin;
         std::vector<int>    m_peaks;
+        std::vector<Sample> m_lpc_time;
+        std::vector<Sample> m_lpc_work;
+        std::vector<double> m_lpc_r;
+        std::vector<double> m_lpc_a;
+        std::vector<double> m_lpc_tmp;
+        std::vector<double> m_env;
+        bool                m_formant{false};
         long                m_n{0};
     };
 

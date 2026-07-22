@@ -111,6 +111,85 @@ namespace {
         }
     }
 
+    // Harmonic series at f0 shaped by a Gaussian spectral bump ("formant") at
+    // center_hz — additive, so the true envelope is known by construction.
+    template <typename Sample>
+    std::vector<Sample> formant_source(double f0, double center_hz, size_t n) {
+        std::vector<Sample> x(n, Sample(0));
+        for (int h = 1; h <= 20; ++h) {
+            const double f   = f0 * h;
+            const double amp = std::exp(-std::pow((f - center_hz) / 150.0, 2.0)) + 0.05;
+            for (size_t t = 0; t < n; ++t) {
+                x[t] += static_cast<Sample>(amp * std::sin(2.0 * k_pi * f * static_cast<double>(t) / k_sr));
+            }
+        }
+        return x;
+    }
+
+    /// Energy of the Hann-windowed last 4096 samples inside [lo_hz, hi_hz].
+    template <typename Sample>
+    double band_energy(const std::vector<Sample>& x, double lo_hz, double hi_hz) {
+        constexpr size_t    n = 4096;
+        tap::dsp::real_fft  fft(n);
+        std::vector<double> frame(n);
+        for (size_t i = 0; i < n; ++i) {
+            const double w = 0.5 - 0.5 * std::cos(2.0 * k_pi * static_cast<double>(i) / n);
+            frame[i]       = w * static_cast<double>(x[x.size() - n + i]);
+        }
+        fft.forward_inplace(frame.data());
+        double energy = 0.0;
+        for (size_t k = 1; k < n / 2; ++k) {
+            const double f = static_cast<double>(k) * k_sr / n;
+            if (f >= lo_hz && f <= hi_hz) {
+                energy += frame[2 * k] * frame[2 * k] + frame[2 * k + 1] * frame[2 * k + 1];
+            }
+        }
+        return energy;
+    }
+
+    TYPED_TEST(pvoc_test, FormantPreservationKeepsTheEnvelopeInPlace) {
+        // A 150 Hz series with its spectral bump at 800 Hz, shifted up a fifth.
+        // Plain shifting relocates the bump to 1200 Hz; with formant
+        // preservation the excitation moves but the bump stays near 800 Hz.
+        const auto src = formant_source<TypeParam>(150.0, 800.0, 48000);
+
+        tap::dsp::basic_pvoc<TypeParam> plain(1024);
+        tap::dsp::basic_pvoc<TypeParam> preserved(1024);
+        preserved.set_formant(true);
+        EXPECT_TRUE(preserved.formant());
+
+        std::vector<TypeParam> out_plain(src.size());
+        std::vector<TypeParam> out_pres(src.size());
+        for (size_t t = 0; t < src.size(); ++t) {
+            out_plain[t] = plain.process(src[t], TypeParam(1.5));
+            out_pres[t]  = preserved.process(src[t], TypeParam(1.5));
+        }
+
+        const double plain_low  = band_energy(out_plain, 600.0, 1000.0);
+        const double plain_high = band_energy(out_plain, 1050.0, 1450.0);
+        const double pres_low   = band_energy(out_pres, 600.0, 1000.0);
+        const double pres_high  = band_energy(out_pres, 1050.0, 1450.0);
+
+        EXPECT_GT(plain_high, 2.0 * plain_low); // bump moved to ~1200
+        EXPECT_GT(pres_low, 2.0 * pres_high);   // bump held at ~800
+    }
+
+    TYPED_TEST(pvoc_test, FormantIdentityStaysExact) {
+        // envelope(target)/envelope(source) is exactly 1 when nothing moves.
+        tap::dsp::basic_pvoc<TypeParam> shifter(1024);
+        shifter.set_formant(true);
+        const auto out = run_sine(shifter, 440.0, 1.0, 1.0);
+
+        const double tolerance = std::is_same_v<TypeParam, double> ? 1e-8 : 2e-3;
+        const size_t latency   = shifter.latency();
+        double       worst     = 0.0;
+        for (size_t t = out.size() - 4800; t < out.size(); ++t) {
+            const double expected = std::sin(2.0 * k_pi * 440.0 * static_cast<double>(t - latency) / k_sr);
+            worst                 = std::max(worst, std::abs(static_cast<double>(out[t]) - expected));
+        }
+        EXPECT_LT(worst, tolerance);
+    }
+
     TYPED_TEST(pvoc_test, ClearZerosTheState) {
         tap::dsp::basic_pvoc<TypeParam> shifter(1024);
         run_sine(shifter, 440.0, 1.5, 0.25);

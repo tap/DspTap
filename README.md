@@ -114,8 +114,27 @@ FFT frame (pinned by the tests). Latency = the FFT size (1024 default).
 
 ```cpp
 tap::dsp::pvoc shifter(1024);
+shifter.set_formant(true);               // optional LPC formant preservation
 double y = shifter.process(x, ratio);    // per sample; ratio sampled per hop
 ```
+
+Optional **formant preservation** (`set_formant`) uses the classic source-filter
+method: an LPC spectral envelope (autocorrelation + Levinson–Durbin, order 48)
+per analysis frame, with every relocated bin rescaled by
+`envelope(target)/envelope(source)` — the excitation moves, the envelope stays.
+At ratio 1 the correction is exactly unity, so the identity contract holds
+either way.
+
+## Notebooks
+
+`notebooks/pitchshift.ipynb` measures the three pitch primitives — driving the
+**actual shipping C++** through the C ABI in `tools/capi/` (ctypes bridge:
+`notebooks/dsptap_py.py`, which builds `build_capi/` on first import). It
+documents the two findings from the primitives' development: PSOLA's
+envelope-resampling nature (why it preserves formants *and* why a pure tone
+shifted an octave thins out), and the measured level collapse of naive
+phase-vocoder bin remapping vs the shipping peak-locked design — plus the LPC
+formant-preservation demo.
 
 ## Build
 
