@@ -111,12 +111,10 @@ namespace tap::dsp {
             // Step 4: first lag under the threshold, descended to its local
             // minimum. Track the global minimum for the unvoiced report.
             int    best_tau   = 0;
-            int    global_tau = m_tau_min;
             Sample global_min = cmnd[m_tau_min];
             for (int tau = m_tau_min; tau <= m_tau_max; ++tau) {
                 if (cmnd[tau] < global_min) {
                     global_min = cmnd[tau];
-                    global_tau = tau;
                 }
                 if (best_tau == 0 && cmnd[tau] < m_threshold) {
                     int t = tau;
