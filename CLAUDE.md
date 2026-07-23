@@ -8,19 +8,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 portable C++20 (standard library only, no frameworks), consumed as a git submodule by the
 individual libraries (TapTools pins it as `submodules/dsptap`; the AmbiTap/MuTap lineage is where
 the FFT came from). Four primitives today: the real FFT (`fft.h`), the YIN pitch detector
-(`yin.h`), and two pitch shifters (`psola.h`, `pvoc.h`). See `README.md` for each primitive's
-contract summary.
+(`yin.h`), and two pitch shifters (`psola.h`, `pvoc.h`) — plus the FIR substrate carried from
+SampleRateTap for the two rate converters (SampleRateTap, RatioTap): Kaiser prototype design
+(`kaiser.h`), the sample-format traits (`sample_traits.h`: float/Q15/Q31), the FIR dot kernels
+(`fir_kernels.h`), row-sum-preserving quantization (`quantize.h`), and the measurement
+instruments (`analysis/`). See `README.md` for each asset's contract summary.
 
 ## The design discipline (load-bearing — every primitive follows it)
 
 - **Fixed numeric contracts.** Each header documents its packing, conventions, normalization, and
   latency as *numbers*, and the tests pin them. Changing a documented contract point is a breaking
   change for every consumer.
-- **Double is the golden model; float32 is the embedded profile.** `basic_*<Sample>` templates
-  with `using x = basic_x<double>` / `x32 = basic_x<float>` aliases. The double path never changes
-  for speed; accelerated float backends (vDSP, CMSIS-Helium for the FFT) must re-present the
-  *exact* golden contract, so the double test battery stays a valid oracle. Cross-precision
-  agreement is pinned by tests.
+- **Double is the golden model; float32 is the embedded profile; Q15/Q31 are format-limited
+  embedded profiles.** `basic_*<Sample>` templates with `using x = basic_x<double>` /
+  `x32 = basic_x<float>` aliases. The double path never changes for speed; accelerated float
+  backends (vDSP, CMSIS-Helium for the FFT) must re-present the *exact* golden contract, so the
+  double test battery stays a valid oracle. Cross-precision agreement is pinned by tests. The
+  fixed-point profiles (`sample_traits.h`) carry their contracts as numbers the same way — Q
+  formats, the single rounding point, saturation — and exist for M33/M55-class targets
+  (Bluetooth-adjacent converters, eurorack/pedal deployments) where double or any float is
+  unaffordable. Per-primitive fixed-point adoption is opt-in and is a documented Q-format design
+  each time, via traits over raw sample types, never wrapper classes.
 - **Real-time safe by construction.** Geometry fixed at construction, every buffer allocated
   there; processing is `noexcept` and allocation-free. Numerically fragile recursions (e.g. the
   order-48 Levinson–Durbin inside `pvoc`) run in double even in the float profile — documented

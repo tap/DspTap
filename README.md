@@ -4,7 +4,9 @@ Shared DSP primitives for the **Tap** family of audio libraries. Header-only,
 plain portable C++ (C++20, standard library only), no Max/Min or framework
 dependency — consumed as a git submodule by the individual libraries.
 
-Today it holds four primitives:
+Today it holds four primitives, plus the [FIR substrate](#the-fir-substrate) —
+the shared design-math / sample-format / kernel layer under SampleRateTap and
+RatioTap:
 
 ## `tap::dsp::real_fft` — real FFT with a fixed numeric contract
 
@@ -125,6 +127,85 @@ per analysis frame, with every relocated bin rescaled by
 At ratio 1 the correction is exactly unity, so the identity contract holds
 either way.
 
+## The FIR substrate
+
+Five headers carried from **SampleRateTap** (where they design and run the
+ASRC's polyphase datapath) and promoted here so **RatioTap**'s fixed-ratio
+44.1↔48 converter — and any future FIR consumer — shares one implementation.
+The performance-sensitive pieces are regression-gated in SampleRateTap's
+instruction-count CI (Cortex-M33/M55, Hexagon, ±3%); treat measured claims in
+the header comments as contracts.
+
+### `tap/dsp/kaiser.h` — FIR prototype design
+
+Kaiser-windowed sinc prototype design for L-phase polyphase banks: `bessel_i0`,
+`kaiser_beta` (Kaiser's empirical fit), `estimate_taps` (the harris length
+estimate), `design_prototype`, and `design_prototype_compensated` — the
+zeros-at-k·fs variant with passband droop pre-compensated (closed-form, no
+FFT), which turns branch-DC uniformity into exact transmission zeros at every
+multiple of the sample rate. Runtime design in double, deliberately not
+constexpr (the header's design note does the arithmetic); run it in a
+constructor, off the audio path. Also exports `solve_dense`, the small dense
+solver the compensated design and the analysis instruments share.
+
+### `tap/dsp/sample_traits.h` — sample formats: float, Q15, Q31
+
+The family's sample-format substrate: how each sample type stores
+coefficients, accumulates dot products, and rounds/saturates back to samples.
+
+| Type | Coefficients | Accumulation | Output |
+|---|---|---|---|
+| `float` | float | double | plain cast |
+| `std::int16_t` | Q1.14 | int64, exact | single Q29→Q15 round-half-up, saturating |
+| `std::int32_t` | Q1.30 | int64, products pre-shifted to Q45 | Q45→Q31, saturating |
+
+**Fixed point is a first-class embedded direction, not a legacy path.** The
+Q15/Q31 profiles exist for targets where double (sometimes any float) is
+unaffordable — SampleRateTap measured its float datapath at ~19× the
+instruction count of Q15 on a Cortex-M33 (soft-double accumulation). Expected
+deployments include Bluetooth-adjacent conversion (RatioTap) and M33/M55-class
+eurorack and pedal targets running TapTools primitives. Per-primitive adoption
+is opt-in, and each adoption is its own documented Q-format design: the ladder
+of headroom bits, pre-shifts, and the single rounding point is a per-datapath
+decision. That is also why these are *traits over raw sample types* rather
+than `q15`/`q31` wrapper classes — the arithmetic contract stays visible at
+the use site and pinnable by tests, buffers arrive from codecs and C ABIs as
+plain `int16_t`/`int32_t`, and the SMLALD kernel's paired loads stay legal.
+
+This header is the format core only. Engine-specific extensions (e.g.
+SampleRateTap's inter-phase coefficient blending) derive from these
+specializations and refine the `tap::dsp::sample_type` concept.
+
+### `tap/dsp/fir_kernels.h` — dot-product kernels
+
+The FIR hot loops, target-gated the way SampleRateTap's optimization campaign
+measured them: `dot_row` (planar; routes Q15 through a dual-MAC SMLALD loop on
+DSP-extension Arm cores without Helium — bit-exact by construction), and the
+channel-parallel pair `dot_tile_frame_major` / `dot_rows_frame_major`
+(register-blocked 8/4/2/1 tiles over frame-major storage, coefficient
+broadcast across channel lanes — bit-exact against the planar path for every
+sample type, float included, because lanes are channels, not taps). The
+`TAP_DSP_CHANNEL_PARALLEL` / `TAP_DSP_CP_MIN_CHANNELS` gates encode which
+targets prefer which layout.
+
+### `tap/dsp/quantize.h` — row-sum-preserving quantization
+
+`quantize_row_preserving_sum`: quantizes one polyphase branch to a fixed-point
+coefficient format while preserving the row's DC sum *exactly*
+(largest-remainder distribution of the rounding residual — "the coefficients
+of every phase must add to one", R. Bristow-Johnson, music-dsp). Plain
+conversion for float. Design-time code.
+
+### `tap/dsp/analysis/` — measurement instruments
+
+The quality-measurement harness the converter suites share: `sine_analysis.h`
+(least-squares single-tone fit, frequency-tracked variant, `snr_db`) and
+`multitone_analysis.h` (pink log-spaced `tone_comb`, joint least-squares
+multitone fit, `program_weighted_snr_db` — the program-weighted metric with
+Fisher-weighted ratio pooling). Instrument floors on exact synthetic signals
+are pinned by `tests/test_analysis.cpp`, so a consumer's quality gate never
+silently rests on a degraded instrument.
+
 ## Notebooks
 
 `notebooks/pitchshift.ipynb` measures the three pitch primitives — driving the
@@ -174,6 +255,13 @@ double-engine wrapper with no backends — so a bug fix or a new backend in one
 would silently miss the other. DspTap is the consolidation: one wrapper, one
 contract, one home for the next backend. The unified wrapper is MuTap's
 backend-capable `basic_real_fft`, generalized to the `tap::dsp` namespace.
+
+The FIR substrate is the second consolidation wave, moved here from
+**SampleRateTap** (its `srt/detail/kaiser.h`, `srt/sample_traits.h` format
+core, the dot kernels from `srt/polyphase_filter.h`, the row-sum quantization
+from its bank constructor, and the `tests/support/` measurement harness) at
+the moment **RatioTap** became the second consumer — the same
+extract-on-second-consumer rule that created this repo.
 
 See [`third_party/ooura/readme.txt`](third_party/ooura/readme.txt) and
 [`third_party/cmsis-dsp/VENDOR.md`](third_party/cmsis-dsp/VENDOR.md) for the
