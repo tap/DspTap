@@ -20,10 +20,15 @@ set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
 add_executable(tap_dsp_tests
+    test_analysis.cpp
     test_fft.cpp
     test_fft_backend.cpp
+    test_fir_kernels.cpp
+    test_kaiser.cpp
     test_psola.cpp
     test_pvoc.cpp
+    test_quantize.cpp
+    test_sample_traits.cpp
     test_yin.cpp)
 target_link_libraries(tap_dsp_tests PRIVATE
     tap::dsp
