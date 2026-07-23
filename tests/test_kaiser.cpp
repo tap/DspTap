@@ -187,9 +187,9 @@ namespace {
         const std::vector<double> rhs0{4.0, 6.0, 5.0};
         std::vector<double>       m = m0, rhs = rhs0, x(3);
         solve_dense(m, rhs, x, 3);
-        for (int r = 0; r < 3; ++r) {
+        for (std::size_t r = 0; r < 3; ++r) {
             const double v = m0[3 * r] * x[0] + m0[3 * r + 1] * x[1] + m0[3 * r + 2] * x[2];
-            EXPECT_NEAR(v, rhs0[static_cast<std::size_t>(r)], 1e-12) << "row " << r;
+            EXPECT_NEAR(v, rhs0[r], 1e-12) << "row " << r;
         }
     }
 
