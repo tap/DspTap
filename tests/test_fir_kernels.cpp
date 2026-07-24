@@ -17,6 +17,7 @@
 namespace {
 
     using tap::dsp::dot_row;
+    using tap::dsp::dot_row_reversed;
     using tap::dsp::dot_rows_frame_major;
     using tap::dsp::sample_traits;
 
@@ -104,6 +105,29 @@ namespace {
                 EXPECT_EQ(out[c], dot_row<sample>(row.data(), planar.data(), k_taps))
                     << "channels=" << channels << " c=" << c;
             }
+        }
+    }
+
+    // dot_row_reversed's contract: bit-identical to dot_row against the
+    // materialized mirrored row — the promise that lets a symmetric
+    // polyphase table drop half its rows and dot the stored half backward
+    // (see the kernel's doc comment). Even taps exercise the SMLALDX
+    // dual-MAC pairing on DSP-extension targets; odd taps its scalar tail.
+    TYPED_TEST(fir_kernels_test, ReversedMatchesMaterializedMirrorBitExact) {
+        using sample = TypeParam;
+        using tr     = sample_traits<sample>;
+        for (const std::size_t taps : {44u, 48u, 33u, 1u, 2u}) {
+            std::uint32_t                   seed = 0x2545f491u + static_cast<std::uint32_t>(taps);
+            std::vector<sample>             hist(taps);
+            std::vector<typename tr::coeff> row(taps);
+            for (std::size_t t = 0; t < taps; ++t) {
+                hist[t] = sample_from<sample>(next(seed));
+                row[t]  = coeff_from<sample>(next(seed));
+            }
+            std::vector<typename tr::coeff> mirrored(row.rbegin(), row.rend());
+            EXPECT_EQ(dot_row_reversed<sample>(row.data(), hist.data(), taps),
+                      dot_row<sample>(mirrored.data(), hist.data(), taps))
+                << "taps=" << taps;
         }
     }
 

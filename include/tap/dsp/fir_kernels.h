@@ -108,6 +108,55 @@ namespace tap::dsp {
     }
     // ANCHOR_END: rs_dot_row
 
+    // ANCHOR: rs_dot_row_reversed
+    /// Dot product with the coefficient row read tap-reversed:
+    /// y = sum_t hist[t] * row[taps - 1 - t], history walked forward.
+    ///
+    /// This is the kernel a linear-phase polyphase table halved by symmetry
+    /// needs: branch p of a symmetric prototype is branch L-1-p read in
+    /// reverse, so the mirrored branches dot the STORED row backward and the
+    /// halving costs storage only. Bit-exactness contract: the t-th product
+    /// equals dot_row's t-th product against the materialized mirrored row,
+    /// and accumulation runs in the same ascending-t order with the same
+    /// single finalize — so outputs are bit-identical to keeping the full
+    /// table, for every sample type (float's fixed accumulation order
+    /// included). On DSP-extension Arm cores the Q15 path pairs taps with the
+    /// swapped-lane dual MAC (SMLALDX): each 16x16 product is exact in int32
+    /// and the int64 accumulation is associative, so pairing changes no
+    /// output bit (the same argument as dot_row's SMLALD gate above).
+    template <sample_type S>
+    inline S dot_row_reversed(const typename sample_traits<S>::coeff* TAP_DSP_RESTRICT row,
+                              const S* TAP_DSP_RESTRICT hist, std::size_t taps) noexcept {
+        using tr = sample_traits<S>;
+#if TAP_DSP_Q15_SMLALD
+        if constexpr (std::is_same_v<S, std::int16_t>) {
+            std::int64_t acc = 0;
+            std::size_t  t   = 0;
+            for (; t + 1 < taps; t += 2) {
+                // One 32-bit load per pair on each side; the row load at
+                // taps-2-t packs (row[taps-2-t] lo, row[taps-1-t] hi), and
+                // SMLALDX's cross pairing multiplies hist.lo * row.hi +
+                // hist.hi * row.lo = hist[t]*row[taps-1-t] +
+                // hist[t+1]*row[taps-2-t] — exactly the reversed walk.
+                std::uint32_t h;
+                std::uint32_t r;
+                std::memcpy(&h, hist + t, sizeof h);
+                std::memcpy(&r, row + (taps - 2 - t), sizeof r);
+                acc = __smlaldx(static_cast<int16x2_t>(h), static_cast<int16x2_t>(r), acc);
+            }
+            for (; t < taps; ++t) // odd-tap tail
+                acc = tr::mac(acc, hist[t], row[taps - 1 - t]);
+            return tr::finalize(acc);
+        }
+#endif
+        typename tr::accum acc{};
+        for (std::size_t t = 0; t < taps; ++t) {
+            acc = tr::mac(acc, hist[t], row[taps - 1 - t]);
+        }
+        return tr::finalize(acc);
+    }
+    // ANCHOR_END: rs_dot_row_reversed
+
     // ANCHOR: opt_dot_tile
     /// One K-channel tile of the channel-parallel dot (hypothesis C6): K
     /// accumulators live in a constexpr-size local array — registers, not
