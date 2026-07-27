@@ -132,3 +132,14 @@ if(TAP_DSP_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+# C ABI shared library for FFI consumers (the notebooks drive the shipping C++
+# through it via ctypes — see notebooks/dsptap_py.py). tools/capi also builds
+# standalone (`cmake -B build_capi -S tools/capi`), which is what the ctypes
+# bridge does on first import; this option exists so the root build can compile
+# it too, matching the BUILD_CAPI option every sibling library carries. CI turns
+# it on so the verification layer cannot rot unnoticed.
+option(TAP_DSP_BUILD_CAPI "Build the C ABI shared library" OFF)
+if(TAP_DSP_BUILD_CAPI)
+    add_subdirectory(tools/capi)
+endif()
