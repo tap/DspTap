@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstddef>
 #include <memory>
+#include <new>
 #include <type_traits>
 #include <vector>
 
@@ -122,6 +123,27 @@ namespace tap::dsp {
         // inverse, which lands on Ooura's UNNORMALIZED inverse (the caller's
         // 2/N then normalizes the round trip). Constants verified on Apple
         // Silicon to <4e-7 relative error at N=512 and N=2048 (bench/vdsp).
+        //
+        // REPRODUCIBILITY — read this before assuming a fixed function of the
+        // input. The agreement bound above is an accuracy statement about a
+        // single transform; it is NOT a promise that this backend returns the
+        // same bits twice. Measured (tap/MuTap#31):
+        //
+        //   - macOS 26.5.2 / Xcode 26.6 / Apple M1: vDSP_fft_zrip at N=2048
+        //     returns one of TWO bit-exact outputs for identical input, drawn
+        //     once per process and then held (145/55 over 200 processes).
+        //     N=512 was stable over the same 200.
+        //   - macOS 15.7.7 / AppleClang 17 / Intel: 200/200 identical at every
+        //     size from 64 to 8192. The split is not universal to vDSP.
+        //
+        // Ooura is deterministic on both. So a consumer that needs
+        // bit-reproducible output across processes — a compliance battery, a
+        // golden-vector test, anything whose downstream amplifies epsilon —
+        // must either pin TAP_DSP_FFT_ACCELERATE=OFF or gate on the
+        // cross-process determinism test rather than on parity alone. Note
+        // that fft_backend_parity cannot see this: it runs a single process,
+        // so it compares one arbitrary draw against Ooura and passes either
+        // way.
         class accelerate_real_fft_f32 {
           public:
             void init(int n) {
@@ -130,8 +152,19 @@ namespace tap::dsp {
                 // Shared, read-only twiddle tables: copyable value semantics
                 // (basic_real_fft is held by value in the chain) with a single
                 // owner-managed lifetime, and safe to share across transforms.
-                m_setup = std::shared_ptr<std::remove_pointer_t<FFTSetup>>(
-                    vDSP_create_fftsetup(static_cast<vDSP_Length>(m_log2n), kFFTRadix2), vDSP_destroy_fftsetup);
+                //
+                // vDSP_create_fftsetup returns NULL if it cannot allocate the
+                // tables. Unchecked, that NULL flows straight into
+                // vDSP_fft_zrip below, which is undefined behaviour — and an
+                // allocation failure on a loaded machine is exactly the shape
+                // of fault that presents as an intermittent one. Fail here
+                // instead, where construction is already allowed to throw and
+                // the caller can fall back.
+                FFTSetup setup = vDSP_create_fftsetup(static_cast<vDSP_Length>(m_log2n), kFFTRadix2);
+                if (setup == nullptr) {
+                    throw std::bad_alloc();
+                }
+                m_setup = std::shared_ptr<std::remove_pointer_t<FFTSetup>>(setup, vDSP_destroy_fftsetup);
                 m_rp.assign(static_cast<size_t>(n) / 2, 0.0f);
                 m_ip.assign(static_cast<size_t>(n) / 2, 0.0f);
             }
