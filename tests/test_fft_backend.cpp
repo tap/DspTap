@@ -108,4 +108,81 @@ namespace {
 
     INSTANTIATE_TEST_SUITE_P(CertifiedGeometries, fft_backend_parity, ::testing::Values(512, 2048));
 
+    class fft_alignment_stability : public ::testing::TestWithParam<int> {};
+
+    // THE GATE fft_backend_parity CANNOT BE. Parity builds one engine, in one
+    // process, at whatever address the allocator happened to pick, and compares
+    // it to Ooura once — so a backend that returns DIFFERENT bits depending on
+    // where its scratch buffers land passes it every time, by comparing an
+    // arbitrary draw.
+    //
+    // That is not hypothetical: Apple's vDSP dispatches on 64-byte alignment
+    // and the two paths disagree (tap/MuTap#31 — at N=2048, 140/60 across 200
+    // processes on an M1, tracked exactly to whether the split-complex halves
+    // were 64-byte aligned). Downstream, MuTap's residual suppressor turned
+    // that into a ~97 dB swing in a certified compliance row, and it read as
+    // CI flake for two weeks.
+    //
+    // So: build many engines with the heap deliberately shifted between
+    // constructions, run identical input through each, and require every
+    // output to be BIT-identical — not close, identical. A backend is a
+    // function of its input or it is not usable as one.
+    TEST_P(fft_alignment_stability, OutputDoesNotDependOnBufferAddress) {
+        const int  n = GetParam();
+        const auto x = broadband(n, 0x9E3779B9u);
+
+        std::vector<float> reference;
+        // Odd, growing spacer allocations walk the engine's buffers through
+        // every alignment class the allocator can produce. Kept alive so each
+        // engine really does land somewhere new.
+        std::vector<std::vector<char>> spacers;
+
+        for (int trial = 0; trial < 32; ++trial) {
+            spacers.emplace_back(static_cast<size_t>(4 * trial + 1), char{});
+
+            tap::dsp::basic_real_fft<float> fft(static_cast<size_t>(n));
+            std::vector<float>              got = x;
+            fft.forward_inplace(got.data());
+
+            if (trial == 0) {
+                reference = got;
+                continue;
+            }
+            for (size_t i = 0; i < got.size(); ++i) {
+                ASSERT_EQ(std::bit_cast<std::uint32_t>(got[i]), std::bit_cast<std::uint32_t>(reference[i]))
+                    << "trial " << trial << ", bin " << i << ": the forward transform is not a function of its input — "
+                    << "the backend is dispatching on something other than the data (buffer alignment is the known "
+                    << "case; see fft.h k_align_bytes)";
+            }
+        }
+    }
+
+    // A copy must keep the property: basic_real_fft is held by value in the
+    // chains that use it, so a copy whose storage landed at a different
+    // alignment would reintroduce the bug at the copy site.
+    TEST_P(fft_alignment_stability, CopiesAgreeWithTheirSource) {
+        const int  n = GetParam();
+        const auto x = broadband(n, 0x9E3779B9u);
+
+        tap::dsp::basic_real_fft<float> original(static_cast<size_t>(n));
+        std::vector<float>              from_original = x;
+        original.forward_inplace(from_original.data());
+
+        std::vector<std::vector<char>> spacers;
+        for (int trial = 0; trial < 8; ++trial) {
+            spacers.emplace_back(static_cast<size_t>(8 * trial + 3), char{});
+
+            tap::dsp::basic_real_fft<float> copy = original; // NOLINT(performance-unnecessary-copy-initialization)
+            std::vector<float>              got  = x;
+            copy.forward_inplace(got.data());
+
+            for (size_t i = 0; i < got.size(); ++i) {
+                ASSERT_EQ(std::bit_cast<std::uint32_t>(got[i]), std::bit_cast<std::uint32_t>(from_original[i]))
+                    << "copy " << trial << " disagrees with its source at bin " << i;
+            }
+        }
+    }
+
+    INSTANTIATE_TEST_SUITE_P(CertifiedGeometries, fft_alignment_stability, ::testing::Values(512, 2048, 4096));
+
 } // namespace

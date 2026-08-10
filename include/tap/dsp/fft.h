@@ -14,6 +14,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <new>
 #include <type_traits>
@@ -124,26 +125,30 @@ namespace tap::dsp {
         // 2/N then normalizes the round trip). Constants verified on Apple
         // Silicon to <4e-7 relative error at N=512 and N=2048 (bench/vdsp).
         //
-        // REPRODUCIBILITY — read this before assuming a fixed function of the
-        // input. The agreement bound above is an accuracy statement about a
-        // single transform; it is NOT a promise that this backend returns the
-        // same bits twice. Measured (tap/MuTap#31):
+        // REPRODUCIBILITY — vDSP dispatches on buffer alignment, and the paths
+        // it dispatches to do not agree bit-for-bit. Diagnosed in
+        // tap/MuTap#31; the buffers below are aligned to compensate, and the
+        // detail is documented at k_align_bytes.
         //
-        //   - macOS 26.5.2 / Xcode 26.6 / Apple M1: vDSP_fft_zrip at N=2048
-        //     returns one of TWO bit-exact outputs for identical input, drawn
-        //     once per process and then held (145/55 over 200 processes).
-        //     N=512 was stable over the same 200.
-        //   - macOS 15.7.7 / AppleClang 17 / Intel: 200/200 identical at every
-        //     size from 64 to 8192. The split is not universal to vDSP.
+        // What this backend does and does not promise, stated precisely,
+        // because a compliance battery was built on the wrong reading of it:
         //
-        // Ooura is deterministic on both. So a consumer that needs
-        // bit-reproducible output across processes — a compliance battery, a
-        // golden-vector test, anything whose downstream amplifies epsilon —
-        // must either pin TAP_DSP_FFT_ACCELERATE=OFF or gate on the
-        // cross-process determinism test rather than on parity alone. Note
-        // that fft_backend_parity cannot see this: it runs a single process,
-        // so it compares one arbitrary draw against Ooura and passes either
-        // way.
+        //   IT DOES  return a fixed function of its input, now that the split
+        //            buffers are aligned. Verified by fft_alignment_stability,
+        //            which is the gate; fft_backend_parity cannot see this
+        //            class of bug because it runs a single process against a
+        //            single allocation.
+        //   IT DOES  agree with Ooura to <4e-7 measured as peak-normalized
+        //            absolute error, which is what "relative" meant when the
+        //            bound was recorded.
+        //   IT DOES NOT agree with Ooura per bin. On material where most bins
+        //            are numerically empty — an on-bin tone, say — per-bin
+        //            relative error against a double-precision reference runs
+        //            to 1e6 and beyond, for BOTH backends. Ooura is not the
+        //            accurate one there; measured on Intel it is ~4x worse
+        //            than vDSP against double. Any consumer whose behaviour
+        //            depends on the contents of empty bins is depending on
+        //            rounding noise, and no backend choice fixes that.
         class accelerate_real_fft_f32 {
           public:
             void init(int n) {
@@ -165,15 +170,18 @@ namespace tap::dsp {
                     throw std::bad_alloc();
                 }
                 m_setup = std::shared_ptr<std::remove_pointer_t<FFTSetup>>(setup, vDSP_destroy_fftsetup);
-                m_rp.assign(static_cast<size_t>(n) / 2, 0.0f);
-                m_ip.assign(static_cast<size_t>(n) / 2, 0.0f);
+                // Over-allocated by k_align_pad so the halves can be handed to
+                // vDSP 64-byte aligned regardless of where the allocator put
+                // them — see rp()/ip() and the k_align comment.
+                m_rp.assign(static_cast<size_t>(n) / 2 + k_align_pad, 0.0f);
+                m_ip.assign(static_cast<size_t>(n) / 2 + k_align_pad, 0.0f);
             }
 
             void forward_inplace(float* a) noexcept {
                 // Index the split halves through raw pointers (pointer + int is
                 // warning-free; a std::vector subscript would be int->size_t).
-                float* const    rp = m_rp.data();
-                float* const    ip = m_ip.data();
+                float* const    rp = this->rp();
+                float* const    ip = this->ip();
                 DSPSplitComplex sp{rp, ip};
                 vDSP_ctoz(reinterpret_cast<const DSPComplex*>(a), 2, &sp, 1, static_cast<vDSP_Length>(m_n / 2));
                 vDSP_fft_zrip(m_setup.get(), &sp, 1, static_cast<vDSP_Length>(m_log2n), kFFTDirection_Forward);
@@ -189,8 +197,8 @@ namespace tap::dsp {
                 // a is an Ooura-packed spectrum: rebuild vDSP's split form (undo
                 // the 0.5, conjugate back to exp(-i)), invert, interleave, and
                 // rescale to Ooura's unnormalized inverse.
-                float* const    rp = m_rp.data();
-                float* const    ip = m_ip.data();
+                float* const    rp = this->rp();
+                float* const    ip = this->ip();
                 DSPSplitComplex sp{rp, ip};
                 rp[0] = 2.0f * a[0];
                 ip[0] = 2.0f * a[1];
@@ -206,6 +214,40 @@ namespace tap::dsp {
             }
 
           private:
+            // vDSP DISPATCHES ON BUFFER ALIGNMENT, and the two paths do not
+            // agree bit-for-bit. Measured on Apple M1 / macOS 26.5.2 /
+            // Xcode 26.6 at N=2048 and N=4096: the same input through the same
+            // FFTSetup produces one output when the split-complex halves are
+            // 64-byte aligned and a different one when they are not, with the
+            // two differing by ~2e-7 peak-normalized. std::vector's allocator
+            // hands out 16-byte-aligned storage, so which path a process took
+            // was decided by wherever the heap happened to land — the
+            // per-process nondeterminism in tap/MuTap#31 (140/60 over 200
+            // processes at N=2048, 110/90 at N=4096).
+            //
+            // Aligning here removes the variable: every process now takes the
+            // 64-byte-aligned path. Note this makes the backend REPRODUCIBLE,
+            // not more accurate — the two paths are equally within the
+            // documented agreement bound, and a consumer sensitive to a
+            // difference that small is sensitive to any legitimate backend
+            // difference and needs to be fixed on its own terms.
+            //
+            // Computed at use rather than cached, because basic_real_fft is
+            // copyable and held by value: a copy's storage lands wherever the
+            // allocator puts it, so a cached pointer would silently lose the
+            // alignment the copy still needs.
+            static constexpr size_t k_align_bytes = 64;
+            static constexpr size_t k_align_pad   = k_align_bytes / sizeof(float);
+
+            static float* align_up(float* p) noexcept {
+                const auto addr = reinterpret_cast<std::uintptr_t>(p);
+                const auto up   = (addr + (k_align_bytes - 1)) & ~static_cast<std::uintptr_t>(k_align_bytes - 1);
+                return reinterpret_cast<float*>(up);
+            }
+
+            float* rp() noexcept { return align_up(m_rp.data()); }
+            float* ip() noexcept { return align_up(m_ip.data()); }
+
             std::shared_ptr<std::remove_pointer_t<FFTSetup>> m_setup;
             std::vector<float>                               m_rp, m_ip;
             int                                              m_n     = 0;
