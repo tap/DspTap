@@ -22,6 +22,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -149,7 +150,11 @@ namespace {
                 continue;
             }
             for (size_t i = 0; i < got.size(); ++i) {
-                ASSERT_EQ(std::bit_cast<std::uint32_t>(got[i]), std::bit_cast<std::uint32_t>(reference[i]))
+                // memcmp rather than ==, so the comparison is over the exact
+                // bits (== would call +0.0 and -0.0 equal, and any NaN
+                // unequal to itself), and rather than std::bit_cast, which
+                // needs C++20 and is not available on every leg's test build.
+                ASSERT_EQ(std::memcmp(&got[i], &reference[i], sizeof(float)), 0)
                     << "trial " << trial << ", bin " << i << ": the forward transform is not a function of its input — "
                     << "the backend is dispatching on something other than the data (buffer alignment is the known "
                     << "case; see fft.h k_align_bytes)";
@@ -177,7 +182,7 @@ namespace {
             copy.forward_inplace(got.data());
 
             for (size_t i = 0; i < got.size(); ++i) {
-                ASSERT_EQ(std::bit_cast<std::uint32_t>(got[i]), std::bit_cast<std::uint32_t>(from_original[i]))
+                ASSERT_EQ(std::memcmp(&got[i], &from_original[i], sizeof(float)), 0)
                     << "copy " << trial << " disagrees with its source at bin " << i;
             }
         }
