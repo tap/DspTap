@@ -20,6 +20,7 @@
 // sign convention, Parseval, float-tracks-double) is covered by test_fft.cpp,
 // which exercises the same backend.
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
