@@ -225,28 +225,65 @@ namespace tap::dsp {
             // per-process nondeterminism in tap/MuTap#31 (140/60 over 200
             // processes at N=2048, 110/90 at N=4096).
             //
-            // Aligning here removes the variable: every process now takes the
-            // 64-byte-aligned path. Note this makes the backend REPRODUCIBLE,
-            // not more accurate — the two paths are equally within the
-            // documented agreement bound, and a consumer sensitive to a
-            // difference that small is sensitive to any legitimate backend
-            // difference and needs to be fixed on its own terms.
+            // Placing the halves at a fixed offset removes that variable. WHICH
+            // offset matters as much as fixing it — the two kernels differ in
+            // accuracy, not merely in rounding. See k_skew_bytes.
             //
             // Computed at use rather than cached, because basic_real_fft is
             // copyable and held by value: a copy's storage lands wherever the
             // allocator puts it, so a cached pointer would silently lose the
             // alignment the copy still needs.
-            static constexpr size_t k_align_bytes = 64;
-            static constexpr size_t k_align_pad   = k_align_bytes / sizeof(float);
+            // WHICH alignment, and why it is deliberately not the "best" one.
+            //
+            // Two kernels exist and they are not equally good. Measured on
+            // Apple M1 / macOS 26.5.2 / Xcode 26.6, median per-bin relative
+            // error against a double-precision reference at N=2048:
+            //
+            //   material         64-byte aligned   NOT 64-byte aligned   Ooura
+            //   broadband        1.6e-07           1.2e-07               1.2e-07
+            //   tone, off-bin    1.3e-06           1.3e-06               6.4e-07
+            //   tone, ON-bin     0.65              1.2e-07               1.1e-07
+            //
+            // On material whose spectrum has exactly-empty bins — an on-bin
+            // tone is the clean case — the 64-byte-aligned kernel puts the
+            // MEDIAN bin 65% away from truth, while the other kernel and Ooura
+            // both track it to float epsilon. Any leakage that lifts those bins
+            // above the noise floor hides the difference, which is why a
+            // peak-normalized parity check cannot see it.
+            //
+            // So we pin the alignment to a fixed value that is 32-byte aligned
+            // (Apple's vDSP.h asks for "preferably 16-byte aligned or better",
+            // and unaligned vector loads would cost performance) but NOT
+            // 64-byte aligned, which selects the accurate kernel. Fixed, so the
+            // transform is a function of its input; skewed, so it is the better
+            // of the two functions available.
+            //
+            // This steers around an UNDOCUMENTED dispatch rule. Apple's vDSP.h
+            // says the routines are "free to rearrange calculations for better
+            // performance" and are "not expected to conform to IEEE 754", so
+            // nothing stops a future SDK from dispatching differently. If that
+            // happens this stops helping — silently, which is the real risk —
+            // so fft_tonal_accuracy asserts the property directly rather than
+            // trusting the skew. A consumer who cannot accept that exposure at
+            // all should build with TAP_DSP_FFT_ACCELERATE=OFF; MuTap's
+            // compliance battery does exactly that.
+            //
+            // Computed at use rather than cached, because basic_real_fft is
+            // copyable and held by value: a copy's storage lands wherever the
+            // allocator puts it, so a cached pointer would silently lose the
+            // placement the copy still needs.
+            static constexpr size_t k_align_bytes = 64; ///< boundary vDSP dispatches on
+            static constexpr size_t k_skew_bytes  = 32; ///< offset past it: 32-byte aligned, not 64
+            static constexpr size_t k_align_pad   = (k_align_bytes + k_skew_bytes) / sizeof(float) + 1;
 
-            static float* align_up(float* p) noexcept {
+            static float* place(float* p) noexcept {
                 const auto addr = reinterpret_cast<std::uintptr_t>(p);
                 const auto up   = (addr + (k_align_bytes - 1)) & ~static_cast<std::uintptr_t>(k_align_bytes - 1);
-                return reinterpret_cast<float*>(up);
+                return reinterpret_cast<float*>(up + k_skew_bytes);
             }
 
-            float* rp() noexcept { return align_up(m_rp.data()); }
-            float* ip() noexcept { return align_up(m_ip.data()); }
+            float* rp() noexcept { return place(m_rp.data()); }
+            float* ip() noexcept { return place(m_ip.data()); }
 
             std::shared_ptr<std::remove_pointer_t<FFTSetup>> m_setup;
             std::vector<float>                               m_rp, m_ip;

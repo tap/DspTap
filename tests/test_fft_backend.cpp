@@ -190,4 +190,67 @@ namespace {
 
     INSTANTIATE_TEST_SUITE_P(CertifiedGeometries, fft_alignment_stability, ::testing::Values(512, 2048, 4096));
 
+    class fft_tonal_accuracy : public ::testing::TestWithParam<int> {};
+
+    // THE GATE THAT MAKES fft.h's k_skew_bytes SELF-CHECKING.
+    //
+    // Transform a pure ON-BIN tone — one large bin, N-1 numerically empty ones
+    // — and require the backend to track a double-precision reference through
+    // the empty ones. That is the material where the two vDSP kernels diverge:
+    // 64-byte-aligned buffers put the MEDIAN bin 65% away from truth at N=2048,
+    // while the skewed placement fft.h uses, and Ooura, both track it to float
+    // epsilon (~1e-07).
+    //
+    // Asserting on the MEDIAN is the point. Max error is useless here — divide
+    // any float32 noise by a numerically empty bin and it saturates, for every
+    // backend — and peak-normalized absolute error is worse than useless,
+    // because dividing by the one loud bin reports a spectrum that is wrong
+    // everywhere except its peak as excellent. Neither can see the defect this
+    // test exists to catch, which is exactly why fft_backend_parity (broadband
+    // material, peak-normalized bound) passed throughout.
+    //
+    // If a future SDK dispatches differently and the skew stops selecting the
+    // accurate kernel, this fails loudly instead of degrading in silence.
+    TEST_P(fft_tonal_accuracy, EmptyBinsTrackADoubleReference) {
+        const int    n  = GetParam();
+        const double pi = 3.14159265358979323846;
+
+        // Exactly on bin n/16, so no leakage lifts the empty bins above the
+        // noise floor and hides the effect.
+        std::vector<float> x(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i) {
+            x[static_cast<size_t>(i)] =
+                static_cast<float>(0.5 * std::sin(2.0 * pi * (n / 16.0) * i / static_cast<double>(n)));
+        }
+
+        // float -> double is exact, so both engines see identical input values.
+        std::vector<double>              ref(x.begin(), x.end());
+        tap::dsp::basic_real_fft<double> dfft(static_cast<size_t>(n));
+        dfft.forward_inplace(ref.data());
+
+        std::vector<float>              got = x;
+        tap::dsp::basic_real_fft<float> ffft(static_cast<size_t>(n));
+        ffft.forward_inplace(got.data());
+
+        std::vector<double> rel;
+        rel.reserve(ref.size());
+        for (size_t i = 0; i < ref.size(); ++i) {
+            const double d = std::fabs(static_cast<double>(got[i]) - ref[i]);
+            rel.push_back(std::fabs(ref[i]) > 0.0 ? d / std::fabs(ref[i]) : 0.0);
+        }
+        std::sort(rel.begin(), rel.end());
+        const double median = rel[rel.size() / 2];
+
+        // Measured ~1.1e-07..1.9e-07 on every good backend (Ooura, and vDSP at
+        // the skewed placement); 0.65 and worse on the 64-byte-aligned vDSP
+        // kernel. 1e-5 sits ~50x above the good case and orders below the bad
+        // one, so it discriminates without being brittle.
+        EXPECT_LT(median, 1e-5) << "N=" << n << ": the median bin is " << median
+                                << " away from the double-precision reference, i.e. most of this spectrum is wrong. "
+                                << "On Apple that is the signature of the 64-byte-aligned vDSP kernel — check "
+                                << "k_skew_bytes in fft.h and whether the SDK's dispatch rule has moved.";
+    }
+
+    INSTANTIATE_TEST_SUITE_P(CertifiedGeometries, fft_tonal_accuracy, ::testing::Values(512, 2048, 4096));
+
 } // namespace
