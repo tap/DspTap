@@ -1,0 +1,30 @@
+name: Apple vDSP reproducer (temporary)
+
+# TEMPORARY — delete once the Feedback report is filed and answered.
+# Runs tools/repro/vdsp_fft_alignment_repro.c on an Apple Silicon runner, so
+# the numbers quoted in the report come from the exact program Apple will
+# receive, on hardware that exhibits the dispatch. Intel Macs do not: both
+# placements are identical there, which is itself worth stating in the report.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['repro/**']
+
+jobs:
+  repro:
+    name: vDSP alignment accuracy (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host identity
+        run: |
+          sysctl -n machdep.cpu.brand_string
+          sysctl -n hw.model
+          sw_vers
+          cc --version | head -2
+      - name: Build and run
+        run: |
+          set -eu
+          cc -O2 -Wall tools/repro/vdsp_fft_alignment_repro.c -framework Accelerate -o /tmp/repro
+          /tmp/repro | tee -a "$GITHUB_STEP_SUMMARY"
