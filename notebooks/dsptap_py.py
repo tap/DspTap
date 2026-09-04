@@ -10,7 +10,8 @@ The C ABI (tools/capi/) wraps the *same* portable DSP headers the consuming
 libraries compile — so the notebooks exercise the real shipping code, not a
 Python re-implementation. Exposed primitives: the YIN pitch detector (`Yin`),
 the TD-PSOLA shifter (`Psola`), and the peak-locked phase-vocoder shifter
-(`Pvoc`, with optional LPC formant preservation).
+(`Pvoc`, with optional LPC formant preservation), the log-mel/PCEN feature
+front end (`LogMel`) and the fixed-ratio decimators to 16 kHz (`Decimator`).
 
 Copyright 2026 Timothy Place and the DspTap contributors. MIT License.
 """
@@ -78,6 +79,24 @@ def load() -> ctypes.CDLL:
         "dsptap_pvoc_set_formant":  ([vp, ctypes.c_int], ctypes.c_int),
         "dsptap_pvoc_clear":        ([vp], ctypes.c_int),
         "dsptap_pvoc_process":      ([vp, f64p, f64p, ctypes.c_int, ctypes.c_double], ctypes.c_int),
+        "dsptap_log_mel_create":    ([ctypes.c_double, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                      ctypes.c_double, ctypes.c_double, ctypes.c_int, ctypes.c_double], vp),
+        "dsptap_log_mel_destroy":   ([vp], None),
+        "dsptap_log_mel_set_log":   ([vp, ctypes.c_double, ctypes.c_double, ctypes.c_double], ctypes.c_int),
+        "dsptap_log_mel_set_pcen":  ([vp, ctypes.c_int, ctypes.c_double, ctypes.c_double, ctypes.c_double,
+                                      ctypes.c_double, ctypes.c_double], ctypes.c_int),
+        "dsptap_log_mel_reset":     ([vp], ctypes.c_int),
+        "dsptap_log_mel_bands":     ([vp], ctypes.c_int),
+        "dsptap_log_mel_latency":   ([vp], ctypes.c_int),
+        "dsptap_log_mel_contract_version": ([], ctypes.c_int),
+        "dsptap_log_mel_process":   ([vp, f64p, ctypes.c_int, f64p, ctypes.c_int], ctypes.c_int),
+        "dsptap_decimator_create":  ([ctypes.c_int, ctypes.c_int], vp),
+        "dsptap_decimator_destroy": ([vp], None),
+        "dsptap_decimator_taps":    ([vp], ctypes.c_int),
+        "dsptap_decimator_latency": ([vp], ctypes.c_int),
+        "dsptap_decimator_reset":   ([vp], ctypes.c_int),
+        "dsptap_decimator_outputs_for": ([vp, ctypes.c_int], ctypes.c_int),
+        "dsptap_decimator_process": ([vp, f64p, ctypes.c_int, f64p, ctypes.c_int], ctypes.c_int),
     }
     for name, (argtypes, restype) in sigs.items():
         fn = getattr(lib, name)
@@ -176,3 +195,95 @@ class Pvoc:
         _lib.dsptap_pvoc_process(self._h, x.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
                                  out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), x.size, ratio)
         return out
+
+
+class LogMel:
+    """tap::dsp::log_mel — the double-precision golden profile of the wake-word front end.
+
+    Defaults are the reference geometry (16 kHz, frame 400, hop 160, FFT 512, 40 HTK mel
+    bands 20-7600 Hz, periodic Hann). `pcen=True` switches the output to per-channel energy
+    normalization with the paper's defaults; pass a dict to override them.
+    """
+
+    def __init__(self, sample_rate: float = 16000.0, frame: int = 400, hop: int = 160, fft_size: int = 512,
+                 bands: int = 40, fmin_hz: float = 20.0, fmax_hz: float = 7600.0, sqrt_window: bool = False,
+                 preemphasis: float = 0.0, log: tuple[float, float, float] | None = None,
+                 pcen: bool | dict | None = None):
+        self._h = _lib.dsptap_log_mel_create(sample_rate, frame, hop, fft_size, bands, fmin_hz, fmax_hz,
+                                             int(sqrt_window), preemphasis)
+        if not self._h:
+            raise ValueError("bad log_mel geometry")
+        if log is not None:
+            if _lib.dsptap_log_mel_set_log(self._h, *log) != 0:
+                raise ValueError("bad log constants")
+        if pcen:
+            p = {"smoother": 0.025, "alpha": 0.98, "delta": 2.0, "power": 0.5, "epsilon": 1e-6}
+            if isinstance(pcen, dict):
+                p.update(pcen)
+            if _lib.dsptap_log_mel_set_pcen(self._h, 1, p["smoother"], p["alpha"], p["delta"], p["power"],
+                                            p["epsilon"]) != 0:
+                raise ValueError("bad PCEN parameters")
+        self.hop = hop
+
+    def __del__(self):
+        if getattr(self, "_h", None):
+            _lib.dsptap_log_mel_destroy(self._h)
+
+    @property
+    def bands(self) -> int:
+        return _lib.dsptap_log_mel_bands(self._h)
+
+    @property
+    def latency(self) -> int:
+        return _lib.dsptap_log_mel_latency(self._h)
+
+    @staticmethod
+    def contract_version() -> int:
+        return _lib.dsptap_log_mel_contract_version()
+
+    def reset(self) -> None:
+        _lib.dsptap_log_mel_reset(self._h)
+
+    def process(self, x: np.ndarray) -> np.ndarray:
+        """Features for every completed hop in x, shape (frames, bands); state carries over."""
+        x = _f64(x)
+        max_frames = x.size // self.hop + 1
+        out = np.zeros((max_frames, self.bands))
+        n = _lib.dsptap_log_mel_process(self._h, x.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), x.size,
+                                        out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), max_frames)
+        return out[:max(n, 0)]
+
+
+class Decimator:
+    """tap::dsp::basic_decimator<float, M> — 32/48/96 kHz to 16 kHz (the float golden model)."""
+
+    def __init__(self, ratio: int, transparent: bool = False):
+        self._h = _lib.dsptap_decimator_create(ratio, int(transparent))
+        if not self._h:
+            raise ValueError("ratio must be 2, 3 or 6")
+        self.ratio = ratio
+
+    def __del__(self):
+        if getattr(self, "_h", None):
+            _lib.dsptap_decimator_destroy(self._h)
+
+    @property
+    def taps(self) -> int:
+        return _lib.dsptap_decimator_taps(self._h)
+
+    @property
+    def latency(self) -> int:
+        """Group delay in input samples."""
+        return _lib.dsptap_decimator_latency(self._h)
+
+    def reset(self) -> None:
+        _lib.dsptap_decimator_reset(self._h)
+
+    def process(self, x: np.ndarray) -> np.ndarray:
+        x = _f64(x)
+        max_out = _lib.dsptap_decimator_outputs_for(self._h, x.size)
+        out = np.zeros(max(max_out, 0))
+        n = _lib.dsptap_decimator_process(self._h, x.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), x.size,
+                                          out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), out.size)
+        return out[:max(n, 0)]
+

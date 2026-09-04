@@ -4,7 +4,7 @@ Shared DSP primitives for the **Tap** family of audio libraries. Header-only,
 plain portable C++ (C++20, standard library only), no Max/Min or framework
 dependency — consumed as a git submodule by the individual libraries.
 
-Today it holds four primitives, plus the [FIR substrate](#the-fir-substrate) —
+Today it holds six primitives, plus the [FIR substrate](#the-fir-substrate) —
 the shared design-math / sample-format / kernel layer under SampleRateTap and
 RatioTap:
 
@@ -127,6 +127,68 @@ per analysis frame, with every relocated bin rescaled by
 At ratio 1 the correction is exactly unity, so the identity contract holds
 either way.
 
+## `tap::dsp::log_mel` — log-mel / PCEN feature front end
+
+`include/tap/dsp/log_mel.h` is the streaming analysis front end of a keyword
+spotter: windowed real FFT (on `tap::dsp::real_fft`, so the float profile
+rides the vDSP/CMSIS backends), power spectrum, triangular mel filterbank,
+then a floored affine `log10` or per-channel energy normalization (PCEN,
+Wang et al. 2017). The header owns the **formula-level** contract as
+numbers — HTK mel, unit-peak triangles, periodic Hann or sqrt-Hann, FFT
+zero-padded at the end of the frame, frame *t* ending at sample
+`(t+1)*hop - 1`, DC excluded, the PCEN recursion and its first-frame
+priming — and stamps it with `k_contract_version`. Everything a trainer
+tunes (band count, fmin/fmax, log floor/shift/scale, every PCEN parameter,
+pre-emphasis) is runtime geometry in `log_mel_geometry`, carried by a trained
+model, so retraining never touches the header. Reference geometry: 16 kHz,
+400 / 160 / 512, 40 bands 20–7600 Hz. Latency = the frame length.
+
+```cpp
+tap::dsp::log_mel_geometry g;          // the reference geometry
+g.pcen.enabled = true;                 // or leave the plain-log path
+tap::dsp::log_mel32 fe(g);             // float embedded profile; log_mel is the double golden model
+std::vector<float> feats(fe.frames_for(n) * fe.bands());
+size_t frames = fe.process(x, n, feats.data(), fe.frames_for(n));   // any chunking, same features
+```
+
+Pinned by `tests/test_log_mel.cpp` against the committed numpy restatement
+(`tools/reference/make_frontend_reference.py` → `tests/reference/frontend_vectors.h`,
+the only numpy copy of these formulas in the family — MuTap's KWS feature
+module imports it through the submodule): both paths sample-for-sample,
+chunking invariance, alignment and latency, the filterbank formulas, PCEN's
+gain tracking on a level step and its reset semantics, and float/double
+agreement as a measured number (6.7e-7 log, 5.3e-6 PCEN, pinned at 2×). No
+double arithmetic on the float path: the RP2350's Cortex-M33 has no FP64.
+
+## `tap::dsp::decimate` — fixed-ratio decimators to 16 kHz
+
+`include/tap/dsp/decimate.h` is the host-rate stage in front of the 16 kHz
+front end: `basic_decimator<Sample, M>` for M = 2, 3, 6 (32 / 48 / 96 kHz in),
+in RatioTap's pattern — ratio as a type, Kaiser-windowed sinc from
+`kaiser.h` with the cutoff at the output Nyquist and DC gain exactly 1,
+`fir_kernels.h`'s `dot_row` over the `sample_traits.h` formats (float golden,
+Q15 / Q31 with row-sum-preserving quantization). It is deliberately not
+RatioTap, whose charter is 44.1 ↔ 48 only; a 44.1 kHz host composes RatioTap's
+44.1 → 48 in front of the by-3 stage. Odd tap counts, integer group delay
+`(taps - 1) / 2`, one output as input `k*M` arrives.
+
+| profile     | stopband | passband | taps by 2 / 3 / 6 |
+|-------------|----------|----------|-------------------|
+| economy     |  70 dB   | 7000 Hz  |  81 / 121 / 239   |
+| transparent | 100 dB   | 7600 Hz  | 259 / 389 / 773   |
+
+```cpp
+tap::dsp::decimate_by_3 dec;                       // 48 kHz -> 16 kHz, economy, float
+std::vector<float> y(dec.outputs_for(n));
+dec.process(x, n, y.data());                       // noexcept, allocation-free, chunking-invariant
+```
+
+Pinned by `tests/test_decimate.cpp`: the tap counts against the searched
+minima, the float output sample-for-sample against the numpy reference,
+the passband and stopband numbers measured from the shipped coefficients,
+unity DC (exact in Q15), the group delay, and Q15 tracking float within the
+format's floor.
+
 ## The FIR substrate
 
 Five headers carried from **SampleRateTap** (where they design and run the
@@ -210,7 +272,9 @@ silently rests on a degraded instrument.
 
 `notebooks/pitchshift.ipynb` measures the three pitch primitives — driving the
 **actual shipping C++** through the C ABI in `tools/capi/` (ctypes bridge:
-`notebooks/dsptap_py.py`, which builds `build_capi/` on first import). It
+`notebooks/dsptap_py.py`, which builds `build_capi/` on first import; the
+bridge also exposes `LogMel` and `Decimator` for MuTap's keyword-spotting
+notebooks). It
 documents the two findings from the primitives' development: PSOLA's
 envelope-resampling nature (why it preserves formants *and* why a pure tone
 shifted an octave thins out), and the measured level collapse of naive
