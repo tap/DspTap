@@ -7,10 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **DspTap** — shared DSP primitives for the Tap family of audio libraries. Header-only, plain
 portable C++20 (standard library only, no frameworks), consumed as a git submodule by the
 individual libraries (TapTools pins it as `submodules/dsptap`; the AmbiTap/MuTap lineage is where
-the FFT came from). Six primitives today: the real FFT (`fft.h`), the YIN pitch detector
-(`yin.h`), two pitch shifters (`psola.h`, `pvoc.h`), and the wake-word front end —
+the FFT came from). Seven primitives today: the real FFT (`fft.h`), the YIN pitch detector
+(`yin.h`), two pitch shifters (`psola.h`, `pvoc.h`), the wake-word front end —
 the log-mel/PCEN feature extractor (`log_mel.h`) and the fixed-ratio decimators to
-16 kHz (`decimate.h`) — plus the FIR substrate carried from
+16 kHz (`decimate.h`) — and the dense/GRU inference kernels (`nn.h`) — plus the FIR substrate carried from
 SampleRateTap for the two rate converters (SampleRateTap, RatioTap): Kaiser prototype design
 (`kaiser.h`), the sample-format traits (`sample_traits.h`: float/Q15/Q31), the FIR dot kernels
 (`fir_kernels.h`), row-sum-preserving quantization (`quantize.h`), and the measurement

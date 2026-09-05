@@ -4,7 +4,7 @@ Shared DSP primitives for the **Tap** family of audio libraries. Header-only,
 plain portable C++ (C++20, standard library only), no Max/Min or framework
 dependency — consumed as a git submodule by the individual libraries.
 
-Today it holds six primitives, plus the [FIR substrate](#the-fir-substrate) —
+Today it holds seven primitives, plus the [FIR substrate](#the-fir-substrate) —
 the shared design-math / sample-format / kernel layer under SampleRateTap and
 RatioTap:
 
@@ -188,6 +188,37 @@ minima, the float output sample-for-sample against the numpy reference,
 the passband and stopband numbers measured from the shipped coefficients,
 unity DC (exact in Q15), the group delay, and Q15 tracking float within the
 format's floor.
+
+## `tap::dsp::nn` — dense and GRU inference kernels
+
+`include/tap/dsp/nn.h` is the arithmetic of a small recurrent gain network:
+`basic_dense<Sample>` (`y = act(W x + b)`, row-major `[out x in]`, linear /
+tanh / sigmoid) and `basic_gru<Sample>` (Cho et al. 2014 in PyTorch's
+`nn.GRU` convention, gates ordered r, z, n along the `3*hidden` axis). Lifted
+from MuTap's learned residual suppressor at its wake-word plan's M3; the
+keyword spotter is a different head on the same layers. Weights are stored
+as float32 whatever the profile, the storage precision of a trained model's
+file, and converted to `Sample` at the point of use; every dot product
+accumulates in `Sample` bias-first in ascending input order, so the float
+profile contains no double arithmetic. Weight vectors are moved in and
+owned (a copied layer is a deep copy); `apply()` / `step()` are noexcept and
+allocation-free. `k_contract_version` stamps the formulas.
+
+```cpp
+using namespace tap::dsp::nn;
+dense32 din(w_in, b_in, 64, 56, activation::tanh);     // float embedded profile; dense/gru are the double golden model
+gru32   cell(w_ih, w_hh, b_ih, b_hh, 96, 64);
+dense32 dout(w_out, b_out, 26, 96, activation::sigmoid);
+din.apply(features, hidden);  cell.step(hidden);  dout.apply(cell.state(), gains);
+```
+
+Pinned by `tests/test_nn.cpp`: the layout on hand-computed numbers, the
+activation forms, the gate order by isolating each block through its
+biases, the GRU formula against an independent long-double restatement
+that sums in the opposite order, reset and copy semantics, noexcept, and
+float-tracks-double as a measured number at the suppressor's geometry. The
+end-to-end oracle stays in MuTap: its Python parity CI job and its
+suppressor's cross-precision pin must be unchanged by the promotion.
 
 ## The FIR substrate
 

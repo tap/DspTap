@@ -27,6 +27,7 @@ add_executable(tap_dsp_tests
     test_fir_kernels.cpp
     test_kaiser.cpp
     test_log_mel.cpp
+    test_nn.cpp
     test_psola.cpp
     test_pvoc.cpp
     test_quantize.cpp
