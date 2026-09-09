@@ -152,13 +152,17 @@ size_t frames = fe.process(x, n, feats.data(), fe.frames_for(n));   // any chunk
 ```
 
 Pinned by `tests/test_log_mel.cpp` against the committed numpy restatement
-(`tools/reference/make_frontend_reference.py` → `tests/reference/frontend_vectors.h`,
-the only numpy copy of these formulas in the family — MuTap's KWS feature
-module imports it through the submodule): both paths sample-for-sample,
-chunking invariance, alignment and latency, the filterbank formulas, PCEN's
-gain tracking on a level step and its reset semantics, and float/double
-agreement as a measured number (6.7e-7 log, 5.3e-6 PCEN, pinned at 2×). No
-double arithmetic on the float path: the RP2350's Cortex-M33 has no FP64.
+(`tools/reference/make_frontend_reference.py` → `tests/reference/frontend_vectors.h`
+at the reference geometry and `frontend_vectors_tuned.h` at a geometry with
+every runtime field off its default; the script's `Geometry` mirrors
+`log_mel_geometry` field for field and is the only numpy copy of these
+formulas in the family — MuTap's KWS feature module imports it through the
+submodule for its parity self-check, and trains on the C++ front end through
+the C ABI): both paths sample-for-sample at both geometries, chunking
+invariance, alignment and latency, the filterbank formulas, PCEN's gain
+tracking on a level step and its reset semantics, and float/double agreement
+as a measured number (6.7e-7 log, 5.3e-6 PCEN, pinned at 2×). No double
+arithmetic on the float path: the RP2350's Cortex-M33 has no FP64.
 
 ## `tap::dsp::decimate` — fixed-ratio decimators to 16 kHz
 

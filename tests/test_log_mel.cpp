@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 
 #include "reference/frontend_vectors.h"
+#include "reference/frontend_vectors_tuned.h"
 #include "tap/dsp/log_mel.h"
 
 namespace {
@@ -96,6 +97,41 @@ namespace {
         return std::is_same_v<Sample, double> ? 1e-13 : 1.2e-5;
     }
 
+    // The generator's TUNED geometry — every runtime field off its default —
+    // read from its header so the two sides cannot drift.
+    log_mel_geometry tuned_geometry(bool pcen) {
+        log_mel_geometry g;
+        g.sample_rate  = frontend_ref::k_tuned_sample_rate;
+        g.frame        = frontend_ref::k_tuned_frame;
+        g.hop          = frontend_ref::k_tuned_hop;
+        g.fft_size     = frontend_ref::k_tuned_fft_size;
+        g.bands        = frontend_ref::k_tuned_bands;
+        g.fmin_hz      = frontend_ref::k_tuned_fmin_hz;
+        g.fmax_hz      = frontend_ref::k_tuned_fmax_hz;
+        g.window       = frontend_ref::k_tuned_sqrt_hann ? tap::dsp::mel_window::sqrt_hann : tap::dsp::mel_window::hann;
+        g.preemphasis  = frontend_ref::k_tuned_preemphasis;
+        g.log_floor    = frontend_ref::k_tuned_log_floor;
+        g.log_shift    = frontend_ref::k_tuned_log_shift;
+        g.log_scale    = frontend_ref::k_tuned_log_scale;
+        g.pcen.enabled = pcen;
+        g.pcen.smoother = frontend_ref::k_tuned_pcen_smoother;
+        g.pcen.alpha    = frontend_ref::k_tuned_pcen_alpha;
+        g.pcen.delta    = frontend_ref::k_tuned_pcen_delta;
+        g.pcen.power    = frontend_ref::k_tuned_pcen_power;
+        g.pcen.epsilon  = frontend_ref::k_tuned_pcen_epsilon;
+        return g;
+    }
+
+    // Measured 2026-09 at the tuned geometry (sqrt-Hann, pre-emphasis 0.97,
+    // 32 bands, hop 80, non-default log affine and PCEN), C++ vs numpy:
+    // double 2.4e-15 (log) / 7.1e-15 (PCEN), float 5.7e-7 / 1.5e-6. Float is
+    // pinned at 2x the worse path; double at 5e-14, which also covers the
+    // ~1e-14 by which a header regenerated on another numpy build moves.
+    template <typename Sample>
+    constexpr double tuned_tolerance() {
+        return std::is_same_v<Sample, double> ? 5e-14 : 3e-6;
+    }
+
     template <typename Sample>
     class log_mel_test : public ::testing::Test {};
     using profiles = ::testing::Types<float, double>;
@@ -123,6 +159,28 @@ namespace {
             worst = std::max(worst, std::abs(static_cast<double>(out[i]) - frontend_ref::k_mel_pcen[i]));
         }
         EXPECT_LT(worst, reference_tolerance<TypeParam>()) << "max |C++ - numpy| on the PCEN path";
+    }
+
+    TYPED_TEST(log_mel_test, MatchesNumpyReferenceLogPathAtTunedGeometry) {
+        basic_log_mel<TypeParam> fe{tuned_geometry(false)};
+        const auto               out = run(fe, as<TypeParam>(reference_signal()));
+        ASSERT_EQ(out.size(), frontend_ref::k_tuned_log.size());
+        double worst = 0.0;
+        for (size_t i = 0; i < out.size(); ++i) {
+            worst = std::max(worst, std::abs(static_cast<double>(out[i]) - frontend_ref::k_tuned_log[i]));
+        }
+        EXPECT_LT(worst, tuned_tolerance<TypeParam>()) << "max |C++ - numpy| on the log path, tuned geometry";
+    }
+
+    TYPED_TEST(log_mel_test, MatchesNumpyReferencePcenPathAtTunedGeometry) {
+        basic_log_mel<TypeParam> fe{tuned_geometry(true)};
+        const auto               out = run(fe, as<TypeParam>(reference_signal()));
+        ASSERT_EQ(out.size(), frontend_ref::k_tuned_pcen.size());
+        double worst = 0.0;
+        for (size_t i = 0; i < out.size(); ++i) {
+            worst = std::max(worst, std::abs(static_cast<double>(out[i]) - frontend_ref::k_tuned_pcen[i]));
+        }
+        EXPECT_LT(worst, tuned_tolerance<TypeParam>()) << "max |C++ - numpy| on the PCEN path, tuned geometry";
     }
 
     TYPED_TEST(log_mel_test, ChunkingNeverChangesAFeature) {
