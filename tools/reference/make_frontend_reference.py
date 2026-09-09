@@ -9,11 +9,30 @@ a second copy, so there is one source of truth for the feature *values* and
 one header for the *formulas* (the ownership rule in MuTap's wake-word plan,
 section 5).
 
-log_mel: the reference geometry (16 kHz, frame 400, hop 160, FFT 512, 40 HTK
-mel bands 20-7600 Hz, periodic Hann, no pre-emphasis) over a deterministic
-test signal that excites every band — six tones plus xorshift noise, with a
-+20 dB level step at the midpoint so PCEN's gain tracking is exercised. The
-expected features are emitted for the plain-log path and the PCEN path.
+log_mel: `Geometry` mirrors tap::dsp::log_mel_geometry field for field, so a
+consumer can hand one set of values to this reference and to the C++ engine
+(through the C ABI bridge) and compare; `features(x, g)` is what log_mel.h
+emits for x at geometry g. Two geometries are emitted over the same
+deterministic test signal — six tones plus xorshift noise, exciting every
+band, with a +20 dB level step at the midpoint so PCEN's gain tracking is
+exercised. `REFERENCE` (16 kHz, frame 400, hop 160, FFT 512, 40 HTK mel bands
+20-7600 Hz, periodic Hann, no pre-emphasis) goes to frontend_vectors.h, the
+M1 record; `TUNED`, every runtime field off its default, goes to
+frontend_vectors_tuned.h together with its geometry as constants, so the
+C++ <-> numpy parity is pinned away from the defaults as well as at them.
+Plain-log and PCEN paths are emitted for both.
+
+MuTap's tools/ml/kws/kws_features.py imports this module for its parity
+self-check and its band-support check only; training features come from the
+shipping C++ front end through the bridge (decided 8 September 2026).
+
+Reproducibility: the mel vectors are float64 numpy output, and another numpy
+build moves them at the last decimal place — measured 2026-09, numpy 2.5.3
+on macOS arm64 against the committed header: <= 1.4e-15 on the log path,
+<= 1.2e-14 on the PCEN path, the decimator vectors bit-identical — which the
+C++ pins at 1e-13 absorb. Commit a regenerated header only when a contract
+changes; a refactor of this script is checked by regenerating before and
+after it in one environment and diffing.
 
 decimate: for each ratio (2, 3, 6) and profile, the minimal odd tap count
 whose Kaiser design meets the profile's stopband spec with >= 1 dB margin on
@@ -23,16 +42,20 @@ deterministic xorshift noise, cast to float32 the way the float engine
 stores it.
 
 Run from the repo root:  python3 tools/reference/make_frontend_reference.py
-Re-run only when a contract changes; commit the regenerated header.
+(--which reference | tuned | all, default all). Re-run only when a contract
+changes; commit the regenerated headers.
 """
 from __future__ import annotations
 
+import argparse
+import dataclasses
 import pathlib
 
 import numpy as np
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUT = ROOT / "tests" / "reference" / "frontend_vectors.h"
+OUT_TUNED = ROOT / "tests" / "reference" / "frontend_vectors_tuned.h"
 
 # ---------------------------------------------------------------------------
 # Shared deterministic noise (xorshift32), identical to the C++ tests.
@@ -55,25 +78,61 @@ def xorshift32(count: int, seed: int) -> np.ndarray:
 # log_mel — formula-level contract (see include/tap/dsp/log_mel.h)
 # ---------------------------------------------------------------------------
 
-SR = 16000.0
-FRAME = 400
-HOP = 160
-FFT = 512
-BANDS = 40
-FMIN = 20.0
-FMAX = 7600.0
-LOG_FLOOR = 1e-10
-LOG_SHIFT = 5.0
-LOG_SCALE = 5.0
-PCEN_S = 0.025
-PCEN_ALPHA = 0.98
-PCEN_DELTA = 2.0
-PCEN_R = 0.5
-PCEN_EPS = 1e-6
+
+@dataclasses.dataclass(frozen=True)
+class Pcen:
+    """tap::dsp::pcen_params, field for field."""
+
+    enabled: bool = False
+    smoother: float = 0.025
+    alpha: float = 0.98
+    delta: float = 2.0
+    power: float = 0.5
+    epsilon: float = 1e-6
+
+
+@dataclasses.dataclass(frozen=True)
+class Geometry:
+    """tap::dsp::log_mel_geometry, field for field; window is "hann" or "sqrt_hann"."""
+
+    sample_rate: float = 16000.0
+    frame: int = 400
+    hop: int = 160
+    fft_size: int = 512
+    bands: int = 40
+    fmin_hz: float = 20.0
+    fmax_hz: float = 7600.0
+    window: str = "hann"
+    preemphasis: float = 0.0
+    log_floor: float = 1e-10
+    log_shift: float = 5.0
+    log_scale: float = 5.0
+    pcen: Pcen = Pcen()
+
+    def valid(self) -> bool:
+        """log_mel_geometry::valid(), restated."""
+        pow2 = self.fft_size >= 4 and (self.fft_size & (self.fft_size - 1)) == 0
+        p = self.pcen
+        return (self.sample_rate > 0.0 and self.hop >= 1 and self.frame >= self.hop and pow2
+                and self.fft_size >= self.frame and self.bands >= 1 and self.fmin_hz >= 0.0
+                and self.fmax_hz > self.fmin_hz and self.fmax_hz <= 0.5 * self.sample_rate
+                and self.log_floor > 0.0 and self.log_scale > 0.0 and self.window in ("hann", "sqrt_hann")
+                and 0.0 < p.smoother <= 1.0 and 0.0 <= p.alpha <= 1.0 and p.delta > 0.0
+                and 0.0 < p.power <= 1.0 and p.epsilon > 0.0)
+
+
+REFERENCE = Geometry()
+
+# Every runtime field off its default — frame/hop/FFT ratio, band count and
+# edges, sqrt-Hann, pre-emphasis, the log affine, every PCEN parameter — so
+# the parity pin at this geometry says something the default one does not.
+TUNED = Geometry(frame=320, hop=80, fft_size=512, bands=32, fmin_hz=50.0, fmax_hz=7000.0,
+                 window="sqrt_hann", preemphasis=0.97, log_floor=1e-8, log_shift=4.0, log_scale=4.0,
+                 pcen=Pcen(smoother=0.04, alpha=0.9, delta=1.0, power=0.4, epsilon=1e-5))
 
 TONES = [(150.0, 0.30), (440.0, 0.25), (1000.0, 0.20), (2500.0, 0.15), (4000.0, 0.10), (6500.0, 0.05)]
 NOISE_AMP = 0.02
-N_SAMPLES = 8000  # 0.5 s -> 50 frames
+N_SAMPLES = 8000  # 0.5 s -> 50 frames at the reference hop, 100 at the tuned one
 STEP_GAIN = 10.0  # +20 dB from the midpoint
 
 
@@ -86,7 +145,12 @@ def mel_to_hz(m: np.ndarray | float) -> np.ndarray | float:
 
 
 def mel_weights(sr: float, fft: int, bands: int, fmin: float, fmax: float) -> np.ndarray:
-    """Unit-peak triangles on the HTK mel scale; shape (bands, fft/2 + 1)."""
+    """Unit-peak triangles on the HTK mel scale; shape (bands, fft/2 + 1).
+
+    A band with no FFT bin inside it comes out all-zero here, and log_mel.h
+    zero-fills the same band silently: a consumer choosing a geometry asserts
+    that every row has a nonzero entry before trusting the features.
+    """
     edges = mel_to_hz(np.linspace(hz_to_mel(fmin), hz_to_mel(fmax), bands + 2))
     bins = np.arange(fft // 2 + 1) * sr / fft
     w = np.zeros((bands, bins.size))
@@ -98,46 +162,61 @@ def mel_weights(sr: float, fft: int, bands: int, fmin: float, fmax: float) -> np
     return w
 
 
+def window(g: Geometry = REFERENCE) -> np.ndarray:
+    """Periodic Hann over the frame, or its square root (log_mel.h build_window)."""
+    w = 0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(g.frame) / g.frame)
+    return np.sqrt(w) if g.window == "sqrt_hann" else w
+
+
 def test_signal() -> np.ndarray:
     n = np.arange(N_SAMPLES, dtype=np.float64)
     x = np.zeros(N_SAMPLES)
     for f, a in TONES:
-        x += a * np.sin(2.0 * np.pi * f * n / SR)
+        x += a * np.sin(2.0 * np.pi * f * n / REFERENCE.sample_rate)
     x += NOISE_AMP * xorshift32(N_SAMPLES, 0x2545F491)
     x[N_SAMPLES // 2:] *= STEP_GAIN
     return x
 
 
-def mel_energies(x: np.ndarray, preemph: float = 0.0) -> np.ndarray:
-    """Streaming-aligned mel band powers: frame t ends at sample (t+1)*hop."""
+def mel_energies(x: np.ndarray, g: Geometry = REFERENCE) -> np.ndarray:
+    """Streaming-aligned mel band powers: frame t ends at sample (t+1)*hop - 1."""
+    if not g.valid():
+        raise ValueError("invalid log_mel geometry")
     y = x.copy()
-    if preemph != 0.0:
-        y[1:] = x[1:] - preemph * x[:-1]
-    n_frames = y.size // HOP
-    win = 0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(FRAME) / FRAME)  # periodic Hann
-    w = mel_weights(SR, FFT, BANDS, FMIN, FMAX)
-    padded = np.concatenate([np.zeros(FRAME), y])
-    e = np.zeros((n_frames, BANDS))
+    if g.preemphasis != 0.0:
+        y[1:] = x[1:] - g.preemphasis * x[:-1]  # x[-1] = 0, as on the stream
+    n_frames = y.size // g.hop
+    win = window(g)
+    w = mel_weights(g.sample_rate, g.fft_size, g.bands, g.fmin_hz, g.fmax_hz)
+    padded = np.concatenate([np.zeros(g.frame), y])
+    e = np.zeros((n_frames, g.bands))
     for t in range(n_frames):
-        end = FRAME + (t + 1) * HOP
-        seg = padded[end - FRAME:end] * win
-        spec = np.fft.rfft(seg, n=FFT)  # zero-padded at the end of the frame
+        end = g.frame + (t + 1) * g.hop
+        seg = padded[end - g.frame:end] * win
+        spec = np.fft.rfft(seg, n=g.fft_size)  # zero-padded at the end of the frame
         power = spec.real ** 2 + spec.imag ** 2
         e[t] = w @ power
     return e
 
 
-def log_features(e: np.ndarray) -> np.ndarray:
-    return (np.log10(e + LOG_FLOOR) + LOG_SHIFT) / LOG_SCALE
+def log_features(e: np.ndarray, g: Geometry = REFERENCE) -> np.ndarray:
+    return (np.log10(e + g.log_floor) + g.log_shift) / g.log_scale
 
 
-def pcen_features(e: np.ndarray) -> np.ndarray:
+def pcen_features(e: np.ndarray, g: Geometry = REFERENCE) -> np.ndarray:
+    p = g.pcen
     out = np.zeros_like(e)
     m = e[0].copy()  # initial smoother state: the first frame's energy
     for t in range(e.shape[0]):
-        m = (1.0 - PCEN_S) * m + PCEN_S * e[t]
-        out[t] = (e[t] / (PCEN_EPS + m) ** PCEN_ALPHA + PCEN_DELTA) ** PCEN_R - PCEN_DELTA ** PCEN_R
+        m = (1.0 - p.smoother) * m + p.smoother * e[t]
+        out[t] = (e[t] / (p.epsilon + m) ** p.alpha + p.delta) ** p.power - p.delta ** p.power
     return out
+
+
+def features(x: np.ndarray, g: Geometry = REFERENCE) -> np.ndarray:
+    """What log_mel.h emits for x at g: the PCEN path if g.pcen.enabled, else plain log."""
+    e = mel_energies(x, g)
+    return pcen_features(e, g) if g.pcen.enabled else log_features(e, g)
 
 
 # ---------------------------------------------------------------------------
@@ -223,28 +302,39 @@ def fmt_array(name: str, values: np.ndarray, ctype: str) -> str:
     return f"    inline constexpr std::array<{ctype}, {flat.size}> {name} = {{\n{body}\n    }};\n"
 
 
-def main() -> None:
+HEADER = [
+    "// Generated by tools/reference/make_frontend_reference.py — DO NOT EDIT.",
+    "// Independent golden reference (numpy float64) for log_mel.h and decimate.h;",
+    "// see that script for the contracts it restates and the tolerance arguments.",
+    "// SPDX-License-Identifier: MIT",
+    "// Copyright 2026 Timothy Place and the DspTap contributors.",
+    "// NOLINTBEGIN(readability-identifier-naming)",
+    "#pragma once",
+    "",
+    "#include <array>",
+    "#include <cstddef>",
+    "",
+    "namespace frontend_ref {",
+    "",
+]
+FOOTER = ["} // namespace frontend_ref", "// NOLINTEND(readability-identifier-naming)"]
+
+
+def write(path: pathlib.Path, parts: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(HEADER + parts + FOOTER) + "\n")
+    print(f"wrote {path.relative_to(ROOT)}")
+
+
+def emit_reference() -> None:
     x = test_signal()
     e = mel_energies(x)
     log_ref = log_features(e)
     pcen_ref = pcen_features(e)
 
     parts = [
-        "// Generated by tools/reference/make_frontend_reference.py — DO NOT EDIT.",
-        "// Independent golden reference (numpy float64) for log_mel.h and decimate.h;",
-        "// see that script for the contracts it restates and the tolerance arguments.",
-        "// SPDX-License-Identifier: MIT",
-        "// Copyright 2026 Timothy Place and the DspTap contributors.",
-        "// NOLINTBEGIN(readability-identifier-naming)",
-        "#pragma once",
-        "",
-        "#include <array>",
-        "#include <cstddef>",
-        "",
-        "namespace frontend_ref {",
-        "",
         f"    inline constexpr std::size_t k_mel_frames = {log_ref.shape[0]};",
-        f"    inline constexpr std::size_t k_mel_bands  = {BANDS};",
+        f"    inline constexpr std::size_t k_mel_bands  = {REFERENCE.bands};",
         "",
         fmt_array("k_mel_log", log_ref, "double"),
         fmt_array("k_mel_pcen", pcen_ref, "double"),
@@ -260,11 +350,53 @@ def main() -> None:
             print(f"{pname:12s} ratio {ratio}: taps {taps}, outputs {y.size}")
             parts.append(f"    inline constexpr std::size_t k_dec_taps_{pname}_{ratio} = {taps};")
             parts.append(fmt_array(f"k_dec_{pname}_{ratio}", y.astype(np.float32), "float"))
-    parts.append("} // namespace frontend_ref")
-    parts.append("// NOLINTEND(readability-identifier-naming)")
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text("\n".join(parts) + "\n")
-    print(f"wrote {OUT.relative_to(ROOT)}")
+    write(OUT, parts)
+
+
+def emit_tuned() -> None:
+    g = TUNED
+    x = test_signal()
+    e = mel_energies(x, g)
+    log_ref = log_features(e, g)
+    pcen_ref = pcen_features(e, g)
+    sqrt_hann = "true" if g.window == "sqrt_hann" else "false"
+    parts = [
+        "    // TUNED geometry, every runtime field off its default; the C++ test",
+        "    // builds its log_mel_geometry from these so the two sides cannot drift.",
+        f"    inline constexpr double      k_tuned_sample_rate   = {g.sample_rate!r};",
+        f"    inline constexpr std::size_t k_tuned_frame         = {g.frame};",
+        f"    inline constexpr std::size_t k_tuned_hop           = {g.hop};",
+        f"    inline constexpr std::size_t k_tuned_fft_size      = {g.fft_size};",
+        f"    inline constexpr std::size_t k_tuned_bands         = {g.bands};",
+        f"    inline constexpr double      k_tuned_fmin_hz       = {g.fmin_hz!r};",
+        f"    inline constexpr double      k_tuned_fmax_hz       = {g.fmax_hz!r};",
+        f"    inline constexpr bool        k_tuned_sqrt_hann     = {sqrt_hann};",
+        f"    inline constexpr double      k_tuned_preemphasis   = {g.preemphasis!r};",
+        f"    inline constexpr double      k_tuned_log_floor     = {g.log_floor!r};",
+        f"    inline constexpr double      k_tuned_log_shift     = {g.log_shift!r};",
+        f"    inline constexpr double      k_tuned_log_scale     = {g.log_scale!r};",
+        f"    inline constexpr double      k_tuned_pcen_smoother = {g.pcen.smoother!r};",
+        f"    inline constexpr double      k_tuned_pcen_alpha    = {g.pcen.alpha!r};",
+        f"    inline constexpr double      k_tuned_pcen_delta    = {g.pcen.delta!r};",
+        f"    inline constexpr double      k_tuned_pcen_power    = {g.pcen.power!r};",
+        f"    inline constexpr double      k_tuned_pcen_epsilon  = {g.pcen.epsilon!r};",
+        f"    inline constexpr std::size_t k_tuned_frames        = {log_ref.shape[0]};",
+        "",
+        fmt_array("k_tuned_log", log_ref, "double"),
+        fmt_array("k_tuned_pcen", pcen_ref, "double"),
+    ]
+    write(OUT_TUNED, parts)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--which", choices=("all", "reference", "tuned"), default="all",
+                    help="which header(s) to regenerate (default: all)")
+    args = ap.parse_args()
+    if args.which in ("all", "reference"):
+        emit_reference()
+    if args.which in ("all", "tuned"):
+        emit_tuned()
 
 
 if __name__ == "__main__":
