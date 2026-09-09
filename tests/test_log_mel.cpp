@@ -123,13 +123,16 @@ namespace {
     }
 
     // Measured 2026-09 at the tuned geometry (sqrt-Hann, pre-emphasis 0.97,
-    // 32 bands, hop 80, non-default log affine and PCEN), C++ vs numpy:
-    // double 2.4e-15 (log) / 7.1e-15 (PCEN), float 5.7e-7 / 1.5e-6. Float is
-    // pinned at 2x the worse path; double at 5e-14, which also covers the
-    // ~1e-14 by which a header regenerated on another numpy build moves.
+    // 32 bands, hop 80, non-default log affine and PCEN), C++ vs the numpy
+    // vectors generated on macOS arm64: double 2.4e-15 (log) / 7.1e-15 (PCEN)
+    // on macOS arm64 (Apple clang contracts to FMA) but 6.8e-14 / 1.5e-13 on
+    // Linux GCC x86-64 (no FMA); float 5.7e-7 / 1.5e-6. Float is pinned at
+    // 2x the worse path; double at 5e-13, ~3x the worse platform, which also
+    // covers the ~1e-14 by which a header regenerated on another numpy build
+    // moves. A formula drift shows up at 1e-6 or worse, so the pin still bites.
     template <typename Sample>
     constexpr double tuned_tolerance() {
-        return std::is_same_v<Sample, double> ? 5e-14 : 3e-6;
+        return std::is_same_v<Sample, double> ? 5e-13 : 3e-6;
     }
 
     template <typename Sample>
