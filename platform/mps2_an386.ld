@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright 2025-2026 Timothy Place and the DspTap contributors. */
 /* Linker script for the Arm MPS2 AN386 FPGA image (Cortex-M4) as modeled by
  * QEMU's mps2-an386 machine. Armv7E-M: VTOR resets to 0, so the vector table
  * goes at the base of SSRAM1. QEMU's -kernel loader places the ELF directly

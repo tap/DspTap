@@ -1,10 +1,13 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright 2025-2026 Timothy Place and the DspTap contributors. */
 /* Linker script for the Arm MPS2+ AN505 FPGA image (Cortex-M33) as modeled
  * by QEMU's mps2-an505 machine. The board boots secure with the initial
  * vector table at the secure alias 0x1000_0000, so everything is placed in
  * the secure aliases. QEMU's -kernel loader places the ELF directly into
  * RAM (VMA == LMA, no load-time copy).
- * Ported from RatioTap's platform tree (shared embedded story), which
- * ported it from SampleRateTap's.
+ * Copied from MuTap's platform/mps2_an505.ld at 142361b (2026-09-17); MuTap
+ * ported it from RatioTap's platform tree, which ported it from
+ * SampleRateTap's. See platform/README.md for which copy is canonical.
  *
  * Memory map (QEMU model, secure aliases):
  *   SSRAM1   4 MB @ 0x10000000  - vector table + code + rodata

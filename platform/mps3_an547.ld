@@ -1,6 +1,11 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright 2025-2026 Timothy Place and the DspTap contributors. */
 /* Linker script for the Arm MPS3 AN547 FPGA image (Cortex-M55) as modeled
  * by QEMU's mps3-an547 machine. The ELF is loaded directly into RAM by
  * QEMU's -kernel loader, so .data needs no load-time copy (VMA == LMA).
+ * Copied from MuTap's platform/mps3_an547.ld at 142361b (2026-09-17), itself
+ * ported from SampleRateTap's. See platform/README.md for which copy is
+ * canonical.
  *
  * Memory map (QEMU model):
  *   ITCM   512 KB @ 0x00000000  - vector table (VTOR resets to 0)

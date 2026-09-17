@@ -332,8 +332,10 @@ CI also runs an emulation-sized selection of the battery
 FPU flavour selected by `-DTAP_DSP_M4_FPU=ON`), `cortex-m33`
 (`cmake/arm-cortex-m33-mps2.cmake`) and `cortex-m55`
 (`cmake/arm-cortex-m55-mps3.cmake`, where the CMSIS-DSP Helium FFT backend is
-ON and its parity suite runs against Ooura). To run one locally, with
-`arm-none-eabi-g++` and `qemu-system-arm` on `PATH`:
+ON and its parity suite runs against Ooura). Every suite compiled into a test
+executable runs on the target unless excluded by name in
+`tests/CMakeLists.txt` (a negative filter; each exclusion is a budget note).
+To run one locally, with `arm-none-eabi-g++` and `qemu-system-arm` on `PATH`:
 
 ```sh
 cmake -S . -B build-m33 -DCMAKE_BUILD_TYPE=MinSizeRel \

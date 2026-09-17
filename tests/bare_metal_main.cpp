@@ -1,77 +1,66 @@
-// Test runner main for the bare-metal emulated targets (Cortex-M4 soft-float
-// and M4F on qemu mps2-an386, Cortex-M33 on mps2-an505, Cortex-M55 on
-// mps3-an547): there is no argv on the target, so the emulation-appropriate
-// selection is baked in. This is a POSITIVE filter — a suite is on the target
-// because it is named here, never by default.
-//
-// Selected:
-//   - every float32 typed suite (/0 in sample_types order): real_fft, yin,
-//     psola, pvoc, log_mel, nn — the embedded profile these legs exist for;
-//   - the double real_fft contract suite (/1) and RealFftCrossPrecision: small
-//     N, and on the M4/M33 legs a soft-float double correctness check;
-//   - the FFT backend suites (parity, alignment stability, tonal accuracy):
-//     Ooura-vs-Ooura identity on the M4/M33 legs, and on the M55 leg the
-//     first place the CMSIS-DSP Helium backend actually runs against Ooura;
-//   - the fir_kernels typed suite over float/Q15/Q31 — the SMLALD dual-MAC
-//     path is compiled and run for the first time (both M4 and M33 define
-//     __ARM_FEATURE_DSP) — plus the sample_traits and quantize batteries;
-//   - the decimate battery (float and Q15 profiles; the numpy pins are
-//     compiled-in arrays, no filesystem needed);
-//   - every float-tracks-double oracle check (each costs one double instance
-//     at a small geometry);
-//   - the cheap Kaiser design tests and the sine-fit instrument floors.
-//
-// Excluded: the double-typed psola/pvoc/yin/log_mel/nn suites (target-
-// independent math already covered on every host, and soft-float double on
-// three of the four legs), the double Kaiser prototype searches (~0.7 s of
-// double on a desktop host, i.e. minutes of soft-float emulation) and the
-// double multitone instrument fits.
-//
-// Budget: under 5 minutes of emulation per leg. The whole hosted battery is
-// ~1.4 s on a desktop core; the selection here drops most of the double
-// work. Measured on the first CI run (QEMU 8.2.2, GCC 13.2.1, MinSizeRel,
-// 114 tests): cortex-m4-softfp 88 s, cortex-m4f 62 s, cortex-m33 97 s,
-// cortex-m55 14 s (hardware FP64 there; soft-float double on the others).
-// ctest prints the current number as the wall time of tap_dsp_tests_emulated.
 // SPDX-License-Identifier: MIT
 // Copyright 2025-2026 Timothy Place and the DspTap contributors.
+//
+// One-shot gtest main for the bare-metal emulated targets (Cortex-M4 soft-float
+// and M4F on qemu mps2-an386, Cortex-M33 on mps2-an505, Cortex-M55 on
+// mps3-an547). tap_dsp_add_gtest_executable() in tests/CMakeLists.txt links
+// this into every test executable when TAP_DSP_BARE_METAL is set. There is no
+// argv on the target, so the selection is baked in at build time:
+//
+//   TAP_DSP_BARE_METAL_FILTER  the gtest filter (the helper's MAIN_FILTER);
+//                              unset means "*": everything in the binary runs.
+//
+// The filter is NEGATIVE by policy (docs/audit-fft-and-code-smells.md, Part
+// 13): a suite compiled into a test executable runs on the target unless it is
+// excluded by name, and every exclusion is a written budget decision next to
+// the source list. The positive filter this file had first would have silently
+// dropped every suite added afterwards, and no count check can tell an
+// omission from a small suite.
+//
+// Completion contract, read by CTest (see the PASS/FAIL regular expressions in
+// tests/CMakeLists.txt):
+//   TAP_DSP_TESTS_COMPLETE rc=<n> selected=<n> skipped=<n>
+// printed only if the run reached the end, so a crash after gtest's own summary
+// cannot register as a pass. rc is 1 when any test failed, when nothing was
+// selected (a filter typo must not pass green), and when any test was skipped:
+// gtest 1.14 cannot fail on GTEST_SKIP by itself, and a skipped gate is not a
+// passed gate — exclude the test by name in the filter, or compile it out,
+// instead of skipping at run time. A fault before this line prints
+// TAP_DSP_TESTS_FAULT from platform/cortexm_startup.c and exits, which CTest
+// also treats as failure.
+//
+// Budget: under 5 minutes of emulation per leg. The measured wall time of each
+// leg is in its CI job log (ctest -V, test tap_dsp_tests_emulated); it moves by
+// +-50 % between identical runs on shared runners (TCG wall is noise), so it
+// is a budget signal, never a number to pin. Instruction counts (Stage 1b) are
+// the ratchet.
 #include <cstdio>
 
 #include <gtest/gtest.h>
 
+#ifndef TAP_DSP_BARE_METAL_FILTER
+#define TAP_DSP_BARE_METAL_FILTER "*"
+#endif
+
 int main() {
-    // Typed-suite naming: /0 = float, /1 = double (sample_types order);
-    // fir_kernels_test/0,1,2 = float, int16 (Q15), int32 (Q31).
-    ::testing::GTEST_FLAG(filter) = "real_fft_test/0.*:real_fft_test/1.*:RealFftCrossPrecision.*:RealFftFloatIO.*:"
-                                    "CertifiedGeometries/fft_backend_parity.*:"
-                                    "CertifiedGeometries/fft_alignment_stability.*:"
-                                    "CertifiedGeometries/fft_tonal_accuracy.*:"
-                                    "fir_kernels_test/*.*:SampleTraits.*:Quantize.*:"
-                                    "Kaiser.BesselI0ReferenceValues:Kaiser.BetaReferenceValues:"
-                                    "Kaiser.TapEstimateMatchesHarrisFormula:Kaiser.CompensatedBranchSumsAreUniform:"
-                                    "Kaiser.SolveDenseSolvesKnownSystem:"
-                                    "SineAnalysis.*:"
-                                    "Decimate.*:"
-                                    "log_mel_test/0.*:LogMelCrossPrecision.*:"
-                                    "nn_test/0.*:NnCrossPrecision.*:"
-                                    "yin_test/0.*:yin_cross_precision.*:"
-                                    "psola_test/0.*:psola_cross_precision.*:"
-                                    "pvoc_test/0.*:pvoc_cross_precision.*";
+    ::testing::GTEST_FLAG(filter) = TAP_DSP_BARE_METAL_FILTER;
     ::testing::InitGoogleTest();
-    const int rc = RUN_ALL_TESTS();
-    // A filter typo selects zero tests and RUN_ALL_TESTS() returns 0 — an
-    // empty run must not pass green. Checked after the run because gtest
-    // only applies the filter inside RUN_ALL_TESTS. The on-target selection
-    // is ~100 tests; 60 leaves headroom for legitimate removals without
-    // masking a typo.
-    const int selected = ::testing::UnitTest::GetInstance()->test_to_run_count();
-    if (selected < 60) {
-        std::printf("only %d tests selected (expected >= 60): filter is broken\n", selected);
-        std::printf("TAP_DSP_TESTS_COMPLETE rc=1\n");
-        return 1;
+    int rc = RUN_ALL_TESTS();
+    // gtest applies the filter inside RUN_ALL_TESTS, so the counts are read
+    // afterwards.
+    const ::testing::UnitTest* const unit     = ::testing::UnitTest::GetInstance();
+    const int                        selected = unit->test_to_run_count();
+    const int                        skipped  = unit->skipped_test_count();
+    if (selected == 0) {
+        std::printf("no tests selected: filter \"%s\" is broken\n", TAP_DSP_BARE_METAL_FILTER);
+        rc = 1;
     }
-    // CTest's pass criterion: printed only if we get all the way here, so a
-    // crash after gtest's summary cannot register as a pass.
-    std::printf("TAP_DSP_TESTS_COMPLETE rc=%d\n", rc);
+    if (skipped > 0) {
+        std::printf("%d test(s) skipped: a skipped gate is a failed gate on the target; "
+                    "exclude it in MAIN_FILTER or compile it out\n",
+                    skipped);
+        rc = 1;
+    }
+    std::printf("TAP_DSP_TESTS_COMPLETE rc=%d selected=%d skipped=%d\n", rc, selected, skipped);
     return rc;
 }

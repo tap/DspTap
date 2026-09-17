@@ -23,7 +23,11 @@ set(CMAKE_CXX_COMPILER arm-none-eabi-g++)
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 
 set(CMAKE_C_FLAGS_INIT "-mcpu=cortex-m55 -mthumb -mfloat-abi=hard -ffunction-sections -fdata-sections")
-set(CMAKE_CXX_FLAGS_INIT "${CMAKE_C_FLAGS_INIT}")
+# -Wno-psabi: GCC otherwise emits ~26 informational "parameter passing for
+# argument of type 'std::span<...>' changed in GCC 7.1" notes per leg, which
+# -Werror cannot catch and which bury a real warning; the ABI note is moot in
+# a single-toolchain static image.
+set(CMAKE_CXX_FLAGS_INIT "${CMAKE_C_FLAGS_INIT} -Wno-psabi")
 
 get_filename_component(_tap_dsp_platform "${CMAKE_CURRENT_LIST_DIR}/../platform" ABSOLUTE)
 # The startup .c is handed to the link line directly; the gcc driver
@@ -41,6 +45,12 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+
+# Largest transform the Stage 2a Ooura parity suite runs on this leg
+# (tests/CMakeLists.txt reads it as a cache default): the plan's "parity at
+# N <= 4096" on emulated targets, and what fits the data region (2^20 needs
+# five 8 MB buffers). A plain cache set, so -D on the command line still wins.
+set(TAP_DSP_PARITY_MAX_N 4096 CACHE STRING "Largest FFT size the Ooura parity suite runs on this leg")
 
 # Switches the test harness to one-shot mode: a single registered CTest test
 # running the whole (emulation-sized) suite, judged by gtest's summary text

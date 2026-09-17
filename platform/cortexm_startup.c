@@ -7,6 +7,9 @@
  *   - FPU/MVE coprocessor enable before any FP instruction executes
  *   - .bss zeroing (QEMU's ELF loader already placed .data)
  *   - semihosting stdio (librdimon), C++ static constructors, main, exit
+ *   - fault handlers that print TAP_DSP_TESTS_FAULT over semihosting and
+ *     exit, so a fault fails the CTest run in seconds with a diagnostic
+ *     instead of parking until the timeout
  *   - deterministic _sbrk over the linker-defined heap region (overrides
  *     librdimon's weak version, whose limit depends on the semihosting
  *     SYS_HEAPINFO call returning sensible values for this board)
@@ -26,12 +29,14 @@
  */
 // SPDX-License-Identifier: MIT
 // Copyright 2025-2026 Timothy Place and the DspTap contributors.
-// Ported from MuTap's platform/armv8m_startup.c, itself ported from
-// SampleRateTap's (same license); generalized here to Armv7E-M as well.
+// Copied from MuTap's platform/armv8m_startup.c at 142361b (2026-09-17), itself
+// ported from SampleRateTap's (same license); generalized here to Armv7E-M and
+// given the fault-exit path. See platform/README.md for which copy is canonical.
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <unistd.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -64,56 +69,58 @@ void* _sbrk(ptrdiff_t increment) {
     return prev;
 }
 
-static inline uint32_t irqLock(void) {
+static inline uint32_t irq_lock(void) {
     uint32_t primask;
     __asm volatile("mrs %0, PRIMASK\n cpsid i" : "=r"(primask)::"memory");
     return primask;
 }
 
-static inline void irqRestore(uint32_t primask) {
+static inline void irq_restore(uint32_t primask) {
     __asm volatile("msr PRIMASK, %0" ::"r"(primask) : "memory");
 }
 
 uint64_t __atomic_load_8(const volatile void* ptr, int memorder) {
     (void)memorder;
-    const uint32_t m = irqLock();
+    const uint32_t m = irq_lock();
     const uint64_t v = *(const volatile uint64_t*)ptr;
-    irqRestore(m);
+    irq_restore(m);
     return v;
 }
 
 void __atomic_store_8(volatile void* ptr, uint64_t value, int memorder) {
     (void)memorder;
-    const uint32_t m         = irqLock();
+    const uint32_t m         = irq_lock();
     *(volatile uint64_t*)ptr = value;
-    irqRestore(m);
+    irq_restore(m);
 }
 
 uint64_t __atomic_fetch_add_8(volatile void* ptr, uint64_t value, int memorder) {
     (void)memorder;
-    const uint32_t m         = irqLock();
+    const uint32_t m         = irq_lock();
     const uint64_t prev      = *(volatile uint64_t*)ptr;
     *(volatile uint64_t*)ptr = prev + value;
-    irqRestore(m);
+    irq_restore(m);
     return prev;
 }
 
 uint64_t __atomic_exchange_8(volatile void* ptr, uint64_t value, int memorder) {
     (void)memorder;
-    const uint32_t m         = irqLock();
+    const uint32_t m         = irq_lock();
     const uint64_t prev      = *(volatile uint64_t*)ptr;
     *(volatile uint64_t*)ptr = value;
-    irqRestore(m);
+    irq_restore(m);
     return prev;
 }
 
 void Reset_Handler(void) {
-#if defined(__ARM_ARCH_8M_MAIN__)
+#if defined(__ARM_ARCH_8M_MAIN__) || defined(__ARM_ARCH_8_1M_MAIN__)
     /* MSPLIM exists on Armv8-M Mainline only (M33/M55): a main-stack
      * overflow past __stack_limit raises a fault instead of silently
-     * corrupting whatever sits below the stack. Armv7E-M (M4) has no such
-     * register — its linker script still defines __stack_limit so the
-     * symbol layout is identical, but nothing enforces it. */
+     * corrupting whatever sits below the stack. GCC defines
+     * __ARM_ARCH_8M_MAIN__ for both cores; clang spells the M55's Armv8.1-M
+     * as __ARM_ARCH_8_1M_MAIN__. Armv7E-M (M4) has no such register — its
+     * linker script still defines __stack_limit so the symbol layout is
+     * identical, but nothing enforces it. */
     __asm volatile("msr msplim, %0" ::"r"(&__stack_limit));
 #else
     (void)&__stack_limit;
@@ -133,18 +140,52 @@ void Reset_Handler(void) {
     exit(main(0, (char**)0));
 }
 
-void Default_Handler(void) {
-    for (;;) {
-        /* Faults park here; the test harness times out and fails the run. */
+/* Fault path. Print a marker CTest treats as failure
+ * (FAIL_REGULAR_EXPRESSION in tests/CMakeLists.txt) together with the active
+ * exception number from IPSR, then leave through semihosting SYS_EXIT
+ * (_exit), so a fault costs seconds rather than the test TIMEOUT and leaves a
+ * diagnostic in the log. write(2) is unbuffered and needs no stdio state; the
+ * buffer is static so the handler itself touches almost no stack (an MSPLIM
+ * overflow has none to give). Define TAP_DSP_FAULT_BKPT to stop in a
+ * debugger first. */
+static void fault_exit(const char* what) {
+    static char buf[64];
+    uint32_t    ipsr;
+    __asm volatile("mrs %0, ipsr" : "=r"(ipsr));
+    size_t n = 0;
+    for (const char* p = "TAP_DSP_TESTS_FAULT "; *p != '\0'; ++p) {
+        buf[n++] = *p;
     }
+    for (const char* p = what; *p != '\0'; ++p) {
+        buf[n++] = *p;
+    }
+    for (const char* p = " ipsr="; *p != '\0'; ++p) {
+        buf[n++] = *p;
+    }
+    char     digits[10];
+    size_t   nd = 0;
+    uint32_t v  = ipsr & 0x1FFu;
+    do {
+        digits[nd++] = (char)('0' + (v % 10u));
+        v /= 10u;
+    } while (v != 0u);
+    while (nd > 0) {
+        buf[n++] = digits[--nd];
+    }
+    buf[n++] = '\n';
+#ifdef TAP_DSP_FAULT_BKPT
+    __asm volatile("bkpt #0");
+#endif
+    (void)write(2, buf, n);
+    _exit(2);
+}
+
+void Default_Handler(void) {
+    fault_exit("unexpected exception");
 }
 
 void HardFault_Handler(void) {
-    /* Distinct park loop so a HardFault (e.g. MSPLIM violation escalation)
-     * is distinguishable from other parked vectors under a debugger. */
-    __asm volatile("bkpt #0");
-    for (;;) {
-    }
+    fault_exit("HardFault");
 }
 
 __attribute__((section(".vectors"), used)) static const uintptr_t vectors[16] = {
