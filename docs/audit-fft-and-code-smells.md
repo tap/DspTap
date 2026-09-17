@@ -893,6 +893,45 @@ MIT); a later taphouse-style consolidation is the right home, out of scope here.
 
 ---
 
+## Part 12 — Parallelization: what a swarm can and cannot do here
+
+### What serializes
+- **The port is one hand.** Bit identity depends on statement-for-statement fidelity across
+  ~2,580 lines; two agents transliterating different function groups produce two conventions
+  in one file, and the parity test reports failure without location. One agent ports; a
+  second writes the parity target, the oracle and the fp-contract flag handling *first*, so the
+  porter works test-first against a red suite.
+- **The critical path is linear**: Stage 1 embedded legs → 2a → 2b → 2c → 4. Each step's gate is
+  a CI run; the development container has neither the Arm toolchain nor QEMU, so agents write
+  those stages and only CI proves them. Every such PR needs a watcher agent driving it to green.
+- **Contention files**: `fft.h`, root and tests `CMakeLists.txt`, `.github/workflows/ci.yml`,
+  `README.md`. One named owner per shared file per wave; the bench workflow lives in its own
+  `bench.yml` so Stage 1b does not collide with the CI-legs owner.
+- **Consumer bumps are serial by the rollout rule** (DspTap squash → MuTap pin+code → MuTap-Max
+  pin), and the fingerprint harness runs once per bump.
+
+### Waves
+| Wave | Parallel work items (one agent each) | Depends on |
+|---|---|---|
+| 1 | Stage 0 counter bug · Stage 1 MuTap (flag typo, filter, fingerprint harness) · Stage 1 DspTap (platform files, M4/M33 toolchains, one-shot harness, four-job matrix) · Stage 1b scaffold (scenarios vs the C, plugin, script, `bench.yml`) · Stage 2a tests written first against the C · Stage 3a substrate · Stage 5 spectrum view · licensing/NOTICE + `docs/fft-design.md` skeleton · capi + notebook FFT exposure for the current profiles | nothing |
+| 2 | Stage 2a port (one agent, test-first against wave 1's suite) · Stage 3b fixed-point kernel (one agent) + its Part 9 battery (partner agent, test-first; may start in wave 1 on a branch stacked on 3a) · Stage 1b baselines seeded once the QEMU legs are green | wave 1 merged |
+| 3 | Stage 2b flip + ratchet · Stage 2c removal · Stage 3b merge · Stage 3c instruments/capi/notebook for fixed point | wave 2 |
+| 4 | Stage 4 engine parameter + ABI tag · Stage 6 hygiene · measured numbers into docs · MuTap/MuTap-Max bumps (serial) | wave 3 |
+
+Roughly fifteen serial PRs become four waves; the port and the fixed-point kernel are the two
+long poles and neither shortens with more agents.
+
+### Rules for a swarm on this repo
+- Every agent runs the hosted build and `ctest` with `-DTAP_DSP_WERROR=ON` before pushing;
+  embedded and bench legs are proven by CI, and the agent that opened the PR watches it.
+- Two hostile reviewers per PR before merge (numerics, and process/downstream), as was done
+  for this plan; findings are verified against source before being acted on.
+- No agent edits a contention file it does not own in the current wave; needed changes go to
+  the owner as a request.
+- Merge order inside a wave follows the table's left-to-right order to minimize rebase churn.
+
+---
+
 ## Decisions (revision 3)
 
 **D1. `double` becomes a sample format. Settled.** `sample_traits<double>` with
