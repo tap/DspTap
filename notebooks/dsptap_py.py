@@ -111,7 +111,12 @@ def load() -> ctypes.CDLL:
         "dsptap_decimator_process": ([vp, f64p, ctypes.c_int, f64p, ctypes.c_int], ctypes.c_int),
     }
     for name, (argtypes, restype) in sigs.items():
-        fn = getattr(lib, name)
+        try:
+            fn = getattr(lib, name)
+        except AttributeError as e:
+            raise RuntimeError(
+                f"{_lib_path()} lacks {name}: build_capi/ is older than tools/capi/dsptap_capi.h. "
+                "Delete build_capi/ and import again (it rebuilds on first import).") from e
         fn.argtypes = argtypes
         fn.restype = restype
     return lib
@@ -147,13 +152,15 @@ class RealFFT:
     _DTYPES = {0: np.float64, 1: np.float32, 2: np.int16, 3: np.int32}
 
     def __init__(self, size: int, profile: str | int = "double"):
-        code = self.PROFILES[profile] if isinstance(profile, str) else int(profile)
+        code = self.PROFILES.get(profile) if isinstance(profile, str) else profile
+        if code not in self.PROFILES.values():
+            raise ValueError(f"profile must be one of {sorted(self.PROFILES)} "
+                             f"(or the codes {sorted(self.PROFILES.values())}), not {profile!r}")
         self._h = _lib.dsptap_fft_create(size, code)
         if not self._h:
             if code in (2, 3):
                 raise NotImplementedError("the Q15/Q31 FFT profiles land at Stage 3c")
-            raise ValueError("size must be a power of two >= 4 and profile one of "
-                             f"{sorted(self.PROFILES)}")
+            raise ValueError(f"size must be a power of two >= 4, not {size!r}")
         self.size = size
         self.profile = next(k for k, v in self.PROFILES.items() if v == code)
         self.dtype = np.dtype(self._DTYPES[code])
@@ -176,7 +183,7 @@ class RealFFT:
         """Packed spectrum (float64, length n) of n real samples; the float profile rounds x to
         float32 at the boundary."""
         x = _f64(x)
-        assert x.size == self.size
+        self._check_len(x)
         out = np.empty_like(x)
         _lib.dsptap_fft_forward(self._h, x.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
                                 out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)))
@@ -185,7 +192,7 @@ class RealFFT:
     def inverse(self, packed: np.ndarray) -> np.ndarray:
         """Normalized inverse (scaled by 2/n): inverse(forward(x)) reproduces x."""
         packed = _f64(packed)
-        assert packed.size == self.size
+        self._check_len(packed)
         out = np.empty_like(packed)
         _lib.dsptap_fft_inverse(self._h, packed.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
                                 out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)))
@@ -204,9 +211,14 @@ class RealFFT:
         _lib.dsptap_fft_inverse_inplace_raw(self._h, data.ctypes.data_as(ctypes.c_void_p))
         return data
 
+    def _check_len(self, a: np.ndarray) -> None:
+        if a.ndim != 1 or a.size != self.size:
+            raise ValueError(f"expected a 1-D array of length {self.size}, got shape {a.shape}")
+
     def _check_raw(self, data: np.ndarray) -> None:
-        if data.dtype != self.dtype or data.size != self.size or not data.flags.c_contiguous:
-            raise TypeError(f"raw buffers must be contiguous {self.dtype} of length {self.size}")
+        if (not isinstance(data, np.ndarray) or data.dtype != self.dtype or data.ndim != 1
+                or data.size != self.size or not data.flags.c_contiguous or not data.flags.writeable):
+            raise TypeError(f"raw buffers must be 1-D, contiguous, writeable {self.dtype} of length {self.size}")
 
     @staticmethod
     def unpack(packed: np.ndarray) -> np.ndarray:

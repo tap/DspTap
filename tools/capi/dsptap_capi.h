@@ -22,8 +22,12 @@ extern "C" {
 #define DSPTAP_API __attribute__((visibility("default")))
 #endif
 
-/// The newer entry points promise not to throw across the C boundary (they catch and return the
-/// error code); a C translation unit sees nothing.
+/// The FFT entry points are declared noexcept: dsptap_fft_create catches and returns NULL; the
+/// others call the header's noexcept transforms and plain copy loops and cannot throw (if that
+/// ever changed they would std::terminate rather than return -1). A C translation unit sees
+/// nothing. The older entry points predate this and are not annotated; making the whole ABI
+/// uniform (typed opaque handles, exception safety, no allocation in process) is Stage 6 hygiene
+/// in docs/audit-fft-and-code-smells.md.
 #ifdef __cplusplus
 #define DSPTAP_NOEXCEPT noexcept
 #else
@@ -72,16 +76,24 @@ DSPTAP_API const char* dsptap_fft_backend(void) DSPTAP_NOEXCEPT;
 /// header's contract (fft.h): out[0] = DC, out[1] = Nyquist (both real), out[2k] + i*out[2k+1]
 /// = bin k for 1 <= k < size/2, with W = exp(+2*pi*i/size) — CONJUGATE to the engineering
 /// convention numpy.fft.rfft uses.
+///
+/// Fixed point (Stage 3c, forward-looking so it extends rather than reinterprets): the Q15 and
+/// Q31 profiles convert at this boundary as x / 2^15 and x / 2^31 (full scale = 1.0) on the way
+/// in and the inverse on the way out, with the profile's fixed scaling policy; the block-
+/// floating-point policy and its per-transform exponent arrive through a separate create
+/// variant and a separate raw-path entry point, not through a change to these signatures.
 DSPTAP_API int dsptap_fft_forward(dsptap_fft h, const double* in, double* out) DSPTAP_NOEXCEPT;
 /// Inverse of dsptap_fft_forward, scaled by 2/size like basic_real_fft::inverse() so
 /// forward -> inverse reproduces the input. `out` may alias `in`.
 DSPTAP_API int dsptap_fft_inverse(dsptap_fft h, const double* in, double* out) DSPTAP_NOEXCEPT;
 
 /// In-place transforms on the profile's NATIVE sample type: `data` points at size() samples of
-/// dsptap_fft_sample_bytes() each (double for DOUBLE, float for FLOAT), in the same packing.
-/// These are the header's forward_inplace()/inverse_inplace() with no conversion at all, so the
-/// notebooks measure the embedded profile's own arithmetic rather than a double round trip. The
-/// inverse is UNSCALED (multiply by 2/size for a round trip), exactly as in fft.h.
+/// dsptap_fft_sample_bytes() each (double for DOUBLE, float for FLOAT), in the same packing,
+/// and must be aligned for that type (a double* or float* the caller obtained as such; not an
+/// offset into a byte buffer). These are the header's forward_inplace()/inverse_inplace() with
+/// no conversion at all, so the notebooks measure the embedded profile's own arithmetic rather
+/// than a double round trip. The inverse is UNSCALED (multiply by 2/size for a round trip),
+/// exactly as in fft.h.
 DSPTAP_API int dsptap_fft_forward_inplace_raw(dsptap_fft h, void* data) DSPTAP_NOEXCEPT;
 DSPTAP_API int dsptap_fft_inverse_inplace_raw(dsptap_fft h, void* data) DSPTAP_NOEXCEPT;
 
