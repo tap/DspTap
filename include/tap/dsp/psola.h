@@ -31,6 +31,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <type_traits>
 #include <vector>
 
@@ -55,6 +56,15 @@ namespace tap::dsp {
     ///     spacing, the Hann windows sum to exactly one, and the output is the
     ///     input delayed by latency() (plus interpolation error) — pinned by
     ///     the test battery.
+    ///   - Run time is unbounded: the sample clock is a fixed-width 32-bit
+    ///     count bounded below 2 * clock_wrap() (a multiple of the ring size),
+    ///     so no counter overflows on any target. The contract is that bound,
+    ///     not an observable. The wrap moves the fractional mark positions in
+    ///     magnitude only, so from 2 * clock_wrap() samples on (at most 2^19,
+    ///     10.9 s at 48 kHz; 519,552 samples for max_period 900) the output
+    ///     diverges from an unbounded-clock reference at the ~1e-8 relative
+    ///     level (measured 3.8e-9 absolute in double and one float ulp in
+    ///     float, against a 0.35 peak). Pinned by the test battery.
     template <typename Sample>
     class basic_psola {
         static_assert(std::is_same_v<Sample, float> || std::is_same_v<Sample, double>,
@@ -65,17 +75,23 @@ namespace tap::dsp {
         static constexpr Sample k_min_ratio  = Sample(0.25);
         static constexpr Sample k_max_ratio  = Sample(4);
 
-        /// @pre max_period >= 16 — the deepest period process() will be given.
+        /// @pre 16 <= max_period < 2^26 — the deepest period process() will be
+        /// given; the upper bound keeps 2 * clock_wrap() and every grain position
+        /// inside the int32 sample clock.
         explicit basic_psola(size_t max_period)
             : m_max_period(static_cast<Sample>(max_period))
             , m_latency(2 * max_period + 2) {
             assert(max_period >= 16);
+            assert(max_period < (size_t{1} << 26)); // see @pre
+            // One ring size serves both buffers; the clock wrap relies on that.
             // Input history: a grain reaches back to (mark - period) and marks lag the
             // input cursor by up to two periods -> three periods of history plus slack.
-            m_input.assign(4 * max_period + 8, Sample(0));
             // Output accumulator: emission lags by latency(); grains extend up to one
             // period past their mark -> latency + period ahead of the emit cursor.
-            m_accum.assign(4 * max_period + 8, Sample(0));
+            const size_t ring = 4 * max_period + 8;
+            m_input.assign(ring, Sample(0));
+            m_accum.assign(ring, Sample(0));
+            m_wrap = static_cast<std::int32_t>(ring * std::max<size_t>(1, static_cast<size_t>(k_clock_span) / ring));
             clear();
         }
 
@@ -83,6 +99,11 @@ namespace tap::dsp {
         size_t latency() const noexcept { return m_latency; }
 
         size_t max_period() const noexcept { return static_cast<size_t>(m_max_period); }
+
+        /// Period of the sample clock's wrap, in samples: the largest multiple of
+        /// the ring size not above 2^18 (or one ring, if the ring is larger). The
+        /// clock first wraps at 2 * clock_wrap() and every clock_wrap() after.
+        size_t clock_wrap() const noexcept { return static_cast<size_t>(m_wrap); }
 
         /// Zero all running state (buffers, marks, counters).
         void clear() noexcept {
@@ -102,7 +123,7 @@ namespace tap::dsp {
             const double r = std::clamp(static_cast<double>(ratio), static_cast<double>(k_min_ratio),
                                         static_cast<double>(k_max_ratio));
 
-            m_input[static_cast<size_t>(m_n % static_cast<long>(m_input.size()))] = in;
+            m_input[static_cast<size_t>(m_n % static_cast<std::int32_t>(m_input.size()))] = in;
 
             // Analysis marks: free-running, one per source period.
             const double now = static_cast<double>(m_n);
@@ -134,17 +155,50 @@ namespace tap::dsp {
 
             // Emit, then release the slot for reuse.
             Sample y = Sample(0);
-            if (m_n >= static_cast<long>(m_latency)) {
-                const size_t slot =
-                    static_cast<size_t>((m_n - static_cast<long>(m_latency)) % static_cast<long>(m_accum.size()));
-                y             = m_accum[slot];
-                m_accum[slot] = Sample(0);
+            if (m_n >= static_cast<std::int32_t>(m_latency)) {
+                const size_t slot = static_cast<size_t>((m_n - static_cast<std::int32_t>(m_latency))
+                                                        % static_cast<std::int32_t>(m_accum.size()));
+                y                 = m_accum[slot];
+                m_accum[slot]     = Sample(0);
             }
             ++m_n;
+            if (m_n >= 2 * m_wrap) {
+                shift_clock(-m_wrap);
+            }
             return y;
         }
 
+        /// Testing seam: advance the sample clock by `samples` (rounded down to a
+        /// multiple of the ring size) as if that many samples had elapsed with the
+        /// ring contents unchanged, wrapping the clock exactly as process() does.
+        /// Lets a test cross the wrap, or an elapsed count past 2^31, in O(1)
+        /// instead of processing that many samples. Fractional mark positions that
+        /// are not multiples of the new magnitude's ulp may round by that ulp.
+        /// Not a contract point; may change or disappear without a version note.
+        void advance_clock_for_testing(std::uint64_t samples) noexcept {
+            const std::uint64_t ring   = m_input.size();
+            const std::uint64_t wrap   = static_cast<std::uint64_t>(m_wrap);
+            const std::uint64_t target = static_cast<std::uint64_t>(m_n) + (samples / ring) * ring;
+            const std::uint64_t folded = (target < wrap) ? target : wrap + (target - wrap) % wrap;
+            shift_clock(static_cast<std::int32_t>(folded) - m_n);
+        }
+
       private:
+        /// Move the clock and every absolute position by `by` samples, a multiple of
+        /// the ring size, so every ring index is unchanged. process() calls it with
+        /// -m_wrap when the clock reaches 2 * m_wrap; m_wrap is at least one ring, so
+        /// the clock stays at or above latency() and the warm-up guard stays true.
+        /// That subtraction is exact in double: m_wrap is an integer, hence a
+        /// multiple of every position's ulp, and the result's magnitude does not
+        /// exceed the position's.
+        void shift_clock(std::int32_t by) noexcept {
+            const double d = static_cast<double>(by);
+            m_n += by;
+            m_next_mark += d;
+            m_prev_mark += d;
+            m_next_synth += d;
+        }
+
         /// Overlap-add one Hann grain: output slots o in [s - t, s + t] receive the
         /// source at m + (o - s), read with Hermite interpolation (s is fractional).
         void place_grain(double s, double m, double t, Sample gain) noexcept {
@@ -181,12 +235,22 @@ namespace tap::dsp {
 
         static constexpr double k_pi = 3.14159265358979323846;
 
+        /// Span of the sample clock: clock_wrap() is the largest multiple of the
+        /// ring size not above this (or one ring, if the ring is larger). The
+        /// value is arbitrary within (longest test run, 2^29): 2^18 keeps every
+        /// position below 2^19 + 5 * max_period, i.e. with at least 33 fractional
+        /// bits, and wraps every 5.4 s at 48 kHz (first at 10.9 s) so the wrap
+        /// path is exercised routinely rather than once a shift. Not a contract
+        /// point; the tests pin clock_wrap() <= 2^18 as a literal.
+        static constexpr std::int32_t k_clock_span = std::int32_t{1} << 18;
+
         Sample m_max_period;
         size_t m_latency;
 
         std::vector<Sample> m_input;
         std::vector<Sample> m_accum;
-        long                m_n{0};
+        std::int32_t        m_n{0};    // sample clock, in [0, 2 * m_wrap); see shift_clock()
+        std::int32_t        m_wrap{0}; // clock wrap period: a multiple of the ring size
         double              m_next_mark{0.0};
         double              m_prev_mark{0.0};
         bool                m_have_mark{false};

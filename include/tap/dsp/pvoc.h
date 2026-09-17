@@ -35,6 +35,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <type_traits>
 #include <vector>
 
@@ -48,6 +49,12 @@ namespace tap::dsp {
     /// Geometry (FFT size, 4x overlap) is fixed at construction and every
     /// buffer is allocated there; process() is noexcept and allocation-free,
     /// safe on a real-time audio thread. Latency is exactly latency() samples.
+    /// Run time is unbounded: the sample clock is a fixed-width 32-bit count
+    /// bounded below 2 * clock_wrap() (the overlap-add ring, 3 * fft_size, a
+    /// multiple of the input ring and the hop), so no counter overflows on any
+    /// target; the contract is that bound, not an observable. The wrap changes
+    /// no index and no value, so the output is bit-identical across it (pinned
+    /// by the test battery).
     /// At ratio == 1 every region's bin offset and residual are zero, so the
     /// output reconstructs the input's waveform delayed by exactly one FFT
     /// frame (pinned by the test battery).
@@ -75,13 +82,15 @@ namespace tap::dsp {
         static constexpr double k_env_floor = 1e-6; // |A| guard when inverting the envelope
         static constexpr double k_max_boost = 16.0; // per-bin formant-correction gain cap
 
-        /// @pre fft_size is a power of two, >= 64.
+        /// @pre fft_size is a power of two in [64, 2^28]; the upper bound keeps
+        /// 6 * fft_size inside the int32 sample clock.
         explicit basic_pvoc(size_t fft_size = 1024)
             : m_n_size(static_cast<int>(fft_size))
             , m_hop(static_cast<int>(fft_size) / k_overlap)
             , m_bins(static_cast<int>(fft_size) / 2 + 1)
             , m_fft(fft_size) {
             assert(fft_size >= 64 && (fft_size & (fft_size - 1)) == 0);
+            assert(fft_size <= (size_t{1} << 28)); // see @pre
 
             m_window.assign(static_cast<size_t>(m_n_size), Sample(0));
             for (int i = 0; i < m_n_size; ++i) {
@@ -130,6 +139,10 @@ namespace tap::dsp {
         void set_formant(bool on) noexcept { m_formant = on; }
         bool formant() const noexcept { return m_formant; }
 
+        /// Period of the sample clock's wrap, in samples: the overlap-add ring.
+        /// The clock first wraps at 2 * clock_wrap() and every clock_wrap() after.
+        size_t clock_wrap() const noexcept { return m_accum.size(); }
+
         /// Zero all running state (buffers, phases, counters).
         void clear() noexcept {
             std::fill(m_input.begin(), m_input.end(), Sample(0));
@@ -141,31 +154,51 @@ namespace tap::dsp {
 
         /// Consume one input sample; produce the output sample for time n - latency().
         Sample process(Sample in, Sample ratio) noexcept {
-            const long in_size = static_cast<long>(m_input.size());
-            const long an      = static_cast<long>(m_accum.size());
+            const std::int32_t in_size = static_cast<std::int32_t>(m_input.size());
+            const std::int32_t an      = static_cast<std::int32_t>(m_accum.size());
 
             m_input[static_cast<size_t>(m_n % in_size)] = in;
 
-            if ((m_n + 1) % m_hop == 0 && m_n + 1 >= static_cast<long>(m_n_size)) {
+            if ((m_n + 1) % m_hop == 0 && m_n + 1 >= m_n_size) {
                 const double r = std::clamp(static_cast<double>(ratio), static_cast<double>(k_min_ratio),
                                             static_cast<double>(k_max_ratio));
                 run_frame(r);
             }
 
             Sample y = Sample(0);
-            if (m_n >= static_cast<long>(m_n_size)) {
-                const size_t slot = static_cast<size_t>((m_n - static_cast<long>(m_n_size)) % an);
+            if (m_n >= m_n_size) {
+                const size_t slot = static_cast<size_t>((m_n - m_n_size) % an);
                 y                 = m_accum[slot];
                 m_accum[slot]     = Sample(0);
             }
             ++m_n;
+            // Sample clock: runs in [0, 2 * an). Pulling it back by an — a multiple
+            // of the input ring and of the hop — leaves every ring index and the
+            // frame schedule unchanged, keeps it at or above the warm-up guards
+            // (an >= m_n_size), and bounds it forever without a 64-bit division.
+            if (m_n >= 2 * an) {
+                m_n -= an;
+            }
             return y;
+        }
+
+        /// Testing seam: advance the sample clock by `samples` (rounded down to a
+        /// multiple of clock_wrap()) as if that many samples had elapsed with the
+        /// ring contents unchanged, wrapping the clock exactly as process() does.
+        /// Lets a test cross an elapsed count past 2^31 in O(1) instead of
+        /// processing that many samples. Not a contract point; may change or
+        /// disappear without a version note.
+        void advance_clock_for_testing(std::uint64_t samples) noexcept {
+            const std::uint64_t wrap   = m_accum.size();
+            const std::uint64_t target = static_cast<std::uint64_t>(m_n) + (samples / wrap) * wrap;
+            const std::uint64_t folded = (target < wrap) ? target : wrap + (target - wrap) % wrap;
+            m_n                        = static_cast<std::int32_t>(folded);
         }
 
       private:
         void run_frame(double r) noexcept {
-            const long in_size = static_cast<long>(m_input.size());
-            const long start   = m_n + 1 - static_cast<long>(m_n_size);
+            const std::int32_t in_size = static_cast<std::int32_t>(m_input.size());
+            const std::int32_t start   = m_n + 1 - m_n_size;
 
             // analysis: window the newest N samples and transform
             for (int i = 0; i < m_n_size; ++i) {
@@ -271,8 +304,8 @@ namespace tap::dsp {
 
             // synthesis window + COLA-normalized overlap-add (fold in the raw
             // inverse's 2/N normalization here, one multiply per sample)
-            const long   an   = static_cast<long>(m_accum.size());
-            const Sample norm = m_cola_norm * (Sample(2) / static_cast<Sample>(m_n_size));
+            const std::int32_t an   = static_cast<std::int32_t>(m_accum.size());
+            const Sample       norm = m_cola_norm * (Sample(2) / static_cast<Sample>(m_n_size));
             for (int i = 0; i < m_n_size; ++i) {
                 const size_t slot = static_cast<size_t>((start + i) % an);
                 m_accum[slot] += m_synth[static_cast<size_t>(i)] * m_window[static_cast<size_t>(i)] * norm;
@@ -362,7 +395,7 @@ namespace tap::dsp {
         std::vector<double> m_lpc_tmp;
         std::vector<double> m_env;
         bool                m_formant{false};
-        long                m_n{0};
+        std::int32_t        m_n{0}; // sample clock, in [0, 2 * m_accum.size()); see process()
     };
 
     /// Double-precision shifter — the desktop/golden-model profile.
