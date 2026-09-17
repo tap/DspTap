@@ -1,5 +1,5 @@
-# Standalone C ABI over the DspTap primitives (yin, psola, pvoc), used by the verification
-# notebooks in ../../notebooks via ctypes. Builds on its own:
+# Standalone C ABI over the DspTap primitives (fft, yin, psola, pvoc, log_mel, decimate), used
+# by the verification notebooks in ../../notebooks via ctypes. Builds on its own:
 #
 #     cmake -B build_capi -S tools/capi
 #     cmake --build build_capi
@@ -11,7 +11,7 @@ project(dsptap_capi CXX)
 
 add_library(dsptap_capi SHARED dsptap_capi.cpp)
 
-# pvoc pulls the shared real FFT (tap::dsp). When this builds as part of the DspTap project the
+# The FFT entry points and pvoc pull the shared real FFT (tap::dsp). When this builds as part of the DspTap project the
 # target already exists; standalone, pull the repo root in directly.
 if (NOT TARGET tap::dsp)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../.. ${CMAKE_CURRENT_BINARY_DIR}/dsptap)

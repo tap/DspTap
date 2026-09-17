@@ -305,16 +305,30 @@ silently rests on a degraded instrument.
 
 ## Notebooks
 
-`notebooks/pitchshift.ipynb` measures the three pitch primitives — driving the
-**actual shipping C++** through the C ABI in `tools/capi/` (ctypes bridge:
-`notebooks/dsptap_py.py`, which builds `build_capi/` on first import; the
-bridge also exposes `LogMel` and `Decimator` for MuTap's keyword-spotting
-notebooks). It
+The notebooks drive the **actual shipping C++** through the C ABI in
+`tools/capi/` (ctypes bridge: `notebooks/dsptap_py.py`, which builds
+`build_capi/` on first import; the bridge also exposes `LogMel` and
+`Decimator` for MuTap's keyword-spotting notebooks). They are committed
+executed; re-execute with
+`jupyter nbconvert --to notebook --execute --inplace notebooks/<name>.ipynb`
+when a primitive's behavior changes.
+
+`notebooks/pitchshift.ipynb` measures the three pitch primitives. It
 documents the two findings from the primitives' development: PSOLA's
 envelope-resampling nature (why it preserves formants *and* why a pure tone
 shifted an octave thins out), and the measured level collapse of naive
 phase-vocoder bin remapping vs the shipping peak-locked design — plus the LPC
 formant-preservation demo.
+
+`notebooks/fft.ipynb` measures the real FFT through `dsptap_py.RealFFT`
+(profiles `"double"` and `"float"`; `unpack`/`pack` convert the header's
+packed exp(+i) layout to and from `numpy.fft.rfft`'s convention): the packing
+and sign contract against numpy, the float32 profile's per-bin error against
+the double golden model vs N — on the profile's own arithmetic via the raw
+in-place entry points, not a double round trip — and the round-trip error of
+both profiles. Its fixed-point section (Q15/Q31 noise floors under Welch's
+model) is a designed placeholder until Stage 3b/3c of
+`docs/audit-fft-and-code-smells.md` lands.
 
 ## Build
 
