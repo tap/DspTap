@@ -1,0 +1,279 @@
+name: Bench
+
+# Deterministic instruction-count ratchet (bench/README.md). Wall clock on a
+# shared runner is noise; executed guest instructions under QEMU's TCG plugin
+# are exact, so a hard two-sided gate (+-3 %) is safe here. One job per
+# baseline key in bench/baselines.json:
+#
+#   m4-softfp  Cortex-M4, -mfloat-abi=soft   (mps2-an386)  Ooura float32
+#   m4f        Cortex-M4F, fpv4-sp-d16       (mps2-an386)  Ooura float32
+#   m33        Cortex-M33, no MVE            (mps2-an505)  Ooura float32
+#   m55        Cortex-M55, Helium            (mps3-an547)  CMSIS-DSP (deployed profile)
+#   m55-ooura  Cortex-M55, TAP_DSP_FFT_CMSIS=OFF (mps3-an547)  Ooura float32 fallback
+#
+# Toolchain files come from the Stage 1 CI-legs PR (cmake/arm-cortex-m4-mps2.cmake
+# with TAP_DSP_M4_FPU, cmake/arm-cortex-m33-mps2.cmake, cmake/arm-cortex-m55-mps3.cmake);
+# the float32 test legs themselves live in ci.yml. This workflow owns only the
+# ratchet and the size report.
+#
+# Modes, decided per key by the "Baselines state" step:
+#   compare  the key has baselines: gate at +-3 %, two-sided. The normal case.
+#   seed     the key is empty AND this is a push to main or a workflow_dispatch:
+#            run icount.py --update, print the counts, upload baselines-<key>.
+#            seed-summary merges the per-key files; the seeding commit copies
+#            the merged file into bench/baselines.json and records that main
+#            run's URL and SHA plus the GCC/QEMU versions in bench/README.md.
+#   refuse   the key is empty on a pull_request: FAIL with the seeding
+#            instructions. Seeding from a PR would be a gate bypass (empty the
+#            key, go green), so it is never allowed; and a PR that empties a key
+#            its base branch had seeded fails in the state step itself.
+# Every run, in every mode, uploads measured-<key> (the counts as JSON) so a
+# new scenario's number is "run CI, copy, commit", never typed in.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# The expensive workflow: five QEMU jobs. One run per ref at a time.
+concurrency:
+  group: bench-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  icount-ratchet:
+    name: icount ${{ matrix.key }}
+    # Pinned to 24.04, not -latest: the plugin header below is pinned to the
+    # QEMU this image ships (8.2.x), digest-verified.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # TAP_DSP_FFT_CMSIS defaults ON for every bare-metal Arm profile
+          # (root CMakeLists.txt), so every non-Helium key pins it OFF here
+          # explicitly, whatever its toolchain file also does.
+          #
+          # text_ceiling: the .text byte ceiling for the MinSizeRel
+          # tap_dsp_size_probe_rfft_f32_512 on this key (bench/README.md,
+          # "Sizes"). 0 = not yet recorded: the step prints the figure and
+          # does not gate. The seeding commit sets the numbers.
+          - key: m4-softfp
+            toolchain: cmake/arm-cortex-m4-mps2.cmake
+            flags: -DTAP_DSP_M4_FPU=OFF -DTAP_DSP_FFT_CMSIS=OFF
+            text_ceiling: 0
+          - key: m4f
+            toolchain: cmake/arm-cortex-m4-mps2.cmake
+            flags: -DTAP_DSP_M4_FPU=ON -DTAP_DSP_FFT_CMSIS=OFF
+            text_ceiling: 0
+          - key: m33
+            toolchain: cmake/arm-cortex-m33-mps2.cmake
+            flags: -DTAP_DSP_FFT_CMSIS=OFF
+            text_ceiling: 0
+          - key: m55
+            toolchain: cmake/arm-cortex-m55-mps3.cmake
+            flags: ""
+            text_ceiling: 0
+          - key: m55-ooura
+            toolchain: cmake/arm-cortex-m55-mps3.cmake
+            flags: -DTAP_DSP_FFT_CMSIS=OFF
+            text_ceiling: 0
+    env:
+      # Commit the tag pointed at when pinned (tags are movable; commit SHAs
+      # are not); the header's digest is verified on download. This SHA is
+      # QEMU v8.2.2, matching ubuntu-24.04's qemu-system-arm. That header
+      # defines QEMU_PLUGIN_VERSION 1 (plugin API v1; the plugin declares
+      # whatever the header says). Same pin as MuTap's icount-ratchet job.
+      # The header is GPL-2.0-or-later, fetched here only to build a CI tool
+      # that is never shipped (tools/qemu_insn_plugin/insn_count.c).
+      QEMU_PLUGIN_HEADER_URL: https://raw.githubusercontent.com/qemu/qemu/11aa0b1ff115b86160c4d37e7c37e6a6b13b77ea/include/qemu/qemu-plugin.h
+      QEMU_PLUGIN_HEADER_SHA256: "c53a2af163e80e3f4bc6c60dbdfc84003db329d757e37cd8a16a77e1d82606ff"
+      PLUGIN: /tmp/libinsncount.so
+      BUILD_DIR: build-${{ matrix.key }}
+      SIZE_DIR: build-${{ matrix.key }}-minsizerel
+      KEY: ${{ matrix.key }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Arm toolchain and QEMU
+        run: >
+          sudo apt-get update -q &&
+          sudo apt-get install -y -q gcc-arm-none-eabi qemu-system-arm
+          libglib2.0-dev pkg-config
+
+      # These versions go into bench/README.md next to the numbers when a key
+      # is seeded or re-recorded; the counts are only comparable within a
+      # toolchain/QEMU pair.
+      - name: Toolchain versions
+        run: |
+          arm-none-eabi-gcc --version | head -1
+          qemu-system-arm --version | head -1
+          cmake --version | head -1
+
+      - name: Build counting plugin
+        run: |
+          curl -sfLo /tmp/qemu-plugin.h "$QEMU_PLUGIN_HEADER_URL"
+          actual=$(sha256sum /tmp/qemu-plugin.h | cut -d' ' -f1)
+          if [ "$actual" != "$QEMU_PLUGIN_HEADER_SHA256" ]; then
+            echo "::error::qemu-plugin.h checksum mismatch"; exit 1
+          fi
+          grep -m1 "define QEMU_PLUGIN_VERSION" /tmp/qemu-plugin.h
+          gcc -shared -fPIC $(pkg-config --cflags glib-2.0) -I/tmp \
+            -o "$PLUGIN" tools/qemu_insn_plugin/insn_count.c
+
+      # Release (-O2) workloads, matching how baselines are recorded. Tests
+      # off: this job counts instructions; ci.yml runs the suites.
+      - name: Build workloads (Release)
+        run: >
+          cmake -S . -B "$BUILD_DIR"
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE=${{ matrix.toolchain }}
+          -DTAP_DSP_BUILD_TESTS=OFF
+          -DTAP_DSP_BUILD_BENCH=ON
+          ${{ matrix.flags }}
+          && cmake --build "$BUILD_DIR" -j 4
+
+      # The .text ceilings (docs/audit-fft-and-code-smells.md, Part 10 item 4)
+      # are measured on the size probe built MinSizeRel, like the test legs,
+      # with `size -A` (the .text row alone; Berkeley format folds .rodata and
+      # NOLOAD sections into "text"). Gates only once text_ceiling is nonzero.
+      - name: Size probe (MinSizeRel, .text)
+        run: |
+          cmake -S . -B "$SIZE_DIR" \
+            -DCMAKE_BUILD_TYPE=MinSizeRel \
+            -DCMAKE_TOOLCHAIN_FILE=${{ matrix.toolchain }} \
+            -DTAP_DSP_BUILD_TESTS=OFF -DTAP_DSP_BUILD_BENCH=ON ${{ matrix.flags }}
+          cmake --build "$SIZE_DIR" -j 4 --target tap_dsp_size_probe_rfft_f32_512
+          probe="$SIZE_DIR/bench/tap_dsp_size_probe_rfft_f32_512"
+          arm-none-eabi-size -A "$probe" | tee size.txt
+          text=$(awk '$1 == ".text" { print $2 }' size.txt)
+          ceiling=${{ matrix.text_ceiling }}
+          echo "$KEY: .text = $text bytes (ceiling: $ceiling; 0 = not yet recorded)"
+          { echo "### size $KEY (MinSizeRel, size -A)"; echo "- tap_dsp_size_probe_rfft_f32_512 .text = $text bytes (ceiling $ceiling)"; } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$ceiling" -gt 0 ] && [ "$text" -gt "$ceiling" ]; then
+            echo "::error::$KEY: .text $text bytes exceeds the recorded ceiling $ceiling (bench/README.md, Sizes)"
+            exit 1
+          fi
+
+      # Decides the mode (see the header comment) and fails a pull request
+      # that emptied a key its base branch had seeded.
+      - name: Baselines state
+        id: mode
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, subprocess, sys
+          key, event, base_sha = os.environ["KEY"], os.environ["EVENT"], os.environ["BASE_SHA"]
+          head = json.load(open("bench/baselines.json")).get(key) or {}
+          if event == "pull_request":
+              subprocess.run(["git", "fetch", "-q", "--depth=1", "origin", base_sha], check=True)
+              shown = subprocess.run(["git", "show", f"{base_sha}:bench/baselines.json"],
+                                     capture_output=True, text=True)
+              base = (json.loads(shown.stdout) if shown.returncode == 0 else {}).get(key) or {}
+              if base and not head:
+                  print(f"::error::{key}: bench/baselines.json has baselines for this key on the base "
+                        f"branch ({base_sha[:12]}) and none in this pull request. A key is never emptied; "
+                        "re-record with icount.py --update and write the before/after and the reason in "
+                        "bench/README.md.")
+                  sys.exit(1)
+          mode = "compare" if head else ("refuse" if event == "pull_request" else "seed")
+          print(f"{key}: mode={mode}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"mode={mode}\n")
+          EOF
+
+      # One step, three modes. The counts are always measured and always
+      # recorded to measured-<key>.json; the per-scenario lines go to the
+      # step summary; then the mode decides the verdict.
+      - name: Count (${{ matrix.key }})
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+        run: |
+          set -o pipefail
+          extra=""
+          if [ "$MODE" = seed ]; then extra="--update"; fi
+          rc=0
+          python3 scripts/icount.py --target "$KEY" --build-dir "$BUILD_DIR" --plugin "$PLUGIN" \
+            --record "measured-$KEY.json" $extra | tee icount.txt || rc=$?
+          { echo "### icount $KEY ($MODE)"; echo '```'; cat icount.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          case "$MODE" in
+            seed)
+              echo "::warning::$KEY had no baselines: this push-to-main run recorded them (artifact baselines-$KEY; seed-summary merges all keys). Copy the merged file into bench/baselines.json in a seeding commit that records this run's URL and SHA and the toolchain versions above in bench/README.md."
+              ;;
+            refuse)
+              echo "::error::$KEY has no baselines and this is a pull request. Seeding runs only on a push to main or a workflow_dispatch, never from a PR (bench/README.md, Seeding). The counts this run measured are in the measured-$KEY artifact."
+              exit 1
+              ;;
+          esac
+          exit $rc
+
+      - name: Upload measured counts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: measured-${{ matrix.key }}
+          path: measured-${{ matrix.key }}.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Upload recorded baselines (seeding run)
+        if: steps.mode.outputs.mode == 'seed'
+        uses: actions/upload-artifact@v4
+        with:
+          name: baselines-${{ matrix.key }}
+          path: bench/baselines.json
+          retention-days: 30
+
+  # Folds the per-key seeding artifacts (each has one key filled in) into the
+  # single file the seeding commit copies to bench/baselines.json. Fails when
+  # any icount job failed, so a partial seed from a half-red run can never be
+  # merged. NEVER a required check: the five `icount <key>` jobs are the
+  # required checks once seeded (bench/README.md).
+  seed-summary:
+    name: Merge seeding artifacts (never a required check)
+    needs: icount-ratchet
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require a green matrix
+        if: needs.icount-ratchet.result != 'success'
+        run: |
+          echo "::error::icount matrix result is '${{ needs.icount-ratchet.result }}'; nothing is merged from a run with a failed key"
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        id: download
+        continue-on-error: true
+        with:
+          pattern: baselines-*
+          path: /tmp/seeds
+
+      - name: Merge
+        run: |
+          files=$(ls /tmp/seeds/*/baselines.json 2>/dev/null || true)
+          if [ -z "$files" ]; then
+            echo "no seeding artifacts found (every key ran in compare mode); nothing to merge"
+            echo "merged=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          python3 scripts/icount.py --merge $files --baselines bench/baselines.json
+          cat bench/baselines.json
+          { echo "### merged baselines.json (the seeding commit copies this; record this run's URL and SHA in bench/README.md)"; echo '```json'; cat bench/baselines.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          echo "merged=true" >> "$GITHUB_ENV"
+
+      - name: Upload merged baselines
+        if: env.merged == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: baselines-merged
+          path: bench/baselines.json
+          retention-days: 30

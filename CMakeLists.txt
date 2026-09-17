@@ -135,6 +135,16 @@ if(TAP_DSP_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
+# Benchmarks: the host wall-clock microbenchmark (informational) and the
+# deterministic instruction-count ratchet workloads (bench/icount), one binary
+# per scenario, counted under QEMU by scripts/icount.py from
+# .github/workflows/bench.yml. Builds on the host and on the cross toolchains;
+# policy and workflow in bench/README.md.
+option(TAP_DSP_BUILD_BENCH "Build DspTap benchmarks and instruction-count ratchet workloads" OFF)
+if(TAP_DSP_BUILD_BENCH)
+    add_subdirectory(bench)
+endif()
+
 # C ABI shared library for FFI consumers (the notebooks drive the shipping C++
 # through it via ctypes — see notebooks/dsptap_py.py). tools/capi also builds
 # standalone (`cmake -B build_capi -S tools/capi`), which is what the ctypes
