@@ -3,7 +3,8 @@
 *September 2026. Baseline at the time of the audit: `5ca3b1c`, builds warning-free with
 `-DTAP_DSP_WERROR=ON`, 160/160 tests pass on Linux/Ooura. Revision 2: Parts 3-5 rewritten
 after the adversarial review recorded in Part 6. Revision 3: fixed point reinstated as
-Stage 3 (Part 7); documentation, testing and embedded-CI plans added (Parts 8-10).*
+Stage 3 (Part 7); documentation, testing and embedded-CI plans added (Parts 8-10). Revision 3.1:
+amendments from the wave-1 hostile reviews (Part 13).*
 
 The trigger was one smell: the float Ooura build is produced by `#define double float` plus
 forty symbol-renaming `#define`s in `third_party/ooura/fftsg_float.c`. This document records
@@ -224,8 +225,11 @@ immediately. Nothing else rides in this PR.
   live in MuTap, and CI builds only the static library with tests off. Decision (Part 10):
   bring the platform files in, add the bare-metal one-shot gtest harness, and run the
   emulation-sized selection under QEMU on Cortex-M4 (soft-float and M4F), Cortex-M33 and
-  Cortex-M55. Fixed point's gates (Stage 3) run on those legs; until they exist, no sentence
-  in this plan calls an on-target property a DspTap gate.
+  Cortex-M55. Landed in wave 1 (DspTap #17): all four legs green at first attempt, 14-98 s of
+  emulation each; the CMSIS Helium parity suites ran for the first time anywhere on the M55
+  leg. Fixed point's gates (Stage 3) run on those legs. The test selection on target must be a
+  NEGATIVE filter (exclude the named slow double suites) so that new suites run by default;
+  a positive filter silently drops every later suite (Part 13).
 - DspTap: state the fp-contraction policy (Part 4) as a contract point in `fft.h` before the
   port lands, so the parity target and the consumers are measured against a written rule.
 
@@ -340,7 +344,9 @@ consolidation with the fingerprint harness: association order must be preserved,
 log_mel's numpy pin only bites above 1e-6. Do **not** delete `TAP_DSP_CHANNEL_PARALLEL` /
 `TAP_DSP_CP_MIN_CHANNELS` until SampleRateTap and RatioTap (not on disk) have been grepped;
 README says they are consumed there. `TAP_EXPECTS` lands here for `fft.h`'s power-of-two
-precondition only; a repo-wide precondition policy is its own plan.
+precondition only; a repo-wide precondition policy is its own plan. The capi's pre-existing
+defects from Part 2 (`void*` handles, exceptions crossing `extern "C"` in the old entry points,
+allocation in the decimator's process path) are owned here too.
 
 ### Gates, in one table
 
@@ -627,8 +633,11 @@ convention is noted only where compatibility with it is a stated goal.
   run-time first-stage twiddle sums.
 - **Multiply is shift-before-multiply with one rounding.** `int32 × Q1.30 → int64`, then
   `>> 30` with round-half-up: the single documented rounding point per product. Portable C++
-  first; the Armv7E-M/Armv8-M `SMMULR`/`SMMLAR` (32×32 high-half with rounding) is the
-  designated seam behind the same contract, the way `SMLALD` is for the FIR kernels.
+  first. The Armv7E-M/Armv8-M `SMMULR`/`SMMLAR` (32×32 high-half with rounding) round at
+  bit 32, not bit 30, so they can NOT reproduce this operation bit-exactly (verified: ~12% of
+  random products differ; Part 13). Unlike `SMLALD` for the FIR kernels, an Arm fast path here
+  is a separately pinned profile or a second named operation with the hardware's rounding
+  point that the kernel selects explicitly.
 - **Structure is its own radix-4 DIF complex kernel of length N/2 with a radix-2 final stage
   for odd log2, plus Ooura's real post-pass formulas.** Part 6 established that Ooura's
   split-radix graph can be reused only as a data-flow graph with a different operation order,
@@ -932,6 +941,54 @@ long poles and neither shortens with more agents.
 
 ---
 
+## Part 13 — Wave-1 hostile-review amendments
+
+Eighteen reviews (two per PR) on the nine wave-1 PRs. Findings that change this plan, as
+opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
+
+- **On-target test selection must be a negative filter.** #17's positive filter would have
+  silently dropped every suite added by #24, #22 and #19; a guard on the selected count cannot
+  see omissions. Stage 1 text amended; the fix lands in #17.
+- **Passing test output is invisible in both repos' CI** (`ctest --output-on-failure`), so
+  measured numbers written into PR bodies were unverifiable from logs and the informational
+  ulp table from #24 recorded nothing anywhere. Pattern for both repos: run the informational
+  and fingerprint targets with `-V` as their own step and exclude them from the battery step.
+  GitHub's default `run` shell is `bash -e {0}` without `pipefail`; steps that pipe through
+  `tee` must set it.
+- **The bench checksum must be an integer fold over bit patterns.** A floating running sum
+  absorbs 1-ulp output differences and cannot fingerprint the port against the C (Stage 2b's
+  whole purpose). Seeding must run only on pushes to `main`, never from a pull request, and an
+  emptied key must fail against the base branch's baselines.
+- **`SMMULR` is not a bit-exact seam for `fft_arith::mul_coeff`** (rounding at bit 32 vs 30).
+  Part 7 amended.
+- **The arithmetic trait's docstring is the 3b kernel's spec and must state**: shift-before-
+  butterfly (2 bits per radix-4 stage, 1 per radix-2, 1 before the real post-pass) and the
+  resulting bound; the complex-multiply rounding count (one rounding per real product, two
+  per complex product); that a BFP kernel never shifts by the full headroom; the Q31
+  fixed-scaling input pre-shift; that `headroom_bits` of an all-zero block is 31 and of `{-1}`
+  is 31. Lands in #22.
+- **The packed-spectrum view must not foreclose int16/int32**: `power()` needs a promoted
+  type and the conjugating accessor a floating-point constraint. Lands in #19.
+- **Fingerprint tooling.** DspTap needs a committed same-host A/B fingerprint tool for pvoc
+  and log_mel (golden hashes would fail across the three hosts' libm by design); MuTap's
+  harness must hash the estimate output stream too. The Stage 6 gate presupposes the DspTap
+  tool.
+- **Licensing facts corrected** (#18): upstream `fftsg.c` carries no notice; the banner on the
+  vendored copy is Tap's and the file is whitespace-normalized, so it is not "unmodified";
+  WebRTC's Ooura LICENSE quotes a broader notice ("use, copy, modify and distribute … include
+  commercial use") that appears in neither of Ooura's current tarballs; Ooura's current
+  published address is at Kyoto University, not the 2001 Tokyo one. NOTICE, README, the design
+  note and the draft email are corrected in #18; a `LICENSES/LicenseRef-Ooura.txt` carries the
+  notice text so the SPDX reference resolves.
+- **Branch protection on `main` is off**; none of the CI legs gate anything. Recommend
+  requiring the seven CI jobs plus drift and clang-tidy once wave 1 lands, and the five
+  `icount <key>` jobs after the seeding commit (never the artifact-merge job).
+- **The capi's audit defects had no owning stage.** Stage 6 amended.
+- **The plan branch itself needs a PR** so the design note's link resolves; opened with these
+  amendments.
+
+---
+
 ## Decisions (revision 3)
 
 **D1. `double` becomes a sample format. Settled.** `sample_traits<double>` with
@@ -955,9 +1012,10 @@ default, consumers name the engine.
 **D5. Float-I/O-on-double overloads: `[[deprecated]]` for one consumer cycle, then deleted.**
 Not gated on AmbiTap, which is not on disk and keeps its own wrapper per README.
 
-**D6. `fftsg.c` and `readme.txt` move to `tests/reference/ooura/` at 2c and are deleted after
-both MuTap and MuTap-Max pin a tree containing 2c.** `readme.txt` stays in-tree regardless
-(Part 5).
+**D6. `fftsg.c` moves to `tests/reference/ooura/` at 2c and is deleted after both MuTap and
+MuTap-Max pin a tree containing 2c. `readme.txt` stays at `third_party/ooura/readme.txt`
+permanently** (settled in the wave-1 review; it is the license record for the derived code, and
+one fixed path is what the port header's banner can cite).
 
 **D7. Settled: `detail::split_radix_rdft`**, one house token (`real_fft`) for everything
 consumer-facing, provenance per Part 5.
