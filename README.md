@@ -360,8 +360,8 @@ on the bare-metal M55 profile, Ooura elsewhere — override with
 
 ## Provenance
 
-This code was carried, byte-for-byte in its vendored Ooura sources, inside both
-**MuTap** (adaptive filtering) and **AmbiTap** (ambisonics / binaural
+This code was carried, with textually identical vendored Ooura sources, inside
+both **MuTap** (adaptive filtering) and **AmbiTap** (ambisonics / binaural
 convolution). The C++ wrappers had begun to diverge — MuTap grew the templated
 `basic_real_fft<Sample>` and the CMSIS/vDSP backends; AmbiTap kept an older
 double-engine wrapper with no backends — so a bug fix or a new backend in one
@@ -378,10 +378,24 @@ extract-on-second-consumer rule that created this repo.
 
 See [`third_party/ooura/readme.txt`](third_party/ooura/readme.txt) and
 [`third_party/cmsis-dsp/VENDOR.md`](third_party/cmsis-dsp/VENDOR.md) for the
-vendored-code provenance and licenses.
+vendored-code provenance and licenses. The design note for the planned C++20
+port of the same split-radix transform (and the Q15 / Q31 profiles) is
+[`docs/fft-design.md`](docs/fft-design.md), filled in as each stage lands; the
+plan of record, `docs/audit-fft-and-code-smells.md`, lands with the plan PR
+(#25). Nothing from either has shipped yet.
 
 ## License
 
-The DspTap wrapper is MIT (`LICENSE`). Vendored third-party code keeps its own
-license: Ooura FFT (permissive, see its readme), CMSIS-DSP / CMSIS-Core
-(Apache-2.0, SPDX headers retained in every file). See [`NOTICE.md`](NOTICE.md).
+DspTap's own code is MIT (`LICENSE`). Vendored third-party code keeps its own
+license. The Ooura FFT is under its author's own terms, stated in
+`third_party/ooura/readme.txt`: "You may use, copy, modify this code for any
+purpose and without fee. You may distribute this ORIGINAL package." — a grant
+of use, copying and modification, and of distribution of the original package.
+DspTap ships that file today with the notice attached, and the planned C++
+port is a derivative work whose redistribution relies on the modification
+grant (SPDX `LicenseRef-Ooura AND MIT` for the port header, with the notice
+text in `LICENSES/LicenseRef-Ooura.txt`; the readme stays at
+`third_party/ooura/readme.txt` permanently). CMSIS-DSP / CMSIS-Core are
+Apache-2.0 with SPDX headers retained in every file. The canonical statement,
+and the maintainer's reading of what it covers — a judgement call, not legal
+advice — is [`NOTICE.md`](NOTICE.md).
