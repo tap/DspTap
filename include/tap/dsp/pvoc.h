@@ -25,21 +25,24 @@
 // Transient smearing on percussive material remains the known trade of the
 // phase-vocoder class. The transform is tap::dsp::basic_real_fft, so the float
 // profile rides the vDSP / CMSIS-Helium backends where the build enables them.
-// The packed spectrum uses fft.h's conjugated (W = exp(+2*pi*i/N)) convention;
-// this class converts to the engineering convention at unpack and back at pack
-// so the textbook phase math applies verbatim.
+// The spectrum is read through tap::dsp::packed_spectrum (fft/spectrum.h),
+// whose native convention is fft.h's conjugated W = exp(+2*pi*i/N); this class
+// unpacks through its bin_engineering() accessor (which conjugates) and
+// conjugates back at pack so the textbook phase math applies verbatim.
 
 #pragma once
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
 #include <vector>
 
 #include "tap/dsp/fft.h"
+#include "tap/dsp/fft/spectrum.h"
 
 namespace tap::dsp {
 
@@ -214,12 +217,15 @@ namespace tap::dsp {
             }
 
             // per-bin magnitude and instantaneous frequency (engineering-convention
-            // phases: conjugate fft.h's exp(+i) imaginary parts on unpack)
+            // phases: bin_engineering() conjugates the packed spectrum's exp(+i)
+            // imaginary parts on unpack)
+            const packed_spectrum<const Sample> analysis(m_frame.data(), m_fft.size());
             const double expected = 2.0 * k_pi * static_cast<double>(m_hop) / static_cast<double>(m_n_size);
             for (int k = 1; k < m_bins - 1; ++k) {
-                const double re    = static_cast<double>(m_frame[static_cast<size_t>(2 * k)]);
-                const double im    = -static_cast<double>(m_frame[static_cast<size_t>(2 * k + 1)]);
-                const double phase = std::atan2(im, re);
+                const std::complex<Sample> bin   = analysis.bin_engineering(static_cast<size_t>(k));
+                const double               re    = static_cast<double>(bin.real());
+                const double               im    = static_cast<double>(bin.imag());
+                const double               phase = std::atan2(im, re);
 
                 double delta = phase - static_cast<double>(m_prev_phase[static_cast<size_t>(k)]) - expected * k;
                 m_prev_phase[static_cast<size_t>(k)] = static_cast<Sample>(phase);
@@ -251,10 +257,11 @@ namespace tap::dsp {
             // synthesis: translate each peak's region rigidly by an integer bin
             // offset and rotate it by the accumulated residual phase
             std::fill(m_synth.begin(), m_synth.end(), Sample(0));
-            m_synth[0]        = m_frame[0]; // DC and Nyquist pass through untouched: they
-            m_synth[1]        = m_frame[1]; // cannot be relocated, and identity stays exact
-            const int n_peaks = static_cast<int>(m_peaks.size());
-            int       lo      = 1;
+            const packed_spectrum<Sample> synthesis(m_synth.data(), m_fft.size());
+            synthesis.dc()      = analysis.dc();      // DC and Nyquist pass through untouched: they
+            synthesis.nyquist() = analysis.nyquist(); // cannot be relocated, and identity stays exact
+            const int n_peaks   = static_cast<int>(m_peaks.size());
+            int       lo        = 1;
             for (int pi = 0; pi < n_peaks; ++pi) {
                 const int p         = m_peaks[static_cast<size_t>(pi)];
                 const int hi        = (pi == n_peaks - 1) ? m_bins - 2 : (p + m_peaks[static_cast<size_t>(pi + 1)]) / 2;
@@ -285,8 +292,9 @@ namespace tap::dsp {
                     if (j < 1 || j > m_bins - 2) {
                         continue;
                     }
-                    double re = static_cast<double>(m_frame[static_cast<size_t>(2 * k)]);
-                    double im = -static_cast<double>(m_frame[static_cast<size_t>(2 * k + 1)]);
+                    const std::complex<Sample> bin = analysis.bin_engineering(static_cast<size_t>(k));
+                    double                     re  = static_cast<double>(bin.real());
+                    double                     im  = static_cast<double>(bin.imag());
                     if (m_formant) {
                         // keep the envelope in place: excitation from bin k now sits
                         // at bin j, so trade envelope(source) for envelope(target)
@@ -295,8 +303,8 @@ namespace tap::dsp {
                         re *= g;
                         im *= g;
                     }
-                    m_synth[static_cast<size_t>(2 * j)] += static_cast<Sample>(re * cs - im * sn);
-                    m_synth[static_cast<size_t>(2 * j + 1)] -= static_cast<Sample>(re * sn + im * cs); // conjugate back
+                    synthesis.re(static_cast<size_t>(j)) += static_cast<Sample>(re * cs - im * sn);
+                    synthesis.im(static_cast<size_t>(j)) -= static_cast<Sample>(re * sn + im * cs); // conjugate back
                 }
             }
 
@@ -360,12 +368,13 @@ namespace tap::dsp {
                 m_lpc_work[static_cast<size_t>(i)] = static_cast<Sample>(m_lpc_a[static_cast<size_t>(i)]);
             }
             m_fft.forward_inplace(m_lpc_work.data());
-            m_env[0] = 1.0 / std::max(std::abs(static_cast<double>(m_lpc_work[0])), k_env_floor);
+            const packed_spectrum<const Sample> poly(m_lpc_work.data(), m_fft.size());
+            m_env[0] = 1.0 / std::max(std::abs(static_cast<double>(poly.dc())), k_env_floor);
             m_env[static_cast<size_t>(m_bins - 1)] =
-                1.0 / std::max(std::abs(static_cast<double>(m_lpc_work[1])), k_env_floor);
+                1.0 / std::max(std::abs(static_cast<double>(poly.nyquist())), k_env_floor);
             for (int k = 1; k < m_bins - 1; ++k) {
-                const double re               = static_cast<double>(m_lpc_work[static_cast<size_t>(2 * k)]);
-                const double im               = static_cast<double>(m_lpc_work[static_cast<size_t>(2 * k + 1)]);
+                const double re               = static_cast<double>(poly.re(static_cast<size_t>(k)));
+                const double im               = static_cast<double>(poly.im(static_cast<size_t>(k)));
                 m_env[static_cast<size_t>(k)] = 1.0 / std::max(std::sqrt(re * re + im * im), k_env_floor);
             }
         }

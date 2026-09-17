@@ -75,6 +75,7 @@
 #include <vector>
 
 #include "tap/dsp/fft.h"
+#include "tap/dsp/fft/spectrum.h"
 
 namespace tap::dsp {
 
@@ -307,13 +308,15 @@ namespace tap::dsp {
             }
             std::fill(m_spec.begin() + static_cast<std::ptrdiff_t>(frame), m_spec.end(), Sample(0));
             m_fft.forward_inplace(m_spec.data());
-            // Ooura packing: [0] = DC (real), [1] = Nyquist (real), then (re, im) pairs.
-            m_power[0]     = m_spec[0] * m_spec[0];
-            m_power[n / 2] = m_spec[1] * m_spec[1];
-            for (std::size_t k = 1; k < n / 2; ++k) {
-                const Sample re = m_spec[2 * k];
-                const Sample im = m_spec[2 * k + 1];
-                m_power[k]      = re * re + im * im;
+            // The DspTap packed spectrum (see fft/spectrum.h): [0] = DC (real),
+            // [1] = Nyquist (real), then (re, im) pairs; power() reads all three.
+            const packed_spectrum<const Sample> spectrum(m_spec.data(), n);
+            const std::size_t                   nyquist = spectrum.num_bins() - 1;
+
+            m_power[0]       = spectrum.power(0);
+            m_power[nyquist] = spectrum.power(nyquist);
+            for (std::size_t k = 1; k < nyquist; ++k) {
+                m_power[k] = spectrum.power(k);
             }
             for (std::size_t b = 0; b < m_g.bands; ++b) {
                 const band&   bd  = m_bands[b];
