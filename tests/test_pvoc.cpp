@@ -8,6 +8,7 @@
 // oracle is tap::dsp::yin, certified by its own battery.
 
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -197,6 +198,43 @@ namespace {
         for (size_t i = 0; i < shifter.latency(); ++i) {
             EXPECT_EQ(shifter.process(TypeParam(0), TypeParam(1.5)), TypeParam(0));
         }
+    }
+
+    TYPED_TEST(pvoc_test, ClockWrapIsBitExactAndCountersDoNotOverflow) {
+        // The run-time contract: the sample clock is 32 bits and wraps by the
+        // overlap-add ring (3 * fft_size), a multiple of the input ring and the
+        // hop, so the wrap changes nothing at all. Every 1 s run above already
+        // wraps 14 times; this test makes the pin explicit. Reference: a shifter
+        // run from zero, whose identity reconstruction must hold over the WHOLE
+        // run (every wrap included), not just the tail. Subject: the same shifter
+        // with its clock advanced past 2^31 elapsed samples through the documented
+        // O(1) seam (the count a 48 kHz Cortex-M or Windows build reaches after
+        // 12.4 h); its output is bit-identical to the reference's.
+        tap::dsp::basic_pvoc<TypeParam> ref(1024);
+        tap::dsp::basic_pvoc<TypeParam> sub(1024);
+        ref.set_formant(true); // the LPC path runs in the frame too
+        sub.set_formant(true);
+        ASSERT_EQ(sub.clock_wrap(), 3u * 1024u);
+
+        const double tolerance = std::is_same_v<TypeParam, double> ? 1e-8 : 2e-3;
+        const int    latency   = static_cast<int>(ref.latency());
+        const int    warm      = 12000; // seam applied past the warm-up, mid-stream
+        const int    run       = 48000;
+        double       worst     = 0.0;
+        for (int t = 0; t < warm + run; ++t) {
+            if (t == warm) {
+                sub.advance_clock_for_testing((std::uint64_t{1} << 31) + 777);
+            }
+            const TypeParam x = static_cast<TypeParam>(std::sin(2.0 * k_pi * 440.0 * t / k_sr));
+            const TypeParam a = ref.process(x, TypeParam(1));
+            const TypeParam b = sub.process(x, TypeParam(1));
+            ASSERT_EQ(a, b) << "t " << t;
+            if (t >= 2 * latency) { // steady state: four frames overlap from here on
+                const double expected = std::sin(2.0 * k_pi * 440.0 * (t - latency) / k_sr);
+                worst                 = std::max(worst, std::abs(static_cast<double>(a) - expected));
+            }
+        }
+        EXPECT_LT(worst, tolerance);
     }
 
     TEST(pvoc_cross_precision, FloatAgreesWithDoubleGoldenModel) {
