@@ -221,13 +221,20 @@ namespace {
 
         constexpr std::size_t  n = 8;
         std::vector<TypeParam> a(n, TypeParam(0));
-        const TypeParam        big = std::is_same_v<TypeParam, std::int16_t>   ? TypeParam(30000)
-                                     : std::is_same_v<TypeParam, std::int32_t> ? TypeParam(1 << 30)
-                                                                               : TypeParam(30000);
-        a[0]                       = big;
-        a[1]                       = big;
-        a[2]                       = big;
-        a[3]                       = big;
+        // Chosen with if constexpr, not a ternary: MSVC diagnoses the dead
+        // TypeParam(1 << 30) branch as a truncating cast under int16 (C4310).
+        const TypeParam big = [] {
+            if constexpr (std::is_same_v<TypeParam, std::int32_t>) {
+                return TypeParam(1 << 30);
+            }
+            else {
+                return TypeParam(30000);
+            }
+        }();
+        a[0] = big;
+        a[1] = big;
+        a[2] = big;
+        a[3] = big;
         const view s(a.data(), n);
 
         const std::int64_t b = static_cast<std::int64_t>(big);
