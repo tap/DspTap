@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -36,14 +37,20 @@ namespace tap::dsp {
     ///
     /// The algorithm is selected by the trait's k_is_fixed_point property:
     /// for the floating formats (double, float) this is a plain conversion
-    /// (no correction runs; k_coeff_scale is 1). Each +/-1 correction step is
-    /// saturating: a tap already at the coefficient format's rail is never
-    /// wrapped. Such a tap cannot absorb a step, so the correction stops
-    /// there and the row keeps its saturated sum — a row whose design exceeds
-    /// the format (|c| >= 2.0 in Q1.14 / Q1.30) had no representable DC gain
-    /// to preserve, and every tap of it is still the nearest representable
-    /// value. Design-time code: allocates a scratch vector for integer
-    /// formats, so keep it off the audio path.
+    /// (no correction runs; k_coeff_scale is 1). The +/-1 correction steps
+    /// never wrap: each step is taken by the largest-remainder tap among
+    /// those that can still move in the step's direction (not already at
+    /// that rail), so the sum is preserved whenever at least one such tap
+    /// exists, and only a row whose every tap sits at the needed rail keeps
+    /// its saturated sum. A tap saturates in make_coeff from
+    /// |c| >= 2 - 2^-15 (Q1.14) / 2 - 2^-31 (Q1.30); such a tap has the
+    /// row's largest remainder by construction, so without this rule it
+    /// would take, and wrap on, every step. Cost: one pass over the row per
+    /// residual LSB. A row inside the format has |residual| <= taps / 2
+    /// (rounding only); a tap saturated by k LSB adds k, so a grossly
+    /// out-of-format row (a design bug) is slow as well as wrong.
+    /// Design-time code: allocates a scratch vector for integer formats, so
+    /// keep it off the audio path.
     ///
     /// @pre dst.size() == src.size()
     template <sample_type S>
@@ -71,19 +78,20 @@ namespace tap::dsp {
             }
             std::int64_t residual = static_cast<std::int64_t>(std::llround(exact_sum)) - quant_sum;
             while (residual != 0) {
-                const double sgn  = residual > 0 ? 1.0 : -1.0;
-                std::size_t  best = 0;
-                for (std::size_t u = 1; u < n; ++u) {
-                    if (sgn * remainder[u] > sgn * remainder[best]) {
+                const double sgn = residual > 0 ? 1.0 : -1.0;
+                const coeff rail = residual > 0 ? std::numeric_limits<coeff>::max() : std::numeric_limits<coeff>::min();
+                // Largest remainder among the taps that can still move this way.
+                std::size_t best = n;
+                for (std::size_t u = 0; u < n; ++u) {
+                    if (dst[u] != rail && (best == n || sgn * remainder[u] > sgn * remainder[best])) {
                         best = u;
                     }
                 }
-                const std::int64_t step    = residual > 0 ? 1 : -1;
-                const coeff        stepped = detail::clamp_sat<coeff>(static_cast<std::int64_t>(dst[best]) + step);
-                if (stepped == dst[best]) {
-                    break; // at the rail: saturate, never wrap, and the residual is unabsorbable
+                if (best == n) {
+                    break; // every tap is at this rail: the residual is unabsorbable without a wrap
                 }
-                dst[best] = stepped;
+                const std::int64_t step = residual > 0 ? 1 : -1;
+                dst[best]               = static_cast<coeff>(dst[best] + step); // off the rail: cannot overflow
                 remainder[best] -= sgn;
                 residual -= step;
             }

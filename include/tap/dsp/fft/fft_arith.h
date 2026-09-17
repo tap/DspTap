@@ -27,12 +27,63 @@
 //    twiddles need no special case; every twiddle is generated in double and
 //    rounded once by make_coeff (round_sat: half away from zero, saturating).
 //  - The multiply is int32 x Q1.30 -> int64, then >> 30 with ONE round-half-up.
-//    That is the single documented rounding point per product; Armv7E-M /
-//    Armv8-M's SMMULR (32x32 high half with rounding) is the designated seam
-//    behind the same contract, as SMLALD is for the FIR kernels.
-//  - Growth is handled by the kernel with shr_round (fixed scaling) or
-//    headroom_bits + shr_round (block floating point); the trait only supplies
-//    the operations, never a policy.
+//    That is the single documented rounding point per real product. A
+//    complex twiddle multiply is therefore TWO roundings per output
+//    component: y_r = sub(mul_coeff(x_r, w_r), mul_coeff(x_i, w_i)),
+//    y_i = add(mul_coeff(x_r, w_i), mul_coeff(x_i, w_r)). An
+//    accumulate-both-products-in-int64-then-shift-once variant is a
+//    different design with different (lower) noise and is NOT bit-identical
+//    to this one; the kernel and its Welch-model pins are written against
+//    the two-rounding form, and the trait deliberately offers no fused op.
+//  - Arm's SMMULR/SMMLAR (32x32, high word, rounded) is NOT a bit-exact seam
+//    for mul_coeff: it rounds at bit 32 of the product where mul_coeff rounds
+//    at bit 30, and no arrangement reproduces one from the other (shifting
+//    the twiddle up two bits makes 1.0 unrepresentable, which is why Q1.30
+//    was chosen; shr_round(mul_coeff(x, w), 2) is a double rounding that
+//    differs from (x*w + 2^31) >> 32 on about an eighth of all products).
+//    An SMMULR build is therefore a separately pinned Arm profile with its
+//    own noise numbers, decided only when an on-target measurement justifies
+//    it — unlike SMLALD for the FIR kernels, which is exact. No second
+//    multiply op is defined here so that the portable arithmetic stays the
+//    one contract every host and every QEMU leg runs bit-identically.
+//  - Scaling is the kernel's policy; the trait supplies the operations and
+//    states the arithmetic conditions under which they suffice:
+//      * Fixed scaling is SHIFT-BEFORE-BUTTERFLY: each stage's inputs are
+//        shr_round'ed by 2 bits (radix-4), 1 bit (radix-2), and 1 bit before
+//        the real post-pass, before the butterfly is computed. Under that
+//        ordering the complex magnitude never grows (four inputs each scaled
+//        by 1/4, unit-magnitude twiddles), so the magnitude bound is set by
+//        the input alone: at most sqrt(2) x full scale for a packed real
+//        pair (both components at full scale), plus at most half an LSB per
+//        rounding. Shift-AFTER-butterfly is not covered: four rotated
+//        full-scale Q2.29 inputs at a 45 degree twiddle sum to 2^31 before
+//        the shift and saturate.
+//      * Q15 (Q2.29 after widen, full scale 2^29): the bound is 2^29.5, 1.5
+//        bits below the int32 rail; the two guard bits suffice with no
+//        input-level contract and k_fixed_scaling_input_pre_shift is 0.
+//      * Q31 (Q0.31, full scale 2^31 - 1): the bound 2^31.5 exceeds the rail,
+//        so fixed scaling takes k_fixed_scaling_input_pre_shift = 1 bit
+//        (shr_round, one rounding, -6 dB, one bit of 31) before the first
+//        stage, giving a bound of 2^30.5, half a bit below the rail.
+//      * Block floating point takes no input pre-shift. Before each stage the
+//        kernel reads headroom_bits over the block and right-shifts by
+//        max(0, growth bits for the stage - headroom), accumulating the
+//        exponent; the trait has no left shift, so BFP never normalizes a
+//        quiet block upward, and a shift of 0 with headroom to spare simply
+//        keeps the extra precision. The kernel must never let a stage
+//        consume the full reported headroom: a block value of -2^20 reports
+//        11, and -2^20 << 11 is INT32_MIN, at which sub(0, x) saturates and
+//        mul_coeff(x, -1.0) is the one saturating product. Leave at least
+//        one bit unused. headroom_bits is 31 for an all-zero block AND for
+//        {-1}: 31 means "no information", not "silence".
+//  - Twiddles are generated at construction in double, w_k = cos/sin of
+//    2*pi*k/N through std::cos/std::sin, then rounded once by make_coeff.
+//    Host libm last-bit differences (glibc, newlib, UCRT, Apple) can move a
+//    double that lies within 2^-31 of a Q1.30 rounding boundary onto the
+//    other side, so fixed-point outputs are host-identical only if the table
+//    is; the 3b battery pins the table's checksum for each certified N so a
+//    libm difference is detected rather than silently absorbed. (The
+//    quantization bound |w_q - w| <= 0.5 LSB holds on every host.)
 //
 // Every operation is constexpr and noexcept. The int32 operations preserve
 // the data's Q format whatever it is (Q0.31 for the Q31 profile, Q2.29 for
@@ -42,6 +93,7 @@
 #pragma once
 
 #include <bit>
+#include <cassert>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -68,10 +120,11 @@ namespace tap::dsp {
         using coeff  = F; ///< twiddle type
         using work   = fft_arith<F>;
 
-        static constexpr bool k_is_fixed_point  = false;
-        static constexpr int  k_guard_bits      = 0;
-        static constexpr int  k_coeff_frac_bits = 0;
-        static constexpr F    k_coeff_one       = F{1};
+        static constexpr bool k_is_fixed_point                = false;
+        static constexpr int  k_guard_bits                    = 0;
+        static constexpr int  k_coeff_frac_bits               = 0;
+        static constexpr int  k_fixed_scaling_input_pre_shift = 0; ///< floating data has an exponent
+        static constexpr F    k_coeff_one                     = F{1};
 
         static constexpr coeff make_coeff(double w) noexcept { return static_cast<coeff>(w); }
 
@@ -84,7 +137,9 @@ namespace tap::dsp {
 
         /// x * 2^-bits, exact (a power-of-two scale never rounds in binary
         /// floating point short of underflow).
+        /// @pre 0 <= bits <= 31
         static constexpr F shr_round(F x, int bits) noexcept {
+            assert(bits >= 0 && bits <= 31);
             F s = F{1};
             for (int i = 0; i < bits; ++i) {
                 s *= F{0.5};
@@ -115,14 +170,21 @@ namespace tap::dsp {
     ///    `AddSubSaturateAtTheRails`.
     ///  - shr_round(x, bits) -> sample : x * 2^-bits, round-half-up in the
     ///    discarded bits (add 2^(bits-1), arithmetic shift, in int64 so the
-    ///    rounding add cannot overflow). bits == 0 is the identity; the
-    ///    result always fits for 0 <= bits <= 31. `ShrRoundRoundsHalfUp`.
+    ///    rounding add cannot overflow). @pre 0 <= bits <= 31 (asserted);
+    ///    bits == 0 is the identity and the result always fits.
+    ///    `ShrRoundRoundsHalfUp`.
     ///  - headroom_bits(x, n) -> int   : the number of redundant sign bits
     ///    shared by the whole block — the largest s such that every x[i] << s
     ///    still fits in int32 (Arm's CLS, computed as countl_zero of the OR of
     ///    the one's-complement magnitudes x ^ (x >> 31), minus the sign bit).
-    ///    31 for an all-zero or empty block, 30 for {1}, 0 for INT32_MAX or
-    ///    INT32_MIN. `HeadroomBitsOnZeroOneAndFullScale`.
+    ///    31 for an all-zero or empty block and for {-1} (31 is "no
+    ///    information", not a silence signal), 30 for {1}, 0 for INT32_MAX or
+    ///    INT32_MIN. A BFP kernel never consumes the full amount (file
+    ///    header). `HeadroomBitsOnZeroOneAndFullScale`.
+    ///  - k_fixed_scaling_input_pre_shift = 1 : under fixed scaling the Q31
+    ///    profile shr_rounds its input by one bit before the first stage
+    ///    (file header: the bound 2^31.5 of a full-scale packed pair exceeds
+    ///    the rail; with the pre-shift it is 2^30.5). BFP does not use it.
     ///  - widen / narrow                : identities (wide == sample).
     template <>
     struct fft_arith<std::int32_t> {
@@ -135,6 +197,9 @@ namespace tap::dsp {
 
         static constexpr bool k_is_fixed_point = true;
         static constexpr int  k_guard_bits     = 0; ///< Q0.31 data has no spare width
+        /// One bit (-6 dB) before the first stage under fixed scaling: the
+        /// price of no guard bits. Not applied under block floating point.
+        static constexpr int k_fixed_scaling_input_pre_shift = 1;
         /// Q1.30: the twiddle's fraction bits, shared with the FIR Q31 coefficient.
         static constexpr int   k_coeff_frac_bits = sample_traits<std::int32_t>::k_coeff_frac_bits;
         static constexpr coeff k_coeff_one       = coeff{1} << k_coeff_frac_bits; ///< 1.0 in Q1.30
@@ -160,7 +225,8 @@ namespace tap::dsp {
         }
 
         static constexpr sample shr_round(sample x, int bits) noexcept {
-            if (bits <= 0) {
+            assert(bits >= 0 && bits <= 31);
+            if (bits == 0) {
                 return x;
             }
             return static_cast<sample>((static_cast<std::int64_t>(x) + (std::int64_t{1} << (bits - 1))) >> bits);
@@ -186,8 +252,13 @@ namespace tap::dsp {
     ///
     ///  - widen(x) -> wide   : Q0.15 -> Q2.29, x << 14. Exact. The two guard
     ///    bits above full scale are what let worst-case radix-4 growth run
-    ///    under fixed scaling without an input-level contract (audit Part 7).
-    ///    INT16_MIN -> -2^29. `WidenPlacesTwoGuardBits`.
+    ///    under fixed scaling without an input-level contract — ON THE
+    ///    CONDITION that the kernel shifts before each butterfly (2 bits per
+    ///    radix-4 stage, 1 per radix-2, 1 before the real post-pass), which
+    ///    bounds the complex magnitude by sqrt(2) x 2^29 = 2^29.5, 1.5 bits
+    ///    below the int32 rail (file header). No input pre-shift:
+    ///    k_fixed_scaling_input_pre_shift = 0. INT16_MIN -> -2^29.
+    ///    `WidenPlacesTwoGuardBits`.
     ///  - narrow(y) -> sample : Q2.29 -> Q0.15, (y + 2^13) >> 14 in int64,
     ///    round-half-up, saturating to [INT16_MIN, INT16_MAX] — the
     ///    substrate's finalize rule. `NarrowRoundsHalfUpAndSaturates`.
@@ -201,11 +272,12 @@ namespace tap::dsp {
         using coeff  = sample_traits<std::int32_t>::coeff; ///< Q1.30 twiddle, same as Q31
         using work   = fft_arith<std::int32_t>;            ///< the arithmetic the kernel runs on `wide`
 
-        static constexpr bool  k_is_fixed_point  = true;
-        static constexpr int   k_guard_bits      = 2; ///< spare bits above full scale after widen()
-        static constexpr int   k_widen_shift     = 32 - 16 - k_guard_bits; ///< 14: Q0.15 -> Q2.29
-        static constexpr int   k_coeff_frac_bits = work::k_coeff_frac_bits;
-        static constexpr coeff k_coeff_one       = work::k_coeff_one;
+        static constexpr bool  k_is_fixed_point                = true;
+        static constexpr int   k_guard_bits                    = 2; ///< spare bits above full scale after widen()
+        static constexpr int   k_fixed_scaling_input_pre_shift = 0; ///< the guard bits cover the growth bound
+        static constexpr int   k_widen_shift                   = 32 - 16 - k_guard_bits; ///< 14: Q0.15 -> Q2.29
+        static constexpr int   k_coeff_frac_bits               = work::k_coeff_frac_bits;
+        static constexpr coeff k_coeff_one                     = work::k_coeff_one;
         static_assert(k_widen_shift == 14, "Q15 I/O: two guard bits means a 14-bit widen");
 
         static constexpr coeff make_coeff(double w) noexcept { return work::make_coeff(w); }
@@ -219,23 +291,28 @@ namespace tap::dsp {
     };
     // ANCHOR_END: fa_q15
 
-    /// Satisfied by the four FFT profiles' sample types: the I/O-width pair,
-    /// the twiddle type and its generator, and a `work` trait that carries the
-    /// butterfly operations over `wide`.
+    /// Satisfied by the four FFT profiles' sample types: everything a
+    /// profile-generic kernel reads — the I/O-width pair, the twiddle type,
+    /// its generator and its constants, the scaling constants, and a `work`
+    /// trait that carries the butterfly operations over `wide`, all noexcept.
     template <typename T>
     concept fft_sample_type = requires(T x, typename fft_arith<T>::wide y, typename fft_arith<T>::coeff w, double d) {
         typename fft_arith<T>::wide;
         typename fft_arith<T>::coeff;
         typename fft_arith<T>::work;
         requires std::is_same_v<decltype(fft_arith<T>::k_is_fixed_point), const bool>;
-        { fft_arith<T>::make_coeff(d) } -> std::same_as<typename fft_arith<T>::coeff>;
-        { fft_arith<T>::widen(x) } -> std::same_as<typename fft_arith<T>::wide>;
-        { fft_arith<T>::narrow(y) } -> std::same_as<T>;
-        { fft_arith<T>::work::mul_coeff(y, w) } -> std::same_as<typename fft_arith<T>::wide>;
-        { fft_arith<T>::work::add(y, y) } -> std::same_as<typename fft_arith<T>::wide>;
-        { fft_arith<T>::work::sub(y, y) } -> std::same_as<typename fft_arith<T>::wide>;
-        { fft_arith<T>::work::shr_round(y, 1) } -> std::same_as<typename fft_arith<T>::wide>;
-        { fft_arith<T>::work::headroom_bits(&y, std::size_t{1}) } -> std::same_as<int>;
+        requires std::is_same_v<decltype(fft_arith<T>::k_guard_bits), const int>;
+        requires std::is_same_v<decltype(fft_arith<T>::k_coeff_frac_bits), const int>;
+        requires std::is_same_v<decltype(fft_arith<T>::k_fixed_scaling_input_pre_shift), const int>;
+        requires std::is_same_v<decltype(fft_arith<T>::k_coeff_one), const typename fft_arith<T>::coeff>;
+        { fft_arith<T>::make_coeff(d) } noexcept -> std::same_as<typename fft_arith<T>::coeff>;
+        { fft_arith<T>::widen(x) } noexcept -> std::same_as<typename fft_arith<T>::wide>;
+        { fft_arith<T>::narrow(y) } noexcept -> std::same_as<T>;
+        { fft_arith<T>::work::mul_coeff(y, w) } noexcept -> std::same_as<typename fft_arith<T>::wide>;
+        { fft_arith<T>::work::add(y, y) } noexcept -> std::same_as<typename fft_arith<T>::wide>;
+        { fft_arith<T>::work::sub(y, y) } noexcept -> std::same_as<typename fft_arith<T>::wide>;
+        { fft_arith<T>::work::shr_round(y, 1) } noexcept -> std::same_as<typename fft_arith<T>::wide>;
+        { fft_arith<T>::work::headroom_bits(&y, std::size_t{1}) } noexcept -> std::same_as<int>;
     };
 
     static_assert(fft_sample_type<double>);

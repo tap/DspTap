@@ -41,8 +41,10 @@
 //     float (double accumulation, the embedded profile, pinned
 //     sample-for-sample against a committed numpy reference), Q15 and Q31
 //     through sample_traits.h with row-sum-preserving quantization so DC
-//     gain stays exactly 1; the Q15 profile is pinned against double as a
-//     measured number. The decimate_by_* aliases stay float: they name the
+//     gain stays exactly 1; the Q15 and Q31 profiles are pinned against
+//     double as measured numbers, and their coefficient tables are bit-pinned
+//     (row sum and FNV-1a-64 per ratio and profile). The decimate_by_*
+//     aliases stay float: they name the
 //     16 kHz front end's deployed profile. Mono: the consumer is
 //     single-channel by charter.
 //

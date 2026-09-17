@@ -170,8 +170,8 @@ arithmetic on the float path: the RP2350's Cortex-M33 has no FP64.
 front end: `basic_decimator<Sample, M>` for M = 2, 3, 6 (32 / 48 / 96 kHz in),
 in RatioTap's pattern — ratio as a type, Kaiser-windowed sinc from
 `kaiser.h` with the cutoff at the output Nyquist and DC gain exactly 1,
-`fir_kernels.h`'s `dot_row` over the `sample_traits.h` formats (float golden,
-Q15 / Q31 with row-sum-preserving quantization). It is deliberately not
+`fir_kernels.h`'s `dot_row` over the `sample_traits.h` formats (double golden,
+float embedded, Q15 / Q31 with row-sum-preserving quantization). It is deliberately not
 RatioTap, whose charter is 44.1 ↔ 48 only; a 44.1 kHz host composes RatioTap's
 44.1 → 48 in front of the by-3 stage. Odd tap counts, integer group delay
 `(taps - 1) / 2`, one output as input `k*M` arrives.
@@ -228,7 +228,10 @@ suppressor's cross-precision pin must be unchanged by the promotion.
 
 Five headers carried from **SampleRateTap** (where they design and run the
 ASRC's polyphase datapath) and promoted here so **RatioTap**'s fixed-ratio
-44.1↔48 converter — and any future FIR consumer — shares one implementation.
+44.1↔48 converter — and any future FIR consumer — shares one implementation,
+plus the FFT's butterfly arithmetic trait (`fft/fft_arith.h`), which is built
+over the same sample formats and documented here until the Stage 3b README
+rewrite moves it to the FFT section's profiles table.
 The performance-sensitive pieces are regression-gated in SampleRateTap's
 instruction-count CI (Cortex-M33/M55, Hexagon, ±3%); treat measured claims in
 the header comments as contracts.
@@ -259,7 +262,7 @@ pins measure float/Q15/Q31 against it.
 | `double` | double | double | identity (the golden model) |
 | `float` | float | double | plain cast |
 | `std::int16_t` | Q1.14 | int64, exact | single Q29→Q15 round-half-up, saturating |
-| `std::int32_t` | Q1.30 | int64, products pre-shifted to Q45 | Q45→Q31, saturating |
+| `std::int32_t` | Q1.30 | int64, products pre-shifted to Q45 | single Q45→Q31 round-half-up, saturating |
 
 The Q ladder is spelled as named constants on each fixed-point
 specialization (`k_sample_frac_bits`, `k_coeff_frac_bits`,
@@ -290,8 +293,11 @@ specializations and refine the `tap::dsp::sample_type` concept.
 ### `tap/dsp/fft/fft_arith.h` — butterfly arithmetic for the FFT profiles
 
 The sibling trait the fixed-point real FFT is written against (its docstrings
-are that kernel's specification; `tests/test_fft_arith.cpp` pins every
-number). One int32 kernel serves both fixed profiles: `fft_arith<std::int32_t>`
+are that kernel's specification — shift-before-butterfly, the magnitude bound,
+the rounding count per complex product, the BFP headroom rule, the Q31 input
+pre-shift, the twiddle generator; `tests/test_fft_arith.cpp` pins every
+number). Documented here until the Stage 3b README rewrite; it moves to the
+FFT section's profiles table then. One int32 kernel serves both fixed profiles: `fft_arith<std::int32_t>`
 carries `mul_coeff` (int32 × Q1.30 → int64, `>> 30` with one round-half-up,
 saturating), saturating `add` / `sub`, `shr_round` (round-half-up), and
 `headroom_bits` (the block's shared redundant sign bits, via
@@ -320,9 +326,10 @@ targets prefer which layout.
 coefficient format while preserving the row's DC sum *exactly*
 (largest-remainder distribution of the rounding residual — "the coefficients
 of every phase must add to one", R. Bristow-Johnson, music-dsp). Selected by
-the trait's `k_is_fixed_point`: plain conversion for double and float. Each
-correction step saturates, so a tap at the format's rail is never wrapped.
-Design-time code.
+the trait's `k_is_fixed_point`: plain conversion for double and float. A tap
+at the format's rail is never wrapped: each step goes to the largest-remainder
+tap that can still move in that direction, so the sum is preserved whenever
+one exists. Design-time code.
 
 ### `tap/dsp/analysis/` — measurement instruments
 

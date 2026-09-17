@@ -298,15 +298,17 @@ namespace tap::dsp {
     // single mac from accum{} yields the bare product in the accumulator
     // domain (Q29 for Q15, Q45 for Q31, the exact double product for the
     // floating formats).
-    static_assert(sample_traits<double>::finalize(sample_traits<double>::accum{}) == 0.0);
+    static_assert(sample_traits<double>::finalize(sample_traits<double>::accum{}) == sample_traits<double>::silence());
     static_assert(sample_traits<double>::mac(sample_traits<double>::accum{}, 0.5, 0.5) == 0.25);
-    static_assert(sample_traits<float>::finalize(sample_traits<float>::accum{}) == 0.0f);
+    static_assert(sample_traits<float>::finalize(sample_traits<float>::accum{}) == sample_traits<float>::silence());
     static_assert(sample_traits<float>::mac(sample_traits<float>::accum{}, 0.5f, 0.5f) == 0.25);
-    static_assert(sample_traits<std::int16_t>::finalize(sample_traits<std::int16_t>::accum{}) == 0);
+    static_assert(sample_traits<std::int16_t>::finalize(sample_traits<std::int16_t>::accum{})
+                  == sample_traits<std::int16_t>::silence());
     static_assert(sample_traits<std::int16_t>::mac(sample_traits<std::int16_t>::accum{}, std::int16_t{32767},
                                                    std::int16_t{16384})
                   == std::int64_t{32767} * 16384);
-    static_assert(sample_traits<std::int32_t>::finalize(sample_traits<std::int32_t>::accum{}) == 0);
+    static_assert(sample_traits<std::int32_t>::finalize(sample_traits<std::int32_t>::accum{})
+                  == sample_traits<std::int32_t>::silence());
     static_assert(sample_traits<std::int32_t>::mac(sample_traits<std::int32_t>::accum{}, std::int32_t{1} << 30,
                                                    std::int32_t{1} << 30)
                   == std::int64_t{1} << 44);
