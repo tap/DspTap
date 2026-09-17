@@ -53,6 +53,10 @@
 #include "support/signals.h"
 #include "tap/dsp/fft.h"
 
+#ifndef TAP_DSP_PARITY_MAX_N
+#define TAP_DSP_PARITY_MAX_N (1 << 20)
+#endif
+
 namespace {
 
     // ------------------------------------------------------------------------
@@ -397,9 +401,13 @@ namespace {
         }
     }
 
+    /// The closed-form sweep: 4 .. min(65536, TAP_DSP_PARITY_MAX_N). The cap is
+    /// the same knob the parity gate uses (tests/CMakeLists.txt); the QEMU legs
+    /// set 4096 because a 65536-point double sweep needs several 512 KB
+    /// buffers that the MPS2 data region does not have.
     std::vector<std::size_t> closed_form_sizes() {
         std::vector<std::size_t> s;
-        for (std::size_t n = 4; n <= 65536; n *= 2) {
+        for (std::size_t n = 4; n <= 65536 && n <= static_cast<std::size_t>(TAP_DSP_PARITY_MAX_N); n *= 2) {
             s.push_back(n);
         }
         return s;

@@ -66,7 +66,8 @@
 //
 // TAP_DSP_PARITY_MAX_N caps the sizes run, so the emulated QEMU legs can take
 // the suite at N <= 4096 (Part 9, Part 10) where 2^20 does not fit in RAM;
-// the CMake block defaults it to 4096 when cross-compiling.
+// the CMake block and the toolchain files default it to 4096 when
+// cross-compiling, and the 2^20 test is compiled out (not skipped) below it.
 //
 // Stage 2c note. fftsg.c moves to tests/reference/ooura/ (Decision D6), and
 // the 2c text deletes fftsg_float.c. This gate needs BOTH files: the float
@@ -290,7 +291,8 @@ namespace {
         return sizes;
     }
 
-    constexpr std::size_t k_large_n = std::size_t{1} << 20;
+    // Used by the gate only when it is compiled in (see the #if below).
+    [[maybe_unused]] constexpr std::size_t k_large_n = std::size_t{1} << 20;
 
 #if !defined(TAP_DSP_PARITY_INFORMATIONAL)
 
@@ -338,13 +340,12 @@ namespace {
 
     // One run at 2^20 — the largest geometry any consumer uses (AmbiTap's
     // long-partition convolution) — kept as its own test so its runtime shows
-    // separately and it can be excluded on emulated targets by name or by
-    // TAP_DSP_PARITY_MAX_N.
+    // separately. COMPILED OUT, not skipped, when TAP_DSP_PARITY_MAX_N is
+    // below 2^20: the bare-metal one-shot main counts a GTEST_SKIP as a failed
+    // gate (tests/bare_metal_main.cpp), and the QEMU legs run at 4096.
+#if TAP_DSP_PARITY_MAX_N >= (1 << 20)
     template <typename Sample>
     void expect_identical_large() {
-        if (k_large_n > static_cast<std::size_t>(TAP_DSP_PARITY_MAX_N)) {
-            GTEST_SKIP() << "2^20 exceeds TAP_DSP_PARITY_MAX_N=" << TAP_DSP_PARITY_MAX_N;
-        }
         for (const material m : k_materials) {
             expect_identical<Sample>(k_large_n, m, true);
             expect_identical<Sample>(k_large_n, m, false);
@@ -361,6 +362,7 @@ namespace {
     TEST(fft_parity_ooura, LargeTransformIsBitIdenticalToOouraFloat) {
         expect_identical_large<float>();
     }
+#endif // TAP_DSP_PARITY_MAX_N >= (1 << 20)
 
 #else // TAP_DSP_PARITY_INFORMATIONAL
 

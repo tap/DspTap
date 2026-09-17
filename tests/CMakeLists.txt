@@ -145,12 +145,30 @@ target_link_libraries(tap_dsp_tests PRIVATE
 # BEGIN Stage 2a additions (docs/audit-fft-and-code-smells.md, Part 9): the
 # independent oracle and the real-time guard join the main executable; the
 # Ooura bit-identity gate gets its own targets so it can own its compiler flags.
-# Keep this block self-contained and at the end of the file.
+# Registration goes through tap_dsp_add_gtest_executable above, so the two
+# targets are hosted (discovered) or bare-metal one-shot exactly like
+# tap_dsp_tests. Keep this block self-contained and at the end of the file.
 # ==============================================================================
+
+# Largest transform the FFT sweeps run. Hosted, the default covers every
+# consumer geometry (2^20: five 8 MB buffers plus tables). Cross-compiled, the
+# emulated Cortex-M legs (Part 10) get 4096, what fits the MPS2/MPS3 data
+# regions; the toolchain files set the same value in the cache themselves and
+# a plain cache set here never overrides theirs or a -D on the command line.
+# The parity sweep, its 2^20 test (compiled out below the cap: a GTEST_SKIP is
+# rc=1 on the target) and the oracle's closed-form sweep all read it.
+if(CMAKE_CROSSCOMPILING)
+    set(_tap_dsp_parity_max_n_default 4096)
+else()
+    set(_tap_dsp_parity_max_n_default 1048576)
+endif()
+set(TAP_DSP_PARITY_MAX_N ${_tap_dsp_parity_max_n_default} CACHE STRING
+    "Largest FFT size the Ooura parity and oracle sweeps run (power of two >= 4; 4096 on emulated targets)")
 
 target_sources(tap_dsp_tests PRIVATE
     test_fft_oracle.cpp
     test_fft_rt.cpp)
+target_compile_definitions(tap_dsp_tests PRIVATE TAP_DSP_PARITY_MAX_N=${TAP_DSP_PARITY_MAX_N})
 
 # ------------------------------------------------------------------------------
 # Two private reference builds of the vendored C. Neither is the tap_dsp_fft
@@ -158,7 +176,8 @@ target_sources(tap_dsp_tests PRIVATE
 # TAP_DSP_FFT_CMSIS, where it also carries CMSIS objects), and the gate's whole
 # point is to compare against the C independently of how the library builds it.
 # The parity executables link one of these and NOT tap::dsp, so their
-# rdft/rdft_f resolve here and no backend define (vDSP on Apple) reaches them.
+# rdft/rdft_f resolve here and no backend define (vDSP on Apple, CMSIS on the
+# M55) reaches them.
 #
 # Stage 2c note: fftsg.c moves to tests/reference/ooura/ (D6); this gate needs
 # fftsg_float.c to move with it, or its float side becomes port-vs-port.
@@ -188,21 +207,11 @@ target_compile_options(tap_dsp_fft_reference_nocontract PRIVATE ${_tap_dsp_nocon
 
 add_library(tap_dsp_fft_reference_default STATIC ${_tap_dsp_reference_sources})
 
-# Largest transform the parity suite runs. Hosted, the default covers every
-# consumer geometry (2^20: five 8 MB buffers plus tables). Cross-compiled, the
-# emulated Cortex-M legs (Part 10) get 4096, the largest size that fits the
-# MPS2/MPS3 data regions; a toolchain file may still set its own cache value,
-# which this default does not override.
-if(CMAKE_CROSSCOMPILING)
-    set(_tap_dsp_parity_max_n_default 4096)
-else()
-    set(_tap_dsp_parity_max_n_default 1048576)
-endif()
-set(TAP_DSP_PARITY_MAX_N ${_tap_dsp_parity_max_n_default} CACHE STRING
-    "Largest FFT size the Ooura parity suite runs (power of two >= 4; 4096 on emulated targets)")
-
-# THE GATE: -ffp-contract=off on both sides, memcmp bit identity.
-add_executable(tap_dsp_fft_parity test_fft_parity_ooura.cpp)
+# THE GATE: -ffp-contract=off on both sides, memcmp bit identity. On the QEMU
+# legs it runs whole (no MAIN_FILTER): at N <= 4096 the sweep is milliseconds.
+tap_dsp_add_gtest_executable(tap_dsp_fft_parity
+    SOURCES test_fft_parity_ooura.cpp
+    LABELS parity)
 target_include_directories(tap_dsp_fft_parity PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_compile_features(tap_dsp_fft_parity PRIVATE cxx_std_20)
 target_compile_options(tap_dsp_fft_parity PRIVATE ${_tap_dsp_nocontract_cxx})
@@ -216,12 +225,13 @@ target_link_libraries(tap_dsp_fft_parity PRIVATE
 # assumed bound because a different fusion choice per butterfly stage
 # accumulates over log2 N stages; the number goes on the record per platform
 # instead (Part 6, item N3). Two channels carry it, because ctest hides the
-# stdout of a passing test under --output-on-failure: (1) CI runs this label
-# with -V as its own step (Part 13), (2) --gtest_output=xml writes the
-# RecordProperty values to parity-ulp.xml in the build tree for upload. The
-# report is ONE test covering both precisions so a single invocation produces
-# the complete XML (each ctest entry is a separate process writing that file).
-add_executable(tap_dsp_fft_parity_default_flags test_fft_parity_ooura.cpp)
+# stdout of a passing test under --output-on-failure: (1) CI runs the parity
+# label with -V as its own step (ci.yml, Part 13); (2) the JUnit XML below.
+# The report is ONE test covering both precisions so a single invocation
+# produces the complete XML.
+tap_dsp_add_gtest_executable(tap_dsp_fft_parity_default_flags
+    SOURCES test_fft_parity_ooura.cpp
+    LABELS parity)
 target_include_directories(tap_dsp_fft_parity_default_flags PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_compile_features(tap_dsp_fft_parity_default_flags PRIVATE cxx_std_20)
 target_compile_definitions(tap_dsp_fft_parity_default_flags PRIVATE
@@ -231,16 +241,22 @@ target_link_libraries(tap_dsp_fft_parity_default_flags PRIVATE
     tap_dsp_fft_reference_default
     tap_dsp_warnings)
 
-include(GoogleTest)
-target_link_libraries(tap_dsp_fft_parity PRIVATE GTest::gtest_main)
-gtest_discover_tests(tap_dsp_fft_parity
-    DISCOVERY_TIMEOUT 120
-    PROPERTIES TIMEOUT 900 LABELS parity)
-target_link_libraries(tap_dsp_fft_parity_default_flags PRIVATE GTest::gtest_main)
-gtest_discover_tests(tap_dsp_fft_parity_default_flags
-    EXTRA_ARGS --gtest_output=xml:${CMAKE_BINARY_DIR}/parity-ulp.xml
-    DISCOVERY_TIMEOUT 120
-    PROPERTIES TIMEOUT 900 LABELS parity)
+# JUnit XML for the informational report (hosted only: bare metal has no file
+# system). gtest reads GTEST_OUTPUT from the environment at start-up, and the
+# helper exposes no per-test properties or extra arguments, so the ENVIRONMENT
+# property is attached the way gtest_discover_tests itself attaches its
+# registrations: a script on the directory's TEST_INCLUDE_FILES, which ctest
+# runs after the discovery script that defines the test (if(TEST ...) is not
+# available in that context, so the call is unconditional: a discovery failure
+# then errors here as well as in its own _NOT_BUILT entry). Should the helper
+# grow an EXTRA_ARGS/PROPERTIES pass-through, this collapses to one line there.
+if(NOT TAP_DSP_BARE_METAL)
+    set(_tap_dsp_parity_xml_script ${CMAKE_CURRENT_BINARY_DIR}/tap_dsp_fft_parity_default_flags_env.cmake)
+    file(WRITE ${_tap_dsp_parity_xml_script}
+        "set_tests_properties(fft_parity_ooura_default_flags.ReportsMaxUlpVersusOoura PROPERTIES\n"
+        "    ENVIRONMENT \"GTEST_OUTPUT=xml:${CMAKE_BINARY_DIR}/parity-ulp.xml\")\n")
+    set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${_tap_dsp_parity_xml_script})
+endif()
 
 # ==============================================================================
 # END Stage 2a additions
