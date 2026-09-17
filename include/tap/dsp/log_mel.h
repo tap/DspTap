@@ -32,9 +32,10 @@
 //     geometry, never implied.
 //   - FFT: fft_size >= frame, a power of two; the windowed frame occupies
 //     [0, frame) and zeros occupy [frame, fft_size). The transform is the
-//     unnormalized real DFT of tap::dsp::basic_real_fft (Ooura contract), so
-//     the power spectrum is |X_k|^2 with X_k = sum x[n] e^{-i 2 pi k n / N}
-//     up to the sign of the imaginary part, which power discards.
+//     unnormalized real DFT of tap::dsp::basic_real_fft (the packed spectrum
+//     defined in fft/spectrum.h), so the power spectrum is |X_k|^2 with
+//     X_k = sum x[n] e^{-i 2 pi k n / N} up to the sign of the imaginary
+//     part, which power discards.
 //   - Bin frequencies: f_k = k * sample_rate / fft_size, k in [0, fft_size/2].
 //   - Mel scale (HTK): mel(f) = 2595 log10(1 + f / 700). Band edges are
 //     bands + 2 points equally spaced in mel between fmin_hz and fmax_hz.
@@ -75,6 +76,7 @@
 #include <vector>
 
 #include "tap/dsp/fft.h"
+#include "tap/dsp/fft/spectrum.h"
 
 namespace tap::dsp {
 
@@ -307,13 +309,15 @@ namespace tap::dsp {
             }
             std::fill(m_spec.begin() + static_cast<std::ptrdiff_t>(frame), m_spec.end(), Sample(0));
             m_fft.forward_inplace(m_spec.data());
-            // Ooura packing: [0] = DC (real), [1] = Nyquist (real), then (re, im) pairs.
-            m_power[0]     = m_spec[0] * m_spec[0];
-            m_power[n / 2] = m_spec[1] * m_spec[1];
-            for (std::size_t k = 1; k < n / 2; ++k) {
-                const Sample re = m_spec[2 * k];
-                const Sample im = m_spec[2 * k + 1];
-                m_power[k]      = re * re + im * im;
+            // The DspTap packed spectrum (see fft/spectrum.h): [0] = DC (real),
+            // [1] = Nyquist (real), then (re, im) pairs; power() reads all three.
+            const packed_spectrum<const Sample> spectrum(m_spec.data(), n);
+            const std::size_t                   nyquist = spectrum.num_bins() - 1;
+
+            m_power[0]       = spectrum.power(0);
+            m_power[nyquist] = spectrum.power(nyquist);
+            for (std::size_t k = 1; k < nyquist; ++k) {
+                m_power[k] = spectrum.power(k);
             }
             for (std::size_t b = 0; b < m_g.bands; ++b) {
                 const band&   bd  = m_bands[b];

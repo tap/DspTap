@@ -135,6 +135,7 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_pvoc.cpp
         test_quantize.cpp
         test_sample_traits.cpp
+        test_spectrum.cpp
         test_yin.cpp
     MAIN_FILTER
         "*-psola_test/1.*:pvoc_test/1.*:yin_test/1.*:log_mel_test/1.*:nn_test/1.*:Kaiser.FastPrototypeMeetsSpec:Kaiser.BalancedPrototypeMeetsSpec:Kaiser.TransparentPrototypeMeetsSpec:Kaiser.EconomyPrototypeMeetsSpec:Kaiser.RationalPhaseCountMeetsSpec:Kaiser.CompensatedSpecsHoldAt16k:MultitoneAnalysis.*")

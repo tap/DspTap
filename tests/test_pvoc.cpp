@@ -13,6 +13,7 @@
 
 #include <gtest/gtest.h>
 
+#include "tap/dsp/fft/spectrum.h"
 #include "tap/dsp/pvoc.h"
 #include "tap/dsp/yin.h"
 
@@ -138,11 +139,12 @@ namespace {
             frame[i]       = w * static_cast<double>(x[x.size() - n + i]);
         }
         fft.forward_inplace(frame.data());
-        double energy = 0.0;
-        for (size_t k = 1; k < n / 2; ++k) {
+        const tap::dsp::packed_spectrum<const double> spectrum(frame.data(), n);
+        double                                        energy = 0.0;
+        for (size_t k = 1; k < spectrum.num_bins() - 1; ++k) {
             const double f = static_cast<double>(k) * k_sr / n;
             if (f >= lo_hz && f <= hi_hz) {
-                energy += frame[2 * k] * frame[2 * k] + frame[2 * k + 1] * frame[2 * k + 1];
+                energy += spectrum.power(k);
             }
         }
         return energy;
