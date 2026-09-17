@@ -140,3 +140,72 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
 target_link_libraries(tap_dsp_tests PRIVATE
     tap::dsp
     tap_dsp_warnings)
+
+# ==============================================================================
+# BEGIN Stage 2a additions (docs/audit-fft-and-code-smells.md, Part 9): the
+# independent oracle and the real-time guard join the main executable; the
+# Ooura bit-identity gate gets its own target so it can own its compiler flags.
+# Keep this block self-contained and at the end of the file.
+# ==============================================================================
+
+target_sources(tap_dsp_tests PRIVATE
+    test_fft_oracle.cpp
+    test_fft_rt.cpp)
+
+# ------------------------------------------------------------------------------
+# The reference copy of the vendored C, compiled with fp-contraction OFF. Bit
+# identity between the C and its C++ transliteration holds only if both are
+# compiled to the same sequence of IEEE operations, and CMake gives neither
+# side an fp-contract setting: gcc contracts C in gnu17 mode, g++ contracts
+# C++ in every mode, clang contracts everywhere (Part 4, "fp-contraction
+# policy"). MSVC's default /fp:precise does not contract, so nothing is passed
+# there. This library is private to the tests and is not the tap_dsp_fft the
+# library links; the parity executable links THIS and not tap::dsp, so its
+# rdft/rdft_f resolve here and no backend define (vDSP on Apple) reaches it.
+# ------------------------------------------------------------------------------
+set(_tap_dsp_nocontract_c   "$<$<C_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>")
+set(_tap_dsp_nocontract_cxx "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>")
+
+add_library(tap_dsp_fft_reference_nocontract STATIC
+    ${PROJECT_SOURCE_DIR}/third_party/ooura/fftsg.c
+    ${PROJECT_SOURCE_DIR}/third_party/ooura/fftsg_float.c)
+target_compile_options(tap_dsp_fft_reference_nocontract PRIVATE ${_tap_dsp_nocontract_c})
+
+# Largest transform the parity suite runs. The default covers every consumer
+# geometry (2^20); emulated targets set 4096 (Part 10) to fit in RAM.
+set(TAP_DSP_PARITY_MAX_N 1048576 CACHE STRING
+    "Largest FFT size the Ooura parity suite runs (power of two; 4096 on emulated targets)")
+
+# THE GATE: -ffp-contract=off on both sides, memcmp bit identity.
+add_executable(tap_dsp_fft_parity test_fft_parity_ooura.cpp)
+target_include_directories(tap_dsp_fft_parity PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_compile_features(tap_dsp_fft_parity PRIVATE cxx_std_20)
+target_compile_options(tap_dsp_fft_parity PRIVATE ${_tap_dsp_nocontract_cxx})
+target_compile_definitions(tap_dsp_fft_parity PRIVATE TAP_DSP_PARITY_MAX_N=${TAP_DSP_PARITY_MAX_N})
+target_link_libraries(tap_dsp_fft_parity PRIVATE
+    tap_dsp_fft_reference_nocontract
+    tap_dsp_warnings
+    GTest::gtest_main)
+gtest_discover_tests(tap_dsp_fft_parity DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 900 LABELS parity)
+
+# INFORMATIONAL: the same source at default flags on both sides (the C here is
+# the library's own tap_dsp_fft build), printing the measured max-ulp deviation
+# per N and never failing. It is not a pass/fail gate with an assumed bound
+# because a different fusion choice per butterfly stage accumulates over
+# log2 N stages; the number goes on the record per platform instead (Part 6,
+# item N3).
+add_executable(tap_dsp_fft_parity_default_flags test_fft_parity_ooura.cpp)
+target_include_directories(tap_dsp_fft_parity_default_flags PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_compile_features(tap_dsp_fft_parity_default_flags PRIVATE cxx_std_20)
+target_compile_definitions(tap_dsp_fft_parity_default_flags PRIVATE
+    TAP_DSP_PARITY_INFORMATIONAL
+    TAP_DSP_PARITY_MAX_N=${TAP_DSP_PARITY_MAX_N})
+target_link_libraries(tap_dsp_fft_parity_default_flags PRIVATE
+    tap::dsp_fft
+    tap_dsp_warnings
+    GTest::gtest_main)
+gtest_discover_tests(tap_dsp_fft_parity_default_flags DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 900 LABELS parity)
+
+# ==============================================================================
+# END Stage 2a additions
+# ==============================================================================
