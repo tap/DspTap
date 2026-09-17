@@ -344,6 +344,9 @@ cmake --build build-m33
 ctest --test-dir build-m33 --output-on-failure
 ```
 
+Benchmarks and the per-target instruction-count ratchet build with
+`-DTAP_DSP_BUILD_BENCH=ON`; policy and workflow in [`bench/README.md`](bench/README.md).
+
 ### As a submodule
 
 ```cmake

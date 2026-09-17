@@ -1,0 +1,186 @@
+name: Bench
+
+# Deterministic instruction-count ratchet (bench/README.md). Wall clock on a
+# shared runner is noise; executed guest instructions under QEMU's TCG plugin
+# are exact, so a hard two-sided gate (+-3 %) is safe here. One job per
+# baseline key in bench/baselines.json:
+#
+#   m4-softfp  Cortex-M4, -mfloat-abi=soft   (mps2-an386)  Ooura float32
+#   m4f        Cortex-M4F, fpv4-sp-d16       (mps2-an386)  Ooura float32
+#   m33        Cortex-M33, no MVE            (mps2-an505)  Ooura float32
+#   m55        Cortex-M55, Helium            (mps3-an547)  CMSIS-DSP (deployed profile)
+#   m55-ooura  Cortex-M55, TAP_DSP_FFT_CMSIS=OFF (mps3-an547)  Ooura float32 fallback
+#
+# Toolchain files come from the Stage 1 CI-legs PR (cmake/arm-cortex-m4-mps2.cmake
+# with TAP_DSP_M4_FPU, cmake/arm-cortex-m33-mps2.cmake, cmake/arm-cortex-m55-mps3.cmake);
+# the float32 test legs themselves live in ci.yml. This workflow owns only the
+# ratchet and the size report.
+#
+# Seeding: a key whose dict in bench/baselines.json is empty is unseeded. Its
+# job then runs icount.py --update, prints the counts, and uploads the
+# resulting file as an artifact instead of gating; the seed-summary job merges
+# the per-key artifacts into one baselines.json artifact. The seeding commit
+# copies that file into bench/baselines.json and records SHA, GCC and QEMU
+# versions in bench/README.md. From then on the job compares.
+on:
+  push:
+  pull_request:
+
+jobs:
+  icount-ratchet:
+    name: icount ${{ matrix.key }}
+    # Pinned to 24.04, not -latest: the plugin header below is pinned to the
+    # QEMU this image ships (8.2.x, plugin API v2), digest-verified.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # TAP_DSP_FFT_CMSIS defaults ON for every bare-metal Arm profile
+          # (root CMakeLists.txt), so every non-Helium key pins it OFF here
+          # explicitly, whatever its toolchain file also does.
+          - key: m4-softfp
+            toolchain: cmake/arm-cortex-m4-mps2.cmake
+            flags: -DTAP_DSP_M4_FPU=OFF -DTAP_DSP_FFT_CMSIS=OFF
+          - key: m4f
+            toolchain: cmake/arm-cortex-m4-mps2.cmake
+            flags: -DTAP_DSP_M4_FPU=ON -DTAP_DSP_FFT_CMSIS=OFF
+          - key: m33
+            toolchain: cmake/arm-cortex-m33-mps2.cmake
+            flags: -DTAP_DSP_FFT_CMSIS=OFF
+          - key: m55
+            toolchain: cmake/arm-cortex-m55-mps3.cmake
+            flags: ""
+          - key: m55-ooura
+            toolchain: cmake/arm-cortex-m55-mps3.cmake
+            flags: -DTAP_DSP_FFT_CMSIS=OFF
+    env:
+      # Commit the tag pointed at when pinned (tags are movable; commit SHAs
+      # are not); the header's digest is verified on download. This SHA is
+      # QEMU v8.2.2, matching ubuntu-24.04's qemu-system-arm (plugin API v2).
+      # Same pin as MuTap's icount-ratchet job.
+      QEMU_PLUGIN_HEADER_URL: https://raw.githubusercontent.com/qemu/qemu/11aa0b1ff115b86160c4d37e7c37e6a6b13b77ea/include/qemu/qemu-plugin.h
+      QEMU_PLUGIN_HEADER_SHA256: "c53a2af163e80e3f4bc6c60dbdfc84003db329d757e37cd8a16a77e1d82606ff"
+      BUILD_DIR: build-${{ matrix.key }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Arm toolchain and QEMU
+        run: >
+          sudo apt-get update -q &&
+          sudo apt-get install -y -q gcc-arm-none-eabi qemu-system-arm
+          libglib2.0-dev pkg-config
+
+      # These versions go into bench/README.md next to the numbers when a key
+      # is seeded or re-recorded; the counts are only comparable within a
+      # toolchain/QEMU pair.
+      - name: Toolchain versions
+        run: |
+          arm-none-eabi-gcc --version | head -1
+          qemu-system-arm --version | head -1
+          cmake --version | head -1
+
+      - name: Build counting plugin
+        run: |
+          curl -sfLo /tmp/qemu-plugin.h "$QEMU_PLUGIN_HEADER_URL"
+          actual=$(sha256sum /tmp/qemu-plugin.h | cut -d' ' -f1)
+          if [ "$actual" != "$QEMU_PLUGIN_HEADER_SHA256" ]; then
+            echo "::error::qemu-plugin.h checksum mismatch"; exit 1
+          fi
+          gcc -shared -fPIC $(pkg-config --cflags glib-2.0) -I/tmp \
+            -o /tmp/libinsncount.so tools/qemu_insn_plugin/insn_count.c
+
+      # Release (-O2) workloads, matching how baselines are recorded. Tests
+      # off: this job counts instructions; ci.yml runs the suites.
+      - name: Build workloads
+        run: >
+          cmake -S . -B "$BUILD_DIR"
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE=${{ matrix.toolchain }}
+          -DTAP_DSP_BUILD_TESTS=OFF
+          -DTAP_DSP_BUILD_BENCH=ON
+          ${{ matrix.flags }}
+          && cmake --build "$BUILD_DIR" -j 4
+
+      # Placeholder for the .text ceilings (docs/audit-fft-and-code-smells.md,
+      # Part 10 item 4): prints every scenario binary's sizes. The ceilings
+      # become numbers, asserted here per key, once the legs are seeded and
+      # the per-profile size-probe object exists; a whole binary carries
+      # newlib and semihosting, so it is a report, not the gate.
+      - name: Sizes (report only)
+        run: arm-none-eabi-size "$BUILD_DIR"/bench/icount/tap_dsp_icount_*
+
+      - name: Seeded?
+        id: mode
+        run: |
+          seeded=$(python3 -c "import json; d=json.load(open('bench/baselines.json')); print('true' if d.get('${{ matrix.key }}') else 'false')")
+          echo "seeded=$seeded" >> "$GITHUB_OUTPUT"
+          echo "${{ matrix.key }} seeded=$seeded"
+
+      - name: Ratchet ${{ matrix.key }}
+        if: steps.mode.outputs.seeded == 'true'
+        run: >
+          python3 scripts/icount.py --target ${{ matrix.key }}
+          --build-dir "$BUILD_DIR" --plugin /tmp/libinsncount.so
+
+      - name: Seed ${{ matrix.key }} (unseeded key — record, do not gate)
+        if: steps.mode.outputs.seeded != 'true'
+        run: |
+          python3 scripts/icount.py --target ${{ matrix.key }} \
+            --build-dir "$BUILD_DIR" --plugin /tmp/libinsncount.so --update
+          echo "::warning::${{ matrix.key }} has no baselines: this run recorded them (artifact baselines-${{ matrix.key }}). Copy the seed-summary artifact into bench/baselines.json in a seeding commit with the versions above in bench/README.md."
+          {
+            echo "### ${{ matrix.key }} seeding run"
+            echo '```json'
+            python3 -c "import json; print(json.dumps(json.load(open('bench/baselines.json'))['${{ matrix.key }}'], indent=2))"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload recorded baselines
+        if: steps.mode.outputs.seeded != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: baselines-${{ matrix.key }}
+          path: bench/baselines.json
+          retention-days: 30
+
+  # Folds the per-key seeding artifacts (each has one key filled in) into the
+  # single file the seeding commit copies to bench/baselines.json. Runs only
+  # when at least one key was unseeded on this run.
+  seed-summary:
+    name: Merge seeding artifacts
+    needs: icount-ratchet
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        id: download
+        continue-on-error: true
+        with:
+          pattern: baselines-*
+          path: /tmp/seeds
+
+      - name: Merge
+        run: |
+          files=$(ls /tmp/seeds/*/baselines.json 2>/dev/null || true)
+          if [ -z "$files" ]; then
+            echo "every key is seeded; nothing to merge"
+            echo "merged=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          python3 scripts/icount.py --merge $files --baselines bench/baselines.json
+          cat bench/baselines.json
+          { echo "### merged baselines.json (seeding commit copies this)"; echo '```json'; cat bench/baselines.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          echo "merged=true" >> "$GITHUB_ENV"
+
+      - name: Upload merged baselines
+        if: env.merged == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: baselines-merged
+          path: bench/baselines.json
+          retention-days: 30
