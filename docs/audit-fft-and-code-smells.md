@@ -1,7 +1,8 @@
 # Audit: the FFT layer and its relatives across DspTap
 
 *September 2026. Baseline at the time of the audit: `5ca3b1c`, builds warning-free with
-`-DTAP_DSP_WERROR=ON`, 160/160 tests pass on Linux/Ooura.*
+`-DTAP_DSP_WERROR=ON`, 160/160 tests pass on Linux/Ooura. Revision 2: Parts 3-5 rewritten
+after the adversarial review recorded in Part 6.*
 
 The trigger was one smell: the float Ooura build is produced by `#define double float` plus
 forty symbol-renaming `#define`s in `third_party/ooura/fftsg_float.c`. This document records
@@ -20,9 +21,11 @@ type. It is the root of F2, F3 and F7.
 
 ### F2. Ooura leaks 38 externally-visible functions into the global C namespace, twice
 `fftsg.c` declares none of its helpers `static` (`makewt`, `bitrv2`, `cftf161`, ...); with the
-`_f` copies that is 76 global symbols per binary. Any other Ooura user in the same process
-(Max hosts and third-party externals commonly vendor this exact file) is a duplicate-symbol or
-silent-interposition hazard. The rename table in F1 exists *because* of this.
+`_f` copies that is 76 global symbols per binary. The rename table in F1 exists *because* of
+this. Actual exposure, stated precisely: Max externals are MODULE bundles bound per image
+(macOS two-level namespace; Windows exports nothing without `__declspec`), so the realistic
+collision is a Linux shared object such as the capi, whose C objects are not visibility-hidden.
+Real, but not urgent; the port removes it as a side effect.
 
 ### F3. A "header-only" library that requires a compiled static library
 README and CLAUDE.md say header-only; in fact `tap::dsp` links `tap_dsp_fft`, and every
@@ -36,10 +39,13 @@ places inside `basic_real_fft`: constructor, both transforms, and the member lis
 `#if ... if constexpr (std::is_same_v<Sample, float>) { ...; return; } #endif` followed by the
 Ooura path. Consequences:
 - The **object layout of `basic_real_fft<float>` depends on a build define** (`m_engine` exists
-  or not; `m_ip/m_w` are allocated or not). Two translation units built with different defines
-  and linked together are an ODR violation with a real crash mode. MuTap-Max builds through
-  MuTap (which forces vDSP off) while the capi and any other consumer take DspTap's default
-  (vDSP on for Apple): the hazard is one CMake cache away.
+  or not; `m_ip/m_w` are allocated or not). The defines are INTERFACE compile definitions, so
+  every TU inside one CMake build agrees; the hazard is **cross-image**: two separately built
+  images that both export the weak template symbols and land in one process (on macOS dyld
+  coalesces weak definitions across images unless visibility is hidden). Not observed today
+  (MuTap-Max forces vDSP off through MuTap, the capi is never loaded into Max, AmbiTap keeps
+  its own wrapper), real in principle, and the same hazard exists one level up for every class
+  that embeds the FFT by value (`basic_pvoc<float>`, MuTap's `fdaf<float>`, ...).
 - `fft_engine_noop` and `float_engine_t` exist only to make the `#if` compile for `double`.
 - There is no way to instantiate Ooura and vDSP in the *same* binary, so backend parity is a
   CI-matrix property rather than a test.
@@ -184,244 +190,407 @@ Ranked by severity. Every item was read in the source; line numbers are at `5ca3
 
 ---
 
-## Part 3 — Plan
+## Part 3 — Plan (revision 2)
 
-Ordered so that each stage is independently landable, leaves the tree green, and reduces the
-blast radius of the next one. Numeric contracts do not move until Stage 3, and Stage 3 is
-gated on bit-exactness.
+The stated goal is one real-FFT implementation over `double`, `float` and, when a consumer
+needs it, the fixed-point profiles. Revision 1 mixed that goal with unrelated hygiene, made the
+float numbers move in the same PR as the port, promised M55 gates the repo cannot run, and
+carried a fixed-point design that does not survive arithmetic (Part 6). Revision 2 is the
+minimum path to "no `#define double float`, no global symbols, header-only, one template",
+with everything else either sequenced behind it or moved to Appendix A.
 
-### Stage 0 — Hygiene that touches no numerics (one PR)
-Fix `long m_n` (both files), `solve_dense` noexcept, NOTICE.md names, the dangling toolchain
-references and the `MUTAP_` variable, delete the dead `TAP_DSP_CHANNEL_PARALLEL` macros (or
-make something read them), brace the SMLALD tail loops, de-duplicate the `fft.h` paragraph,
-add `<algorithm>`/`<utility>` to kaiser. Add `include/tap/dsp/detail/math.h` with `k_pi`
-delegating to `std::numbers::pi`, `hann_periodic`, `db_from_power`/`db_from_amplitude`, and
-migrate the four copies. Add a `tests/support/` for the copy-pasted test helpers.
+**Rollout rule for every stage.** DspTap PR, squash to `main`; MuTap PR that bumps the pin *and*
+carries that stage's MuTap-side change in one PR; MuTap-Max pin. Each stage names which MuTap
+tests must be **unchanged** (the fingerprint harness, bit-identical) and which are
+**re-measured**. DspTap has no tags; "released" means both consumers pin a tree containing it.
 
-### Stage 1 — One packed-spectrum view (one PR here, one in MuTap)
-`include/tap/dsp/spectrum.h`: a non-owning view over the Ooura-packed buffer with `dc()`,
-`nyquist()`, `re(k)`, `im(k)`, `bin(k)` returning a small complex value in the *engineering*
-convention (the conjugation lives in exactly one place), `num_bins()`, and `power(k)`.
-Migrate `pvoc.h`, `log_mel.h`, `test_pvoc.cpp`; then MuTap's five headers. After this the
-packing contract has one definition and the FFT can change its internals without the
-consumers knowing.
+### Stage 0 — The counter bug, alone
+`long m_n` in `psola.h:189` and `pvoc.h:365` (32-bit on Cortex-M and Windows; signed overflow
+after ~12.4 h at 48 kHz, then an out-of-bounds write). Two files, a fixed-width counter or an
+explicit modulo wrap, and a test that seeds the counter near 2^31 and crosses it. Bump MuTap
+immediately. Nothing else rides in this PR.
 
-### Stage 2 — Preconditions and the `double` question in the substrate (one PR)
-Introduce `TAP_EXPECTS` (STYLE.md already names it) and replace the bare asserts; give
-every primitive a callable `valid()` or a checked factory so the capi stops re-deriving
-rules. Decide and land the `sample_traits<double>` question (Decision D1 below); until it is
-settled, a traits-based FFT has no golden profile.
+### Stage 1 — Consumer and CI prerequisites (MuTap PR, DspTap PR)
+- MuTap: `ci.yml:176` passes `-DMUTAP_FFT_CMSIS=OFF`; the option is `TAP_DSP_FFT_CMSIS`, so the
+  "Ooura fallback on M55" leg has been rebuilding CMSIS. Fix the flag. Prune the bare-metal
+  gtest filter of the `real_fft_test/*` and `fft_backend_parity` names that moved here.
+  Generalize `tests/branchless_parity_check.cpp` into a fingerprint harness over the fdaf,
+  fd_kalman, pem_afc, postfilter and nn_suppressor chain outputs, runnable at any pin; this is
+  the bit-identity gate every later MuTap bump uses.
+- DspTap: make the M55 leg honest. The toolchain file links `../platform/*` files that live in
+  MuTap, and CI builds only the static library with tests off. Decision: strip the link flags,
+  declare the toolchain compile-only, and add a compile-only object target that instantiates
+  the engine for `float` and `double` (Stage 2a onward) so the M55 leg compiles the port. No
+  sentence in this plan calls an M55 *runtime* property a DspTap gate; the on-target gates are
+  MuTap's M33 and M55 QEMU legs, which run the float suppressor suite on the Ooura float path
+  once the flag above is fixed. Porting the platform files here is deferred to Appendix A.
+- DspTap: state the fp-contraction policy (Part 4) as a contract point in `fft.h` before the
+  port lands, so the parity target and the consumers are measured against a written rule.
 
-### Stage 3 — Port Ooura's `rdft` path to a C++ template (the core PR)
-*(Detailed design in Part 4; naming in Part 5.)*
+### Stage 2 — The port, in three PRs
+**2a. Add the engine beside the C, route nothing.** `detail::split_radix_rdft<Sample>` per
+Part 4, transliterated statement-for-statement, tables computed *exactly as the C computes
+them for each precision* (float-typed locals for the float instantiation, libm calls with
+explicit `static_cast<double>` arguments). Gate: a parity test TU that compiles both C files
+and the C++ with `-ffp-contract=off` and requires **bit identity for double and for float**,
+forward and inverse, at every power of two from 4 to 65536 plus one run at 2^20, on the
+linux, windows and macos legs (same binary, same libm; cross-platform identity is not claimed
+and does not hold today either). A second run at default flags is informational and pinned at
+a *measured* bound. An independent oracle: closed-form vectors (impulse, DC, Nyquist, on-bin
+tone) plus a compensated-summation DFT at small N, because `long double` is `double` on MSVC
+and Apple arm64. A host microbenchmark, port vs C at N=512/2048 float/double, as a CI
+artifact. M55 leg compiles the instantiations. MuTap: nothing moves; no bump needed.
 
-`include/tap/dsp/detail/ooura_rdft.h`: `template <class Sample> class ooura_rdft`, a
-mechanical transliteration of *only* the functions `rdft` reaches (`makewt`, `makeipt`,
-`makect`, `bitrv2*`, `cftfsub/cftbsub`, `cftf1st/cftb1st`, `cftrec4`, `cftleaf`, `cftmdl1/2`,
-`cftfx41`, `cftf161/162/081/082/040`, `cftb040`, `cftx020`, `rftfsub/rftbsub`), same operation
-order, tables built in the constructor (fixes F6), all helpers private members. Ooura's terms
-permit modification; the header keeps his copyright banner and NOTICE.md records the port.
+**2b. Flip routing.** One line in `fft.h`; `test_fft_backend.cpp`'s `ooura_ref` re-pointed at the
+ported float engine (on Linux/Windows the backend test becomes port-vs-port, which is fine
+only because 2a's parity test exists); README rewritten in the same PR. MuTap bump: fingerprint
+harness bit-identical (double rows *and*, because 2a kept float table semantics, the float
+rows), icount ratchet at 0% delta on m33 and hexagon (the ratchet's ±3% is not the gate here;
+0% is, because nothing numeric changed), `test_float32`, `test_g168`, `test_nn_suppressor`
+unchanged. Rollback is a one-line revert.
 
-Gate: a parity test that instantiates the template and the vendored C side by side and
-requires **bit-identical** output for `double` and `float` at every power of two from 4 to
-65536, on broadband, on-bin tone, impulse and DC material, forward and inverse. Two notes for
-that test: (a) build both with the same `-ffp-contract` setting or the comparison is not
-meaningful; (b) if a platform cannot be made bit-exact, the fallback is a documented
-1-ulp bound, not a loosened tolerance. The existing `test_fft.cpp`, `test_fft_backend.cpp`,
-and MuTap's compliance batteries are the second gate.
+**2c. Remove the C.** Delete `fftsg_float.c`; move `fftsg.c` and `readme.txt` to
+`tests/reference/ooura/`; `tap_dsp_fft` exists only when `TAP_DSP_FFT_CMSIS` is on. MuTap:
+rewrite the CI job that compiles `submodules/dsptap/third_party/ooura/fftsg*.c` by path
+(`ci.yml:319-324`) header-only; rewrite `THIRD_PARTY_NOTICES.md`. Licensing text per Part 5.
 
-Then `basic_real_fft<double/float>` routes to the template, `fftsg_float.c` is deleted, and
-`fftsg.c` moves to `tests/reference/` as the oracle (deleted after one release). `tap_dsp_fft`
-exists only when the CMSIS backend is on; the library becomes header-only as documented.
-This closes F1, F2, F3, F6, F7 (the overloads move to a free function in a non-RT header).
+### Stage 3 — Engine as an explicit parameter, with an ABI tag
+`basic_real_fft<Sample, Engine = default_real_fft_engine_t<Sample>>`. The default alias lives
+in one place, selected by the one remaining build define. To close F4 where it actually lives
+(the consumers that embed the FFT by value), the selection also opens an inline namespace ABI
+tag on `tap::dsp` (`inline namespace fft_ooura {}` / `fft_vdsp {}` / `fft_cmsis {}`), so two
+images built with different defaults cannot coalesce each other's symbols. Backends move to
+`fft/backends/accelerate.h` and `fft/backends/cmsis.h`, included by whoever selects them; the
+CMSIS object library stays PIC. Consumer-facing transforms stay **non-const**; shareability is
+an engine trait (`Engine::is_shareable`), true for the ported engine, false for the two
+scratch-carrying backends. Typed tests over the engines available on the host: Ooura vs vDSP
+same-binary on macOS; CMSIS compile-only on M55 (it cannot run on a host, and nobody runs
+CMSIS-vs-Ooura parity anywhere today; that gap is recorded, not closed, by this stage).
 
-### Stage 4 — Backends as a customization point, not a preprocessor branch
-`basic_real_fft<Sample, Engine = default_real_fft_engine_t<Sample>>`, where `Engine` is any
-type with `init(n)`, `forward_inplace`, `inverse_inplace`. Ooura is `ooura_rdft<Sample>`;
-vDSP and CMSIS become `include/tap/dsp/backends/{accelerate,cmsis}_rfft32.h`, included
-only by the consumer or by the one build-selected alias line. The build define shrinks to
-choosing the *default* engine and nothing else touches it; the class layout no longer depends
-on it (closes F4); Ooura and vDSP can be instantiated in one binary, so backend parity
-becomes an ordinary test rather than a CI matrix.
+### Stage 4 — The packed-spectrum view, DspTap only
+`fft/spectrum.h`: a non-owning view whose docstring carries the numeric definition
+(`bin[k] = a[2k] + i a[2k+1]`, DC at `a[0]`, Nyquist at `a[1]`, `W = exp(+2πi/N)`, inverse
+unnormalized). Primary accessors are **native**: `dc()`, `nyquist()`, `re(k)`, `im(k)`,
+`power(k)`, `num_bins()`. A convention-flipping accessor, if kept, is named unmistakably
+(`bin_engineering(k)`) and is not the default. Migrate `pvoc.h`, `log_mel.h`, `test_pvoc.cpp`,
+gated by the existing pinned tests. MuTap adopts the view per header when each is next
+touched, each such PR gated by the fingerprint harness and 0% icount, because those 77 sites
+do native-convention complex products by hand in ratcheted hot loops and a wholesale rewrite
+is not the mechanical migration revision 1 called it. This stage is **not** a prerequisite for
+Stage 2: the packing is a kept contract.
 
-### Stage 5 — Fixed point
-Extend `sample_traits` with the vocabulary an FFT needs (from/to double, `add`/`sub`,
-`mul_coeff` with the documented rounding, named fraction-bit constants, a `halve()` or
-shift-with-rounding). Then instantiate the same ported Ooura structure over an arithmetic
-policy for `int16_t` and `int32_t`: Q15/Q31 data, twiddles in the traits' existing
-coefficient formats (Q1.14 / Q1.30, which is exactly what a twiddle table wants), int32/int64
-intermediates, fixed scaling per butterfly (radix-4 leaves `/4`, radix-8 `/8`, radix-2 `/2`) so
-the output is deterministic and the headroom is a number in the header. Gate: the double
-battery as oracle within the format's floor, plus the pinned-behaviour tests the fixed-point
-substrate already uses. CMSIS `arm_rfft_q15/q31` can become an optional Stage 4 engine for
-that profile later, once the house contract exists to test it against.
+### Stage 5 — Hygiene (after the port, not before)
+`detail/math.h` (pi via `std::numbers`, periodic Hann, dB helpers), `tests/support/` for the
+copy-pasted helpers, `solve_dense` noexcept, kaiser includes and doc drift, NOTICE names,
+the two duplicated `fft.h` paragraphs, the unbraced SMLALD loops. Gate the Hann/pi
+consolidation with the fingerprint harness: association order must be preserved, and
+log_mel's numpy pin only bites above 1e-6. Do **not** delete `TAP_DSP_CHANNEL_PARALLEL` /
+`TAP_DSP_CP_MIN_CHANNELS` until SampleRateTap and RatioTap (not on disk) have been grepped;
+README says they are consumed there. `TAP_EXPECTS` lands here for `fft.h`'s power-of-two
+precondition only; a repo-wide precondition policy is its own plan.
+
+### Gates, in one table
+
+| Stage | DspTap gate | MuTap gate | Rollback |
+|---|---|---|---|
+| 0 | new overflow test | pin bump, suite green | revert 2 files |
+| 1 | M55 leg compiles instantiations | fallback leg builds Ooura float; filter pruned | n/a |
+| 2a | bit identity double+float, 3 hosts, `-ffp-contract=off`; oracle; bench artifact | none (no bump) | delete header |
+| 2b | existing battery on the port; backend test re-pointed | fingerprint identical; icount 0%; float pins unchanged | one-line revert |
+| 2c | build without the C | CI job rewritten; notices | re-pin |
+| 3 | typed engine tests; macOS same-binary parity | fingerprint identical | re-pin |
+| 4 | pinned pvoc/log_mel tests | per-header fingerprint + icount 0% | per header |
+| 5 | fingerprint on Hann/pi change | pin bump | per item |
 
 ---
 
-## Part 4 — The C++20 port in detail
+## Part 4 — The C++20 port in detail (revision 2)
 
 ### Scope
-`rdft` reaches about 2,400 of `fftsg.c`'s 3,325 lines: `makewt`, `makeipt`, `makect`,
+`rdft` reaches about 2,580 of `fftsg.c`'s 3,325 lines: `makewt`, `makeipt`, `makect`,
 `bitrv2`, `bitrv2conj`, `bitrv216`, `bitrv216neg`, `bitrv208`, `bitrv208neg`, `cftfsub`,
-`cftbsub`, `cftf1st`, `cftb1st`, `cftrec4`, `cftleaf`, `cftmdl1`, `cftmdl2`, `cftfx41`,
-`cftf161`, `cftf162`, `cftf081`, `cftf082`, `cftf040`, `cftb040`, `cftx020`, `rftfsub`,
-`rftbsub`. The DCT/DST family (`ddct`, `ddst`, `dfct`, `dfst`, `dctsub`, `dstsub`), the
-complex entry point `cdft`, and the pthread/Win32 scaffolding (`cftrec4_th` and friends) are
-not ported. `cftrec4` is recursive to depth log4(N); it is bounded and allocation-free and
-stays recursive.
+`cftbsub`, `cftf1st`, `cftb1st`, `cftrec4`, `cfttree`, `cftleaf`, `cftmdl1`, `cftmdl2`,
+`cftfx41`, `cftf161`, `cftf162`, `cftf081`, `cftf082`, `cftf040`, `cftb040`, `cftx020`,
+`rftfsub`, `rftbsub`. Not ported: the DCT/DST family, `cdft`, and the thread scaffolding.
+`cftrec4` is a `while` plus a `for` over `cfttree`/`cftleaf`, not a recursion (revision 1 was
+wrong); nothing in the reachable set self-recurses.
 
 ### Shape
-- One class template, `template <std::floating_point Sample> class split_radix_rdft`, in
-  `include/tap/dsp/fft/split_radix.h`, namespace `tap::dsp::detail`. (Name discussed in
-  Part 5.) Every helper is a private static member function, so the 76 global symbols
-  disappear and the rename table has no reason to exist. The concept replaces the
+- `template <std::floating_point Sample> class split_radix_rdft` in
+  `include/tap/dsp/fft/split_radix.h`, namespace `tap::dsp::detail`. Every helper is a private
+  static member function; the 76 global symbols disappear. The concept replaces the
   `static_assert` enumeration.
-- Members: `std::size_t m_n`, the bit-reversal table `m_ip` and the trig table `m_w`
-  (`std::vector<Sample>`). Index types may be widened to `std::size_t` freely; they do not
-  affect the floating-point bit pattern. Arithmetic order inside every butterfly is preserved
-  exactly, because bit-exactness against the C is the gate.
-- Public surface of the engine: constructor from size, `forward_inplace(Sample*) const`,
-  `inverse_inplace(Sample*) const`, `size()`. `basic_real_fft` keeps the consumer-facing
-  surface (see Part 1) and adds `std::span<Sample>` overloads, `[[nodiscard]]` on the size
-  queries, `std::size_t` throughout with a single narrowing point, and `TAP_EXPECTS` on the
-  power-of-two precondition. The raw `cdft`/`cdft_f` declarations leave the public header; a
-  complex transform, if a consumer ever needs one, is its own class.
+- Members: size, bit-reversal table, trig table (`std::vector<Sample>`). Index types may be
+  widened to `std::size_t` (checked: every loop bound is a `< m` / `> 0` form over non-negative
+  values); keep `-Wconversion` on to catch a missed cast. Load `m_w.data()` into a local once
+  per transform so aliasing analysis matches the C, which receives `w` by parameter.
+- **Every Ooura statement stays textually intact.** Clang contracts FMAs within a statement
+  only; GCC across statements after inlining. Refactoring `wk1r * x0r - wk1i * x0i` into a
+  `cmul` helper, a lambda, or a policy call changes which products fuse and silently breaks bit
+  identity on one compiler or the other. This rule is stated in the header.
+- **Every libm call takes an explicit `static_cast<double>`.** In C, `cos(delta * j)` with a
+  float `delta` calls the double `cos`; in C++ `std::cos` of a float calls `cosf`, and the tables
+  then differ from the C. The parity test at N where `makewt` takes the `nwh > 4` branch catches
+  this, but only because 2a keeps the C's table semantics.
+- Engine surface: constructor from size, `forward_inplace(Sample*) const`,
+  `inverse_inplace(Sample*) const`, `size()`. Const is sound for the ported engine: the only
+  mutable state in the C is the lazy `nw`/`nc` re-init in `rdft` and the thread code, both gone.
+  `basic_real_fft` keeps the consumer-facing surface (Part 1), adds `std::span` overloads,
+  `[[nodiscard]]` on size queries, `std::size_t` with one narrowing point, `TAP_EXPECTS` on the
+  power-of-two precondition, and drops the raw `cdft` declarations.
+- Tables are built in the constructor, once, so F6 closes. They are built **with the same
+  precision semantics the C uses for each instantiation** (see next section).
 
-### Tables are built in the constructor, in double, once
-This closes F6 (lazy first-call initialization on the RT path). It also fixes a defect in the
-current float build that the audit surfaced only by reading the macro: `#define double float`
-retargets the *locals* inside `makewt` too, so the float twiddles are computed from a
-float-rounded `delta = atan(1)/nwh` and their argument error grows with the table index. The
-port computes every twiddle in double and rounds once into `Sample`.
+### The float twiddles: measured, and the decision
+Revision 1 claimed the float build's twiddles were degraded because `#define double float`
+retargets `makewt`'s locals, and proposed computing them in double "because it is more
+accurate", accepting that float would no longer be bit-identical. Measured (Part 6, item N2):
+table max absolute error 1.19e-7 either way; transform rms relative error vs double at N=512
+is 1.105e-7 with the C's tables and 1.114e-7 with double-computed tables (worse), N=16 worse,
+N=65536 6% better. It is a wash. Decision: **the port reproduces the C's table semantics for
+both precisions and float stays bit-identical.** That is what lets Stage 2b bump MuTap with
+every float pin unchanged. Double-computed tables are dropped from the plan. A separate note
+worth keeping: libm `cos`/`sin` differ in the last bit between glibc, newlib, UCRT and Apple,
+which is why `test_log_mel.cpp` carries a per-platform double tolerance; a
+platform-independent table (compensated evaluation or a checked-in generator) is the only way
+to make *double* outputs identical across hosts, and is Appendix A material.
 
-Consequence for the gate: the **double** port must be bit-identical to the vendored C; the
-**float** port will differ from `fftsg_float.c` by design, because it is more accurate. The
-float gate is therefore the existing float-tracks-double test plus a small ulp bound against
-the double port, not bit identity against the old float build.
+### fp-contraction policy (a contract point, not a build detail)
+Measured: `gcc -std=c17` does not contract; `gcc -std=gnu17` does; `g++` contracts in both
+`c++20` and `gnu++20`; clang contracts in every mode, statement-scoped. Neither DspTap nor
+MuTap nor MuTap-Max sets `-ffp-contract` or `CMAKE_C_EXTENSIONS`, so the C oracle and the
+port are contracted differently by default wherever the ISA has FMA (Apple arm64, M55 VFMA,
+any x86 built with `-march`). Therefore: (a) the parity target compiles both sides with
+`-ffp-contract=off` and that is the bit-identity gate; (b) the default-flags run is
+informational with a measured bound, because a different fusion choice per stage accumulates
+over log2 N stages and "1 ulp" is an assumption; (c) `fft.h` states whether `tap::dsp` exports
+`-ffp-contract=off` as an INTERFACE option (bit reproducibility across compilers) or leaves it
+to the consumer (VFMA speed on M55). Today it is silently "whatever the consumer does", and
+MuTap's "bit-identical" double rows are protected only if this holds in MuTap's build.
 
-### Transforms become `const`
-With immutable tables, `forward_inplace` and `inverse_inplace` are `const` member functions.
-That states in the type what the docstring promises in prose, and it lets one plan be shared
-across threads. The vDSP and CMSIS engines carry scratch buffers and stay non-const, which is
-itself a useful signal about which backends are shareable.
+### Header-only, and why the escape hatch is gone
+Header-only, unconditionally for the ported engine. `tap::dsp` is a true INTERFACE target
+*unless* `TAP_DSP_FFT_CMSIS` is on, in which case a PIC object library carries the CMSIS C;
+there is no `install()` rule in the repo, so the `$<INSTALL_INTERFACE>` lines are dead and
+"header-only" is a statement to `add_subdirectory` consumers only. Keep MuTap-Max's
+per-external comments until a bump proves they can go.
 
-### Two mechanical passes, one gate
-1. Port with plain `+ - *` and prove bit-exactness at every power of two from 4 to 65536, on
-   broadband, on-bin tone, impulse and DC material, forward and inverse. Build the C and the
-   C++ with the same `-ffp-contract` setting or the comparison is meaningless; if a platform
-   cannot be made bit-exact, the documented fallback is a 1-ulp bound, never a loosened
-   tolerance.
-2. Only then introduce the arithmetic policy that fixed point needs (Stage 5), under the same
-   gate. Designing the policy before the port exists means designing it blind; the gate makes
-   the second pass safe.
+The `extern template` escape hatch from revision 1 is dropped: [temp.explicit] exempts inline
+functions from suppression, and members defined in the class body are inline, so the hatch
+does nothing unless every heavy member is defined out-of-class without `inline` (verified on
+g++ and clang++). It is also unnecessary: `fftsg.c` compiles in 0.6-0.8 s as C and 1.3 s as
+C++ for the whole file; MuTap has about 20 TUs that reach `fft.h`, two instantiations each,
+well under a minute of CPU. Code size on M55 (thumbv8.1m, hard float, rdft-reachable text):
+float 15.7 KB at `-Os`, 19.9 KB at `-O2`; double (soft-float) 39.9 KB at `-O2`. Header-only is
+neutral for size because the toolchain already uses `--gc-sections`. Add a `.text` assertion
+for the float instantiation to the M55 leg; MuTap's pico2w job is the model.
 
-### Header-only, with one escape hatch
-Header-only. The templates belong in headers because that is what the rest of the library
-is, and because a consumer that instantiates only `float` then compiles only the float code,
-which the current static library cannot do. `tap::dsp` becomes a true INTERFACE target and
-the compiled-library explanations disappear from MuTap's and MuTap-Max's CMake. The CMSIS
-backend still compiles C, so a small object library exists only when that option is on.
+### Performance
+The backends' quoted gains are "vs autovectorized Ooura", i.e. the C compiled as C. A port
+with member access and vector storage may vectorize differently (SLP over the straight-line
+leaves is what makes Ooura fast). Before the C is deleted: the host microbenchmark from 2a,
+MuTap's icount ratchet on m33 and hexagon with the port swapped in, and the M55 size
+assertion. Thresholds are decided before 2b merges.
 
-The cost is compile time: the 2,400 lines are heavily unrolled radix-8/16 leaves, and MuTap
-pulls `fft.h` into every external and test translation unit through its umbrella header. The
-escape hatch is the standard one: `extern template class split_radix_rdft<double>;` (and
-`<float>`) behind an opt-in CMake option that adds one `.cpp` with the explicit
-instantiations. Default off; measure first; turn on only if the numbers say so. No C++20
-modules: the Max toolchain and the submodule consumers are not ready for them.
-
-### Cleanup the port makes possible
-- **Shareable plans.** MuTap's chains hold several FFTs of one size, each with its own tables.
-  With immutable tables the plan can be a value that copies cheaply (explicit sharing, no
-  global cache), which matters on the M55.
-- **Independent oracle.** Every FFT test today compares Ooura to Ooura. A naive long-double
-  DFT at small sizes is an oracle that is not the implementation under test.
-- **Typed tests over engines.** With the engine as a template parameter (Stage 4), one typed
-  suite runs the split-radix engine, vDSP and CMSIS in the same binary; backend parity stops
-  being a CI-matrix property.
-- **File layout.** Public `fft.h`; then `fft/split_radix.h`, `fft/spectrum.h` (the bin view
-  from Stage 1), `fft/backends/accelerate.h`, `fft/backends/cmsis.h`. A backend header is
-  included by whoever selects it, not by everyone.
-- **Fixed-point twiddles fall out of the substrate.** Q1.14 and Q1.30 are already
-  `sample_traits<int16_t/int32_t>::coeff`, so the fixed-point twiddle table needs no new
-  format design.
-- **Do not fold the port into the same PR as the bin view or the preconditions work.** The
-  bit-exact gate is convincing only when the diff around it is boring.
-
----
-
-## Part 5 — Naming: is this still "Ooura"?
-
-What lands is a C++ port of one algorithm from Takuya Ooura's package (the split-radix real
-DFT, "Fast Version III"), not a fork of the package. Two different things want names.
-
-**Attribution stays, and stays prominent.** Ooura's terms permit modification and require
-the copyright notice. The header keeps his banner, `NOTICE.md` records the port and what was
-dropped, and the docs say "a C++ port of Takuya Ooura's `fftsg.c` `rdft`" in the first
-paragraph. The house IP policy (implement from published literature, cite it) also wants the
-provenance visible, so nothing should read as if the algorithm were new.
-
-**Identifiers should say what the code is, not whose it was.** Recommendation:
-- Engine class `split_radix_rdft<Sample>` in `include/tap/dsp/fft/split_radix.h`. Descriptive,
-  greppable, and it cannot be confused with the many `ooura_fft.h` / `namespace ooura`
-  headers in the wild (WebRTC, Chromium, assorted audio SDKs). Linkage collision is not the
-  concern (everything is inside `tap::dsp` and the port removes the global symbols); reader
-  confusion and search results are.
-- The public API is unchanged: `basic_real_fft`, `real_fft`, `real_fft32`, and later
-  `real_fft_q15` / `real_fft_q31`.
-- The words "Ooura packing" and "Ooura contract" leave the consumer headers. They become
-  "the DspTap packed spectrum" and "the DspTap real-FFT contract (inherited from Ooura's
-  `rdft`)", and the Stage 1 spectrum view is where the layout is defined. Consumers stop
-  naming the vendor of a layout they never see.
-- "Ooura" remains in exactly three places: the attribution banner, `NOTICE.md`, and the
-  bit-exact parity test, which compares against `tests/reference/ooura/fftsg.c` until that
-  file is deleted (D6).
-- Not recommended: a coined brand (`tapfft`, `taprfft`) that suggests a novel algorithm, or
-  keeping `ooura_rdft` as the type name, which invites the "is this the same as the fork I
-  already have" question the rename is meant to remove.
+### Other contract points to write down
+No alignment requirement on `Sample*` (Ooura needs none; a future MVE backend must not add
+one quietly). NaN propagates to every bin (no data-dependent branches). Denormal inputs are
+slow on x86 without FTZ, and FTZ differs between Ooura, vDSP and CMSIS builds, which can show
+as cross-backend differences on near-silent input.
 
 ---
 
-## Decisions to make before Stage 3 (the "shape" discussion)
+## Part 5 — Naming and provenance (revision 2)
 
-**D1. Is `double` a sample format?** Today the substrate says no, on purpose, and CLAUDE.md
-says double is every primitive's golden model. Options: (a) add `sample_traits<double>`
-(float coefficients-as-double, double accumulation) and make it the golden profile for the
-FIR substrate too, which re-baselines decimate's oracle; (b) keep the substrate float-golden
-and let the FFT carry its own `fft_traits<Sample>` with a double specialization. (a) is one
-rule for the whole repo; (b) is less churn. Recommendation: (a).
+**The license is narrower than revision 1 said.** `readme.txt:141-145` and the `fftsg.c` banner:
+"You may use, copy, modify this code for any purpose and without fee. You may distribute this
+ORIGINAL package." Modification is granted; distribution is granted for the *original*
+package; distribution of a modified derivative is not expressly granted. Industry practice
+(WebRTC/Chromium ship heavily modified Ooura under `common_audio/third_party/ooura/` with the
+notice retained and a local-modifications README; Ooura is widely reported as having no
+objection) is practice plus an informal statement, not license text, and none of those
+projects relicense the derived code. Therefore:
+- The port header's banner carries Ooura's notice verbatim as the governing terms for the
+  derived portion, with SPDX `LicenseRef-Ooura AND MIT` (MIT only for the wrapper and the
+  additions), and a line stating that this is a derivative work, not the original package,
+  with the modifications copyright and date.
+- `NOTICE.md` states that redistribution of the derivative relies on the modification grant,
+  quotes the full notice, replaces "permissive/public" (an overstatement already), and keeps
+  `readme.txt` in-tree after `fftsg.c` leaves the main tree.
+- Before Stage 2c merges, attempt the address in the notice for an explicit statement on
+  derivative distribution and record the outcome either way. This is a maintainer judgement
+  call, not legal advice.
+- MuTap's `THIRD_PARTY_NOTICES.md` is rewritten in the 2c bump, because the notice will then
+  live in a header compiled into every external.
 
-**D2. One algorithm or two for fixed point?** (a) The ported Ooura split-radix over an
-arithmetic policy, one bit-reversal, one twiddle table, one test battery; fixed scaling only
-(the depth-first recursion makes block floating point awkward). (b) A separate simpler
-radix-2² DIF kernel for the integer profiles that could do block floating point. (a) keeps
-the golden-model-plus-profiles story literally true; (b) buys BFP dynamic range at the cost of
-two implementations. Recommendation: (a) first; (b) only if a consumer measures the need.
+**Naming, settled with one correction.** The engine is `detail::split_radix_rdft` (D7).
+`fftsg` is genuinely split-radix (`readme.txt:14`). Use one house token for everything
+consumer-facing (`real_fft`, `real_fft32`, `fft/backends/accelerate_real_fft32.h`), not the
+three spellings revision 1 had. Provenance stays visible: the attribution banner, `NOTICE.md`,
+the parity test against `tests/reference/ooura/`, and one glossary line in MuTap's
+`docs/itu-compliance.md`, whose certified float numbers are described as "measured on Ooura":
+that line maps "Ooura" to "the vendored C at DspTap ≤ 5ca3b1c and the bit-identical port from
+the Stage 2b SHA onward" rather than scrubbing the word. Consumer *code* comments drop "Ooura
+packing" in favour of the Stage 4 view's numeric definition.
 
-**D3. What is the fixed-point forward's scale?** Ooura's forward is an unnormalized sum and
-overflows Q15 immediately. The fixed-point contract has to be either "forward scaled by 1/N,
-inverse unscaled" or expose the scale as a number per profile. This is a documented contract
-point, not an implementation detail, and it should be chosen so that a future CMSIS q15
-engine can re-present it.
+---
 
-**D4. Engine as a template parameter or build-only?** Stage 4 proposes the template
-parameter with a build-selected default. The cost is one more template argument visible in
-error messages; the benefit is same-binary backend parity tests and no layout-by-define.
-Recommendation: template parameter.
+## Part 6 — Adversarial review record
 
-**D5. Keep or drop the float-I/O-on-double overloads?** No consumer in the three repos in
-scope uses them. Recommendation: move to a free function `transform_as_double(...)` in a
-non-RT header and delete from the class, after checking AmbiTap.
+Two independent hostile reviews (numerics/port, and process/ecosystem) plus a third pass by
+the author, against the revision 1 text. Every item below was verified against source or by a
+probe before being accepted; items the reviews raised that did not survive verification are
+not listed. **P** = process review, **N** = numerics review, **A** = author.
 
-**D6. How long does `fftsg.c` stay?** Recommendation: as a test-only oracle for one release
-after Stage 3 lands in the consumers, then deleted; the bit-exact parity test is what makes
-the deletion safe.
+### Blockers (all resolved in revision 2)
+- **P1/N1 — Float numerics changed inside the port PR, with no float oracle left.** Revision 1
+  simultaneously required float bit identity (Stage 3 gate) and declared float would differ
+  "by design" (Part 4), then deleted `fftsg_float.c`. Downstream float pins that would have
+  moved: MuTap `test_float32.cpp:92-191`, `test_g168.cpp`, the macOS repeat-until-fail rows,
+  `test_nn_suppressor.cpp:270-305`, the Python parity float profile, the M33 leg, the icount
+  baselines, and `docs/itu-compliance.md:655-668`. Resolution: 2a reproduces the C's table
+  semantics; float is bit-identical; both C files stay as oracles until 2c.
+- **N2 — The "more accurate twiddles" justification was measured and is a wash** (numbers in
+  Part 4). Resolution: dropped.
+- **N3 — "Same `-ffp-contract` setting" is necessary, not sufficient, and CMake does not give
+  it.** GCC C++ contracts in ISO mode; clang contracts statement-scoped; a helper-function
+  refactor changes fusion on clang. Resolution: `-ffp-contract=off` parity target, statement
+  fidelity rule, policy stated in `fft.h`.
+- **N4/P4 — "Bit-identical on all four CI legs" and every M55 gate were unrunnable.** The M55
+  leg is compile-only with tests off; the toolchain links files that live in MuTap; libm
+  differs per host so cross-host identity does not hold today. Resolution: same-binary
+  identity on three hosts; M55 compile-only with size assertion; on-target gates are MuTap's.
+- **N5/P17 — `test_fft_backend.cpp` uses `rdft_f` as its oracle and dies with
+  `fftsg_float.c`.** Resolution: re-pointed in 2b.
+- **P5 — MuTap's Ooura-on-M55 CI leg is a no-op** (`-DMUTAP_FFT_CMSIS=OFF` against an option
+  named `TAP_DSP_FFT_CMSIS`), so "MuTap's compliance batteries are the second gate" was hollow
+  for the profile the port changes. Resolution: Stage 1.
+- **P2 — Stage 1's MuTap half was not mechanical.** The 77 sites compute native-convention
+  products by hand in icount-ratcheted loops; an engineering-convention view is a
+  sign-sensitive rewrite of five certified headers. Resolution: native accessors, DspTap-only
+  migration, MuTap per header when touched, and the view is no longer a prerequisite.
+- **P3 — Licensing overstated.** Resolution: Part 5.
+- **N6/N7/N8 — The fixed-point design did not survive arithmetic.** Radix-4 output scaling
+  overflows the twiddle multiply in int32 for Q15 (17-bit data × Q1.14) and in int64 for Q31;
+  a 16-point leaf grows 4× twice before write-back; per-radix-4 /4 still saturates on a
+  full-scale packed-pair pattern at a 45° twiddle; `rftfsub` and the DC step have gain up to 3
+  and 2; Ooura's inverse has structural gain N/2 so "inverse unscaled" saturates on the first
+  stage; and fixed 1/N scaling gives ~25 dB per-bin SNR at −40 dBFS and ~5 dB at −60 dBFS for
+  log_mel's N=512, i.e. quiet speech becomes rounding noise. Also `cftf1st` derives half its
+  twiddles at run time as `csc1 * (wd1r + w[k])`, a sum of two cosines up to 2.0 that does not
+  fit Q1.14, so "the same table" is false for the first stage. Resolution: fixed point moves to
+  Appendix A with these constraints as its entry conditions.
 
-**D7. The engine's name. Settled: `split_radix_rdft`.** Part 5 has the reasoning; Ooura stays
-in the attribution banner, NOTICE.md and the parity test only. Rejected: `ooura_rdft`
-(collides with the world's forks in every search) and a coined brand (hides provenance the
-IP policy wants visible). Consumer-facing wording moves from "Ooura packing / Ooura
-contract" to "the DspTap packed spectrum / real-FFT contract" as part of Stage 1.
+### Should-fix (all adopted)
+- **P6/N15/A — Stage 2's coupling to D1 was artificial**; the engine is `std::floating_point`
+  until fixed point. D1 also had the coefficient type wrong (`coeff` must be `double` or the
+  double FFT cannot be bit-identical). Moved to Appendix A, corrected.
+- **P7/A — The counter bug shipped inside a hygiene PR.** Now Stage 0, alone.
+- **P8 — Deleting `TAP_DSP_CHANNEL_PARALLEL` without grepping SampleRateTap/RatioTap.** Held.
+- **P9/N12/A — D4 did not close F4 for the embedding consumers.** ABI tag added; F4 reworded to
+  cross-image.
+- **P10 — F2 severity overstated for MODULE consumers.** Reworded.
+- **P11 — "True INTERFACE target" was conditional and contradicted by the escape hatch; no
+  `install()` exists.** Reworded; hatch dropped.
+- **P12 — Fixed point is scope creep against every consumer's written plan** (MuTap
+  `wake-word-plan.md:978-981`: float32 on every target including RP2350, Q15 front end only if
+  a measured M33 count misses, "DspTap has no fixed-point FFT"). Appendix A.
+- **P14 — Stage 3 was not rollback-able.** Split into 2a/2b/2c.
+- **P15/N17/A — No performance, size or compile-time gate.** Added (Part 4).
+- **P18 — A MuTap CI job compiles the vendored C by path.** Stage 2c.
+- **N9 — `extern template` does nothing for in-class-defined members** (verified on both
+  compilers). Dropped, with the measured compile cost that makes it unnecessary.
+- **N10 — Header-only is size-neutral** because `--gc-sections` is already on. Stated, with
+  measured sizes.
+- **N11 — Const transforms would make the public API's constness depend on the selected
+  engine.** Public methods stay non-const; `Engine::is_shareable`.
+- **N13 — Runtime twiddle derivation in `cftf1st`.** Recorded under fixed point.
+- **N14 — `std::cos(float)` resolves to `cosf`.** Explicit-cast rule in Part 4.
+- **N16 — Downstream float pins enumerated** (DspTap `test_fft.cpp:37,209`,
+  `test_fft_backend.cpp:90,249`, `test_log_mel.cpp:97,135,389` at 2× margin, `test_pvoc.cpp:81,183,209`;
+  MuTap `test_nn_suppressor.cpp:122,231,305`, `test_float32.cpp:325`). Moot once float is
+  bit-identical, kept as the list to re-measure if any future numeric change is made.
+- **P23 — `TAP_EXPECTS` everywhere plus per-primitive `valid()` was unrelated to the FFT.**
+  Shrunk to `fft.h`.
+- **P24 — "One typed suite runs all three engines in one binary" was false** (CMSIS cannot
+  run on hosts). Reworded.
+- **P25/N25 — Shareable plans are an API change not in the plan.** Removed from the port;
+  `is_shareable` trait is the only residue.
+- **P20 — Three spellings for one thing in the naming.** One house token.
+- **P21/P22 — D5 gated on a repo not on disk; D6 "one release" undefined.** `[[deprecated]]`
+  one cycle; "released" defined by consumer pins.
+- **N18-N22 — Index widening is safe; `long double` is not a better oracle everywhere; run
+  parity once at 2^20; NaN/denormal/alignment stated as contract points.** All in Part 4.
+- **A — Part 4 called `cftrec4` recursive and counted 2,400 lines.** Loop; 2,580.
 
-**D8. Compile-time escape hatch.** Header-only by default; an opt-in explicit-instantiation
-`.cpp` behind a CMake option only if measured compile time in MuTap's test build says so.
-Recommendation: land header-only, measure, decide.
+### Not adopted, with reasons
+- **P20's suggestion to keep Ooura's name in the detail identifier** (`detail::ooura_split_radix`).
+  D7 was settled with the maintainer; provenance is carried by the banner, NOTICE, the parity
+  test path and the itu-compliance glossary line instead.
+- **P13's suggestion to make the spectrum view entirely optional.** Kept as Stage 4, DspTap
+  only, because pvoc and log_mel duplicate the layout today and the view's docstring is where
+  the numeric definition lives once "Ooura contract" leaves the consumer headers.
+
+---
+
+## Appendix A — Deferred: fixed point, and the substrate questions it drags in
+
+Deferred until a consumer measures the need (MuTap's wake-word plan says float32 on every
+target, RP2350 included). Entry conditions, so the work is not re-derived:
+- **D1 (was Stage 2).** Is `double` a sample format? If yes, `sample_traits<double>` has
+  `coeff = double`, `accum = double`; `test_sample_traits.cpp:108` flips; `test_decimate.cpp:192`
+  becomes Q15-vs-double. Its FIR `mac`/`finalize` shape (int64 accumulate, one rounding) is
+  not what an FFT needs; the FFT wants a second trait (`add`, `sub`, `mul_coeff`,
+  `shift_round`, named fraction-bit constants), so "extend sample_traits" means "add a sibling".
+- **D2. One structure or two.** The ported split-radix can be reused as a *data-flow graph*
+  only: Q15 needs a shift before each radix-4 sub-stage or int64 products inside the 16-point
+  leaves; Q31 needs shift-before-multiply or 32×32→high-half multiplies. Either way the
+  operation order is not Ooura's. `cftf1st`'s runtime twiddle sums (up to 2.0) need a
+  materialized first-stage table or int32 twiddle arithmetic. Block floating point is feasible
+  (sub-blocks finish at different times, so per-block exponents plus a final normalization
+  pass), just bookkeeping.
+- **D3. Scales, both directions, as numbers.** Forward per-sub-stage input shifts plus one /2
+  at the real post-pass; the inverse needs its own per-stage scaling because Ooura's inverse
+  has structural gain N/2; the round-trip identity, the caller's required pre-shift and the
+  saturation-free input level (one headroom bit, or an input contract of ≤ −3 dBFS) are all
+  header numbers with a worst-case-pattern test. Per-bin noise floor pinned: fixed 1/N in Q15
+  is unfit for log_mel at N=512 (≈25 dB per-bin SNR at −40 dBFS); the profile is Q31 data with
+  Q15 at the I/O boundary, or BFP.
+- **CMSIS q15/q31 as an engine** requires vendoring more of CMSIS (the subset here is f32 only)
+  and adopting its size-dependent output scaling; it can only be tested once the house
+  contract above exists.
+- **On-target runtime gates in DspTap** require porting MuTap's three platform files and a
+  one-shot gtest harness (`TAP_DSP_BARE_METAL`, modeled on MuTap `tests/CMakeLists.txt:7-19`).
+- **Platform-independent double tables** (Part 4) if cross-host bit identity of the double
+  golden model is ever wanted.
+
+---
+
+## Decisions (revision 2)
+
+**D1, D2, D3** — moved to Appendix A; not on the port's critical path.
+
+**D4. Engine as a template parameter with a build-selected default, plus an inline-namespace
+ABI tag derived from the selection.** The default alone leaves the layout-by-define hazard in
+every class that embeds the FFT by value; the tag closes it. Alternative kept on record: no
+default, consumers name the engine.
+
+**D5. Float-I/O-on-double overloads: `[[deprecated]]` for one consumer cycle, then deleted.**
+Not gated on AmbiTap, which is not on disk and keeps its own wrapper per README.
+
+**D6. `fftsg.c` and `readme.txt` move to `tests/reference/ooura/` at 2c and are deleted after
+both MuTap and MuTap-Max pin a tree containing 2c.** `readme.txt` stays in-tree regardless
+(Part 5).
+
+**D7. Settled: `detail::split_radix_rdft`**, one house token (`real_fft`) for everything
+consumer-facing, provenance per Part 5.
+
+**D8. No explicit-instantiation escape hatch.** Verified ineffective for in-class definitions
+and unnecessary at measured compile cost. Revisit only if MuTap's test build shows a
+regression the numbers in Part 4 do not predict.
+
+**D9 (new). fp-contraction is a written contract point.** Parity gate at `-ffp-contract=off`;
+whether `tap::dsp` exports that flag to consumers is decided in Stage 1 and stated in `fft.h`.
+
+**D10 (new). Float stays bit-identical to the vendored C.** The port reproduces the C's table
+semantics for both precisions; no numeric change ships with the port.
