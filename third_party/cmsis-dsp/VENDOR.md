@@ -2,7 +2,7 @@
 
 This is a **minimal subset** of Arm's CMSIS-DSP and CMSIS-Core, vendored so
 the optional Cortex-M55 (Helium/MVE) FFT backend can be built without a
-submodule or network fetch. It is compiled **only** when the `MUTAP_FFT_CMSIS`
+submodule or network fetch. It is compiled **only** when the `TAP_DSP_FFT_CMSIS`
 CMake option is ON (ARM cross builds); nothing here is touched by the default
 desktop/Hexagon builds, which stay on the Ooura FFT.
 
