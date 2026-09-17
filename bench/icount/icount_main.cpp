@@ -25,7 +25,6 @@
 // and inverse() perform anyway and the checksum fold over every output.
 // Nothing in the float scenarios is double: the M4 soft-float leg would
 // otherwise measure libgcc.
-#include <cinttypes>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -85,14 +84,16 @@ namespace {
         if constexpr (sizeof(sample) == sizeof(std::uint32_t)) {
             std::uint32_t bits = 0;
             std::memcpy(&bits, &checksum, sizeof bits);
-            std::printf("TAP_DSP_ICOUNT_DONE ok=%d engine=%s scenario=%s checksum=0x%08" PRIx32 "\n", ok ? 1 : 0,
-                        tap::dsp::bench::k_engine_name.data(), TAP_DSP_SC_NAME, bits);
+            // %lx with an explicit cast rather than PRIx32: newlib's <inttypes.h>
+            // still hides the PRI macros from C++ behind __STDC_FORMAT_MACROS.
+            std::printf("TAP_DSP_ICOUNT_DONE ok=%d engine=%s scenario=%s checksum=0x%08lx\n", ok ? 1 : 0,
+                        tap::dsp::bench::k_engine_name.data(), TAP_DSP_SC_NAME, static_cast<unsigned long>(bits));
         }
         else {
             std::uint64_t bits = 0;
             std::memcpy(&bits, &checksum, sizeof bits);
-            std::printf("TAP_DSP_ICOUNT_DONE ok=%d engine=%s scenario=%s checksum=0x%016" PRIx64 "\n", ok ? 1 : 0,
-                        tap::dsp::bench::k_engine_name.data(), TAP_DSP_SC_NAME, bits);
+            std::printf("TAP_DSP_ICOUNT_DONE ok=%d engine=%s scenario=%s checksum=0x%016llx\n", ok ? 1 : 0,
+                        tap::dsp::bench::k_engine_name.data(), TAP_DSP_SC_NAME, static_cast<unsigned long long>(bits));
         }
     }
 
