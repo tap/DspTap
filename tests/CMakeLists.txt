@@ -144,7 +144,7 @@ target_link_libraries(tap_dsp_tests PRIVATE
 # ==============================================================================
 # BEGIN Stage 2a additions (docs/audit-fft-and-code-smells.md, Part 9): the
 # independent oracle and the real-time guard join the main executable; the
-# Ooura bit-identity gate gets its own target so it can own its compiler flags.
+# Ooura bit-identity gate gets its own targets so it can own its compiler flags.
 # Keep this block self-contained and at the end of the file.
 # ==============================================================================
 
@@ -153,28 +153,53 @@ target_sources(tap_dsp_tests PRIVATE
     test_fft_rt.cpp)
 
 # ------------------------------------------------------------------------------
-# The reference copy of the vendored C, compiled with fp-contraction OFF. Bit
-# identity between the C and its C++ transliteration holds only if both are
-# compiled to the same sequence of IEEE operations, and CMake gives neither
-# side an fp-contract setting: gcc contracts C in gnu17 mode, g++ contracts
-# C++ in every mode, clang contracts everywhere (Part 4, "fp-contraction
-# policy"). MSVC's default /fp:precise does not contract, so nothing is passed
-# there. This library is private to the tests and is not the tap_dsp_fft the
-# library links; the parity executable links THIS and not tap::dsp, so its
-# rdft/rdft_f resolve here and no backend define (vDSP on Apple) reaches it.
+# Two private reference builds of the vendored C. Neither is the tap_dsp_fft
+# the library links: that target disappears at Stage 2c (it survives only under
+# TAP_DSP_FFT_CMSIS, where it also carries CMSIS objects), and the gate's whole
+# point is to compare against the C independently of how the library builds it.
+# The parity executables link one of these and NOT tap::dsp, so their
+# rdft/rdft_f resolve here and no backend define (vDSP on Apple) reaches them.
+#
+# Stage 2c note: fftsg.c moves to tests/reference/ooura/ (D6); this gate needs
+# fftsg_float.c to move with it, or its float side becomes port-vs-port.
+#
+#   ..._nocontract  fp-contraction OFF. Bit identity between the C and its C++
+#                   transliteration holds only if both compile to the same
+#                   sequence of IEEE operations, and CMake gives neither side an
+#                   fp-contract setting: gcc contracts C in gnu17 mode, g++
+#                   contracts C++ in every mode, clang contracts everywhere
+#                   (Part 4, "fp-contraction policy"). MSVC: nothing is passed;
+#                   its default /fp:precise has not contracted since VS 2022
+#                   17.0 made /fp:contract opt-in (earlier x64 /arch:AVX2 and
+#                   ARM64 builds did contract under /fp:precise; windows-latest
+#                   is well past 17.0).
+#   ..._default     the same two files at default flags, for the informational
+#                   target, so it measures "port at default flags vs C at
+#                   default flags" and nothing else.
 # ------------------------------------------------------------------------------
 set(_tap_dsp_nocontract_c   "$<$<C_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>")
 set(_tap_dsp_nocontract_cxx "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>")
-
-add_library(tap_dsp_fft_reference_nocontract STATIC
+set(_tap_dsp_reference_sources
     ${PROJECT_SOURCE_DIR}/third_party/ooura/fftsg.c
     ${PROJECT_SOURCE_DIR}/third_party/ooura/fftsg_float.c)
+
+add_library(tap_dsp_fft_reference_nocontract STATIC ${_tap_dsp_reference_sources})
 target_compile_options(tap_dsp_fft_reference_nocontract PRIVATE ${_tap_dsp_nocontract_c})
 
-# Largest transform the parity suite runs. The default covers every consumer
-# geometry (2^20); emulated targets set 4096 (Part 10) to fit in RAM.
-set(TAP_DSP_PARITY_MAX_N 1048576 CACHE STRING
-    "Largest FFT size the Ooura parity suite runs (power of two; 4096 on emulated targets)")
+add_library(tap_dsp_fft_reference_default STATIC ${_tap_dsp_reference_sources})
+
+# Largest transform the parity suite runs. Hosted, the default covers every
+# consumer geometry (2^20: five 8 MB buffers plus tables). Cross-compiled, the
+# emulated Cortex-M legs (Part 10) get 4096, the largest size that fits the
+# MPS2/MPS3 data regions; a toolchain file may still set its own cache value,
+# which this default does not override.
+if(CMAKE_CROSSCOMPILING)
+    set(_tap_dsp_parity_max_n_default 4096)
+else()
+    set(_tap_dsp_parity_max_n_default 1048576)
+endif()
+set(TAP_DSP_PARITY_MAX_N ${_tap_dsp_parity_max_n_default} CACHE STRING
+    "Largest FFT size the Ooura parity suite runs (power of two >= 4; 4096 on emulated targets)")
 
 # THE GATE: -ffp-contract=off on both sides, memcmp bit identity.
 add_executable(tap_dsp_fft_parity test_fft_parity_ooura.cpp)
@@ -184,16 +209,18 @@ target_compile_options(tap_dsp_fft_parity PRIVATE ${_tap_dsp_nocontract_cxx})
 target_compile_definitions(tap_dsp_fft_parity PRIVATE TAP_DSP_PARITY_MAX_N=${TAP_DSP_PARITY_MAX_N})
 target_link_libraries(tap_dsp_fft_parity PRIVATE
     tap_dsp_fft_reference_nocontract
-    tap_dsp_warnings
-    GTest::gtest_main)
-gtest_discover_tests(tap_dsp_fft_parity DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 900 LABELS parity)
+    tap_dsp_warnings)
 
-# INFORMATIONAL: the same source at default flags on both sides (the C here is
-# the library's own tap_dsp_fft build), printing the measured max-ulp deviation
-# per N and never failing. It is not a pass/fail gate with an assumed bound
-# because a different fusion choice per butterfly stage accumulates over
-# log2 N stages; the number goes on the record per platform instead (Part 6,
-# item N3).
+# INFORMATIONAL: the same source at default flags on both sides, measuring the
+# max-ulp deviation per N and never failing. It is not a pass/fail gate with an
+# assumed bound because a different fusion choice per butterfly stage
+# accumulates over log2 N stages; the number goes on the record per platform
+# instead (Part 6, item N3). Two channels carry it, because ctest hides the
+# stdout of a passing test under --output-on-failure: (1) CI runs this label
+# with -V as its own step (Part 13), (2) --gtest_output=xml writes the
+# RecordProperty values to parity-ulp.xml in the build tree for upload. The
+# report is ONE test covering both precisions so a single invocation produces
+# the complete XML (each ctest entry is a separate process writing that file).
 add_executable(tap_dsp_fft_parity_default_flags test_fft_parity_ooura.cpp)
 target_include_directories(tap_dsp_fft_parity_default_flags PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_compile_features(tap_dsp_fft_parity_default_flags PRIVATE cxx_std_20)
@@ -201,10 +228,19 @@ target_compile_definitions(tap_dsp_fft_parity_default_flags PRIVATE
     TAP_DSP_PARITY_INFORMATIONAL
     TAP_DSP_PARITY_MAX_N=${TAP_DSP_PARITY_MAX_N})
 target_link_libraries(tap_dsp_fft_parity_default_flags PRIVATE
-    tap::dsp_fft
-    tap_dsp_warnings
-    GTest::gtest_main)
-gtest_discover_tests(tap_dsp_fft_parity_default_flags DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 900 LABELS parity)
+    tap_dsp_fft_reference_default
+    tap_dsp_warnings)
+
+include(GoogleTest)
+target_link_libraries(tap_dsp_fft_parity PRIVATE GTest::gtest_main)
+gtest_discover_tests(tap_dsp_fft_parity
+    DISCOVERY_TIMEOUT 120
+    PROPERTIES TIMEOUT 900 LABELS parity)
+target_link_libraries(tap_dsp_fft_parity_default_flags PRIVATE GTest::gtest_main)
+gtest_discover_tests(tap_dsp_fft_parity_default_flags
+    EXTRA_ARGS --gtest_output=xml:${CMAKE_BINARY_DIR}/parity-ulp.xml
+    DISCOVERY_TIMEOUT 120
+    PROPERTIES TIMEOUT 900 LABELS parity)
 
 # ==============================================================================
 # END Stage 2a additions

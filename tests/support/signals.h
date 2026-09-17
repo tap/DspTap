@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 Timothy Place and the DspTap contributors.
 //
-// One xorshift32, one random_signal, one tone synthesizer and one dB helper,
-// so a new test file does not grow its own copy (three already exist in
-// test_fft.cpp, test_fft_backend.cpp and test_nn.cpp; migrating them is the
-// Stage 6 hygiene item in docs/audit-fft-and-code-smells.md, not this file's
-// job). Everything here is deterministic — fixed seeds, no wall clock, no
-// filesystem — so it can run unchanged on the bare-metal QEMU legs.
+// One xorshift32, one random_signal and one tone synthesizer, so a new test
+// file does not grow its own copy (three already exist in test_fft.cpp,
+// test_fft_backend.cpp and test_nn.cpp; migrating them, and adding the dB
+// helper Part 9 lists once a caller exists, is the Stage 6 hygiene item in
+// docs/audit-fft-and-code-smells.md, not this file's job). Everything here is deterministic — fixed seeds, no wall
+// clock, no filesystem — so it can run unchanged on the bare-metal QEMU legs.
 
 #pragma once
 
@@ -73,11 +73,6 @@ namespace tap::dsp::test {
             x[j]               = static_cast<Sample>(amplitude * std::cos(2.0 * std::numbers::pi * turns + phase));
         }
         return x;
-    }
-
-    /// 20*log10(ratio) of an amplitude ratio; -inf for zero, as std::log10 gives.
-    inline double db_from_ratio(double ratio) noexcept {
-        return 20.0 * std::log10(ratio);
     }
 
 } // namespace tap::dsp::test

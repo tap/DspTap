@@ -41,16 +41,38 @@
 // because libm's cos/sin differ in the last bit between glibc, newlib, UCRT
 // and Apple (Part 4, "The float twiddles").
 //
+// To see that the flag is load-bearing rather than take it on faith, count
+// the fused instructions in the reference object on an FMA-capable target:
+//
+//     cc -O3 -march=haswell [-ffp-contract=off] -c third_party/ooura/fftsg.c -o probe.o
+//     objdump -d probe.o | grep -ciE 'vfmadd|vfmsub|vfnmadd|vfnmsub'
+//
+// Measured: gcc 13.3 200 / clang 18.1 171 fused instructions by default, 0
+// with the flag, for both compilers. On plain x86-64 (no -march) the count is
+// 0 either way because the ISA has no FMA, which is why the hosted CI legs
+// cannot see a missing flag; the objdump check is the one that can.
+//
 // The same source builds a SECOND, informational target at default flags
-// (TAP_DSP_PARITY_INFORMATIONAL). It prints the measured max-ulp deviation
-// per N and never fails. It is not a pass/fail gate with an assumed bound
-// because a different fusion choice per butterfly stage accumulates over
-// log2 N stages and "1 ulp" would be a guess, not a measurement (item N3);
-// its job is to put the number on the record for each platform so the policy
-// fft.h states about exporting -ffp-contract=off can be decided on data.
+// (TAP_DSP_PARITY_INFORMATIONAL). It measures the max-ulp deviation per N and
+// never fails. It is not a pass/fail gate with an assumed bound because a
+// different fusion choice per butterfly stage accumulates over log2 N stages
+// and "1 ulp" would be a guess, not a measurement (item N3); its job is to
+// put the number on the record for each platform so the policy fft.h states
+// about exporting -ffp-contract=off can be decided on data. Where the number
+// lands: ctest hides the stdout of a passing test under --output-on-failure,
+// so the table is visible only when the label is run with -V (CI does that
+// as its own step, Part 13) and, as RecordProperty values, in the JUnit XML
+// that the CMake block requests with --gtest_output=xml.
 //
 // TAP_DSP_PARITY_MAX_N caps the sizes run, so the emulated QEMU legs can take
-// the suite at N <= 4096 (Part 9, Part 10) where 2^20 does not fit in RAM.
+// the suite at N <= 4096 (Part 9, Part 10) where 2^20 does not fit in RAM;
+// the CMake block defaults it to 4096 when cross-compiling.
+//
+// Stage 2c note. fftsg.c moves to tests/reference/ooura/ (Decision D6), and
+// the 2c text deletes fftsg_float.c. This gate needs BOTH files: the float
+// side compares against rdft_f, and without fftsg_float.c it degenerates to
+// port-vs-port. 2c must move fftsg_float.c alongside fftsg.c, or delete the
+// float half of this file and say so in the 2c PR.
 
 #include <algorithm>
 #include <cmath>
@@ -71,6 +93,8 @@
 #ifndef TAP_DSP_PARITY_MAX_N
 #define TAP_DSP_PARITY_MAX_N (1 << 20)
 #endif
+static_assert(TAP_DSP_PARITY_MAX_N >= 4 && (TAP_DSP_PARITY_MAX_N & (TAP_DSP_PARITY_MAX_N - 1)) == 0,
+              "TAP_DSP_PARITY_MAX_N must be a power of two >= 4, or every sweep below is vacuously green");
 
 namespace {
 
@@ -257,7 +281,8 @@ namespace {
         return sizeof(Sample) == 4 ? "float" : "double";
     }
 
-    std::vector<std::size_t> sizes_up_to_65536() {
+    /// The sweep: every power of two from 4 to min(65536, TAP_DSP_PARITY_MAX_N).
+    std::vector<std::size_t> sweep_sizes() {
         std::vector<std::size_t> sizes;
         for (std::size_t n = 4; n <= 65536 && n <= static_cast<std::size_t>(TAP_DSP_PARITY_MAX_N); n *= 2) {
             sizes.push_back(n);
@@ -285,7 +310,7 @@ namespace {
 
     template <typename Sample>
     void expect_identical_all_sizes(bool forward) {
-        for (const std::size_t n : sizes_up_to_65536()) {
+        for (const std::size_t n : sweep_sizes()) {
             for (const material m : k_materials) {
                 expect_identical<Sample>(n, m, forward);
                 if (::testing::Test::HasFatalFailure()) {
@@ -341,13 +366,15 @@ namespace {
 
     // ========================================================================
     // INFORMATIONAL: default flags on both sides, measured max ulp per N,
-    // never a failure. Printed to stdout so it is in every CI log, and
-    // recorded as gtest properties so it is in the JUnit XML too.
+    // never a failure. Printed to stdout (visible under `ctest -V`, NOT under
+    // --output-on-failure, which hides a passing test's output) and recorded
+    // as gtest properties for the JUnit XML the CMake block requests. One
+    // test for both precisions, so one process writes the whole XML.
     // ========================================================================
 
     template <typename Sample>
     void report_max_ulp() {
-        std::vector<std::size_t> sizes = sizes_up_to_65536();
+        std::vector<std::size_t> sizes = sweep_sizes();
         if (k_large_n <= static_cast<std::size_t>(TAP_DSP_PARITY_MAX_N)) {
             sizes.push_back(k_large_n);
         }
@@ -385,11 +412,8 @@ namespace {
         SUCCEED() << "informational only: " << overall << " ulp max";
     }
 
-    TEST(fft_parity_ooura_default_flags, ReportsMaxUlpVersusOouraDouble) {
+    TEST(fft_parity_ooura_default_flags, ReportsMaxUlpVersusOoura) {
         report_max_ulp<double>();
-    }
-
-    TEST(fft_parity_ooura_default_flags, ReportsMaxUlpVersusOouraFloat) {
         report_max_ulp<float>();
     }
 

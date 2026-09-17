@@ -16,7 +16,7 @@
 //      W = exp(+2*pi*i/N) convention, the conjugate of the engineering DFT),
 //      and a two-tone superposition — and their unnormalized inverses, whose
 //      gain is N/2 per the contract in fft.h. Checked to a tolerance DERIVED
-//      from the sample type's epsilon and log2 N (see tolerance() below).
+//      from the sample type's epsilon and log2 N (see "Tolerance" below).
 //
 //   2. A compensated-summation DFT for N <= 256: the O(N^2) definition with
 //      double-double accumulation (TwoSum / TwoProd, Dekker 1971 and Knuth
@@ -26,11 +26,19 @@
 //      `double` on MSVC and on Apple arm64 (Part 6, item N19), so it would be
 //      no oracle at all on two of the three hosted CI legs.
 //
+// Relation to test_fft.cpp. That file's contract battery already pins the
+// impulse, DC/Nyquist packing and the +i sign convention at one size each
+// (N = 64 and 128) with a round tolerance; Part 9 lists the closed forms in
+// both files on purpose. What this file adds is the sweep to N = 65536, the
+// inverse closed forms, the derived (not round) tolerance, and the DFT
+// reference; the test names are distinct so the ctest listing carries each
+// promise once.
+//
 // The suite is typed over float and double now. The fixed-point stage
-// (Stage 3, Part 7) extends `profile<Sample>` below with int16_t and int32_t,
-// supplying the profile's documented forward scale and the conversion into
-// the double domain; the tests themselves are written against that trait so
-// nothing else changes.
+// (Stage 3, Part 7) extends `profile<Sample>` below with int16_t and int32_t;
+// the tests are written against that trait (scale as a function of N, the
+// profile's own tolerance, a full-scale amplitude below saturation), so the
+// change is confined to the trait and the type list.
 
 #include <algorithm>
 #include <cmath>
@@ -48,43 +56,6 @@
 namespace {
 
     // ------------------------------------------------------------------------
-    // Per-profile traits — THE EXTENSION POINT FOR THE FIXED-POINT STAGE.
-    //
-    // A profile says how to get a sample into the double domain, what its
-    // unit roundoff is, and what scale the engine's forward / unnormalized
-    // inverse carry relative to the mathematical DFT (1 and 1 for the float
-    // profiles; the Q15/Q31 profiles document X/N under `fixed` scaling and
-    // will state their own inverse scale). Stage 3 adds:
-    //     template <> struct profile<std::int16_t> { ... };
-    //     template <> struct profile<std::int32_t> { ... };
-    // and appends the two types to oracle_types. The tolerance for those
-    // profiles is a quantization-noise number from Part 7, not epsilon-based;
-    // tolerance() dispatches on the trait so that is a local change too.
-    // ------------------------------------------------------------------------
-    template <typename Sample>
-    struct profile;
-
-    template <>
-    struct profile<double> {
-        static constexpr double k_epsilon       = std::numeric_limits<double>::epsilon();
-        static constexpr double k_forward_scale = 1.0; ///< engine forward = k * DFT
-        static constexpr double k_inverse_scale = 1.0; ///< engine inverse = k * Ooura's unnormalized inverse
-        static double           to_double(double v) { return v; }
-        static double           from_double(double v) { return v; }
-    };
-
-    template <>
-    struct profile<float> {
-        static constexpr double k_epsilon       = std::numeric_limits<float>::epsilon();
-        static constexpr double k_forward_scale = 1.0;
-        static constexpr double k_inverse_scale = 1.0;
-        static double           to_double(float v) { return static_cast<double>(v); }
-        static float            from_double(double v) { return static_cast<float>(v); }
-    };
-
-    using oracle_types = ::testing::Types<float, double>;
-
-    // ------------------------------------------------------------------------
     // Tolerance.
     //
     // Higham, Accuracy and Stability of Numerical Algorithms (2nd ed., 2002),
@@ -94,35 +65,85 @@ namespace {
     //     || y_hat - y ||_2  <=  t * eta / (1 - t * eta) * || y ||_2,
     //     eta = mu + gamma_4 (1 + mu),  gamma_4 ~ 4u,
     //
-    // where u is the unit roundoff (epsilon / 2). Ooura's tables are computed
-    // from libm and stored in Sample, so mu <= u, hence eta <= 5u + O(u^2)
-    // and, for t*eta << 1, the 2-norm error is below 5 * u * log2(N) * ||y||_2.
-    // The largest single-element error cannot exceed the 2-norm, and a
-    // measured (not remembered) value for || y ||_2 comes free with the exact
-    // answer. Two further terms ride on top: casting the closed-form input to
-    // Sample perturbs each x_j by at most u|x_j|, which by Parseval moves y by
-    // at most u * ||y||_2 in 2-norm; and Ooura is split-radix, not the radix-2
-    // of the theorem, so its constant differs in a factor of order one. The
-    // bound is therefore taken as k_higham_constant * epsilon * log2(N) *
-    // ||y||_2 with k_higham_constant = 4 (epsilon = 2u, so 4 * epsilon = 8u:
-    // the 5u of the theorem, the u of the input cast, and 2u of margin for
-    // the split-radix constant).
+    // where u is the unit roundoff (epsilon / 2). mu is NOT one rounding here:
+    // Ooura's makewt takes cos/sin from libm for a quarter of the table and
+    // derives the rest arithmetically (w[2] = 0.5 / cos(2 delta), the halving
+    // recurrences 0.5 / wk1r, ...), and the float instantiation forms
+    // delta * j in float, so mu is a small multiple of u. With mu ~ 2-3u,
+    // eta ~ 6-7u and, for t * eta << 1, the 2-norm error is below about
+    // 7 * u * log2(N) * ||y||_2. The largest single-element error cannot exceed
+    // the 2-norm, and ||y||_2 comes free with the exact answer. Casting the
+    // closed-form input to Sample adds at most u * ||y||_2 (Parseval), and
+    // Ooura is split-radix rather than the theorem's radix-2, which changes the
+    // constant by a factor of order one. The bound is taken as
     //
-    // Measured against that bound on x86-64 Linux (GCC 13, -O3, glibc libm,
-    // Ooura as the engine): the largest ratio |error| / (epsilon * log2(N) *
-    // ||y||_2) over every test in this file was 0.25 for double and 0.17 for
-    // float, i.e. the engine sits 16x (double) and 23x (float) inside the
-    // derived bound of 4. That margin is deliberate: this is an oracle for
-    // correctness, not a precision ratchet; the measured-number pins live in
-    // test_fft.cpp and test_fft_backend.cpp.
+    //     k_higham_constant * epsilon * log2(N) * ||y||_2,  k_higham_constant = 4
+    //
+    // (epsilon = 2u, so 8u: the ~7u above plus the input cast), i.e. derived
+    // with slack, not fitted. Measured against it on x86-64 Linux (GCC 13, -O3,
+    // glibc, Ooura as the engine): the largest |error| / (epsilon * log2(N) *
+    // ||y||_2) over every test in this file is 0.25 for double and 0.17 for
+    // float, 16x and 23x inside the constant.
+    //
+    // What the bound cannot see. A 2-norm used per element is loose by up to
+    // sqrt(N): at float, N = 65536, DC input, the tolerance is ~0.5 on a
+    // spectrum whose one live bin is 65536, so a single empty bin that is off
+    // by 0.4 would pass. That is acceptable for the closed forms (their job is
+    // the sweep over sizes and the sign convention) and is exactly why the DFT
+    // comparison is confined to N <= 256, where sqrt(N) <= 16 and the reference
+    // is exact to ~1e-30: there the check is tight enough to catch a single
+    // wrong bin. Precision pins as measured numbers live in test_fft.cpp and
+    // test_fft_backend.cpp; this file is an oracle for correctness.
     // ------------------------------------------------------------------------
     constexpr double k_higham_constant = 4.0;
 
-    template <typename Sample>
-    double tolerance(std::size_t n, double spectrum_norm2) {
+    double higham_tolerance(double epsilon, std::size_t n, double spectrum_norm2) {
         const double log2n = std::log2(static_cast<double>(n));
-        return k_higham_constant * profile<Sample>::k_epsilon * log2n * spectrum_norm2;
+        return k_higham_constant * epsilon * log2n * spectrum_norm2;
     }
+
+    // ------------------------------------------------------------------------
+    // Per-profile traits — THE EXTENSION POINT FOR THE FIXED-POINT STAGE.
+    //
+    // A profile says how a sample crosses into the double domain, the amplitude
+    // the closed forms are driven at, what scale the engine's forward and
+    // unnormalized inverse carry relative to the mathematical DFT as a function
+    // of N, and its own tolerance. For the float profiles: full scale 1.0, both
+    // scales 1, and the Higham bound above. Stage 3 (Part 7) adds
+    //     template <> struct profile<std::int16_t> { ... };
+    //     template <> struct profile<std::int32_t> { ... };
+    // with k_full_scale below 1 - 2^-15 (a full-scale 1.0 input whose X/N
+    // expectation is exactly 1.0 saturates in Q15), forward_scale(n) = 1/n
+    // under `fixed` scaling (BFP reports its exponent alongside), the profile's
+    // inverse scale, and a tolerance built from Part 7's quantization-noise
+    // numbers rather than from epsilon. Then append the types to oracle_types.
+    // ------------------------------------------------------------------------
+    template <typename Sample>
+    struct profile;
+
+    template <>
+    struct profile<double> {
+        static constexpr double k_epsilon    = std::numeric_limits<double>::epsilon();
+        static constexpr double k_full_scale = 1.0; ///< closed-form drive amplitude
+        static double           to_double(double v) { return v; }
+        static double           from_double(double v) { return v; }
+        static double           forward_scale(std::size_t) { return 1.0; } ///< engine forward = scale * DFT
+        static double           inverse_scale(std::size_t) { return 1.0; } ///< engine inverse = scale * unnormalized
+        static double           tolerance(std::size_t n, double norm2) { return higham_tolerance(k_epsilon, n, norm2); }
+    };
+
+    template <>
+    struct profile<float> {
+        static constexpr double k_epsilon    = std::numeric_limits<float>::epsilon();
+        static constexpr double k_full_scale = 1.0;
+        static double           to_double(float v) { return static_cast<double>(v); }
+        static float            from_double(double v) { return static_cast<float>(v); }
+        static double           forward_scale(std::size_t) { return 1.0; }
+        static double           inverse_scale(std::size_t) { return 1.0; }
+        static double           tolerance(std::size_t n, double norm2) { return higham_tolerance(k_epsilon, n, norm2); }
+    };
+
+    using oracle_types = ::testing::Types<float, double>;
 
     /// ||y||_2 of the full complex spectrum of x, from Parseval: sqrt(N) * ||x||_2.
     double spectrum_norm2(const std::vector<double>& x) {
@@ -131,6 +152,13 @@ namespace {
             e += v * v;
         }
         return std::sqrt(static_cast<double>(x.size()) * e);
+    }
+
+    std::vector<double> scale_by(std::vector<double> x, double factor) {
+        for (double& v : x) {
+            v *= factor;
+        }
+        return x;
     }
 
     template <typename Sample>
@@ -336,8 +364,9 @@ namespace {
         std::vector<double> inverse_unnormalized(const std::vector<double>& a) const {
             std::vector<double> x(m_n, 0.0);
             for (std::size_t k = 0; k < m_n; ++k) {
-                const double edge = (k % 2 == 0) ? a[0] + a[1] : a[0] - a[1];
-                dd           acc  = dd_mul_d({edge, 0.0}, 0.5);
+                // (R[0] +- R[N/2]) / 2: the sum error-free via TwoSum, the
+                // halving exact.
+                dd acc = dd_mul_d(two_sum(a[0], (k % 2 == 0) ? a[1] : -a[1]), 0.5);
                 for (std::size_t j = 1; j < m_n / 2; ++j) {
                     const dd_sincos& w = m_twiddles[(j * k) % m_n];
                     acc                = dd_add(acc, dd_mul_d(w.cos, a[2 * j]));
@@ -391,32 +420,28 @@ namespace {
     }
 
     // Runs the engine forward on x (given in the double domain, cast to the
-    // profile) and checks it against the exact spectrum `expected`.
+    // profile) and checks it against the exact spectrum `expected`, with the
+    // profile's forward scale applied.
     template <typename Sample>
     void check_forward(const std::vector<double>& x, const std::vector<double>& expected, const char* what) {
         const std::size_t                n = x.size();
         tap::dsp::basic_real_fft<Sample> fft(n);
         std::vector<Sample>              buf = from_doubles<Sample>(x);
         fft.forward_inplace(buf.data());
-        std::vector<double> scaled = expected;
-        for (double& v : scaled) {
-            v *= profile<Sample>::k_forward_scale;
-        }
-        expect_close(buf, scaled, tolerance<Sample>(n, spectrum_norm2(x)), what, n);
+        const std::vector<double> scaled = scale_by(expected, profile<Sample>::forward_scale(n));
+        expect_close(buf, scaled, profile<Sample>::tolerance(n, spectrum_norm2(x)), what, n);
     }
 
     // Runs the engine's UNNORMALIZED inverse on the packed spectrum `a` and
-    // checks it against `expected` (which already carries the N/2 gain).
+    // checks it against `expected` (which already carries the N/2 gain), with
+    // the profile's inverse scale applied.
     template <typename Sample>
     void check_inverse(const std::vector<double>& a, const std::vector<double>& expected, const char* what) {
         const std::size_t                n = a.size();
         tap::dsp::basic_real_fft<Sample> fft(n);
         std::vector<Sample>              buf = from_doubles<Sample>(a);
         fft.inverse_inplace(buf.data());
-        std::vector<double> scaled = expected;
-        for (double& v : scaled) {
-            v *= profile<Sample>::k_inverse_scale;
-        }
+        const std::vector<double> scaled = scale_by(expected, profile<Sample>::inverse_scale(n));
         // ||expected||_2 plays the role of ||y||_2 for the inverse direction;
         // the packed spectrum's 2-norm is within sqrt(2) of the true one, and
         // the N/2 gain means ||expected||_2 >= ||a||_2 * sqrt(N)/2 for these
@@ -425,7 +450,7 @@ namespace {
         for (const double v : expected) {
             e += v * v;
         }
-        expect_close(buf, scaled, tolerance<Sample>(n, std::sqrt(e)), what, n);
+        expect_close(buf, scaled, profile<Sample>::tolerance(n, std::sqrt(e)), what, n);
     }
 
     template <typename Sample>
@@ -433,50 +458,55 @@ namespace {
     TYPED_TEST_SUITE(fft_oracle_test, oracle_types);
 
     // ========================================================================
-    // Closed forms, forward.
+    // Closed forms, forward. Every one is driven at the profile's full-scale
+    // amplitude (1.0 for float and double); the exact answers scale with it.
     // ========================================================================
 
-    TYPED_TEST(fft_oracle_test, ImpulseHasFlatSpectrum) {
+    TYPED_TEST(fft_oracle_test, ImpulseIsFlatAtEverySize) {
+        const double a = profile<TypeParam>::k_full_scale;
         for (const std::size_t n : closed_form_sizes()) {
             std::vector<double> x(n, 0.0);
-            x[0] = 1.0;
+            x[0] = a;
             std::vector<double> expected(n, 0.0);
-            expected[0] = 1.0; // DC
-            expected[1] = 1.0; // Nyquist
+            expected[0] = a; // DC
+            expected[1] = a; // Nyquist
             for (std::size_t k = 1; k < n / 2; ++k) {
-                expected[2 * k] = 1.0;
+                expected[2 * k] = a;
             }
             check_forward<TypeParam>(x, expected, "impulse");
         }
     }
 
     TYPED_TEST(fft_oracle_test, DcLandsAsNInSlotZero) {
+        const double a = profile<TypeParam>::k_full_scale;
         for (const std::size_t n : closed_form_sizes()) {
-            std::vector<double> x(n, 1.0);
+            std::vector<double> x(n, a);
             std::vector<double> expected(n, 0.0);
-            expected[0] = static_cast<double>(n);
+            expected[0] = a * static_cast<double>(n);
             check_forward<TypeParam>(x, expected, "dc");
         }
     }
 
     TYPED_TEST(fft_oracle_test, NyquistAlternationLandsAsNInSlotOne) {
+        const double a = profile<TypeParam>::k_full_scale;
         for (const std::size_t n : closed_form_sizes()) {
             std::vector<double> x(n);
             for (std::size_t j = 0; j < n; ++j) {
-                x[j] = (j % 2 == 0) ? 1.0 : -1.0;
+                x[j] = (j % 2 == 0) ? a : -a;
             }
             std::vector<double> expected(n, 0.0);
-            expected[1] = static_cast<double>(n);
+            expected[1] = a * static_cast<double>(n);
             check_forward<TypeParam>(x, expected, "nyquist");
         }
     }
 
     TYPED_TEST(fft_oracle_test, OnBinCosineIsPlusHalfNInTheRealSlot) {
+        const double a = profile<TypeParam>::k_full_scale;
         for (const std::size_t n : closed_form_sizes()) {
             const std::size_t   k = tone_bin(n);
-            const auto          x = tap::dsp::test::tone<double>(n, static_cast<double>(k), 1.0, 0.0);
+            const auto          x = tap::dsp::test::tone<double>(n, static_cast<double>(k), a, 0.0);
             std::vector<double> expected(n, 0.0);
-            expected[2 * k] = static_cast<double>(n) / 2.0;
+            expected[2 * k] = a * static_cast<double>(n) / 2.0;
             check_forward<TypeParam>(x, expected, "cosine");
         }
     }
@@ -484,25 +514,27 @@ namespace {
     // The sign convention: a sine at bin k lands at +N/2 in the imaginary slot
     // (it would be -N/2 in the engineering convention exp(-2*pi*i/N)).
     TYPED_TEST(fft_oracle_test, OnBinSineIsPlusHalfNInTheImaginarySlot) {
+        const double a = profile<TypeParam>::k_full_scale;
         for (const std::size_t n : closed_form_sizes()) {
             const std::size_t k = tone_bin(n);
             // sin(w j) = cos(w j - pi/2)
-            const auto x = tap::dsp::test::tone<double>(n, static_cast<double>(k), 1.0, -std::numbers::pi / 2.0);
+            const auto          x = tap::dsp::test::tone<double>(n, static_cast<double>(k), a, -std::numbers::pi / 2.0);
             std::vector<double> expected(n, 0.0);
-            expected[2 * k + 1] = static_cast<double>(n) / 2.0;
+            expected[2 * k + 1] = a * static_cast<double>(n) / 2.0;
             check_forward<TypeParam>(x, expected, "sine");
         }
     }
 
     TYPED_TEST(fft_oracle_test, TwoToneSuperposesLinearly) {
+        const double a = profile<TypeParam>::k_full_scale;
         for (const std::size_t n : closed_form_sizes()) {
             if (n < 8) {
                 continue; // needs two distinct complex bins
             }
             const std::size_t k1 = tone_bin(n);
             const std::size_t k2 = k1 + 1;
-            const double      a1 = 0.75;
-            const double      a2 = -0.25;
+            const double      a1 = 0.75 * a;
+            const double      a2 = -0.25 * a;
             const auto        c  = tap::dsp::test::tone<double>(n, static_cast<double>(k1), a1, 0.0);
             const auto        s = tap::dsp::test::tone<double>(n, static_cast<double>(k2), a2, -std::numbers::pi / 2.0);
             std::vector<double> x(n);
@@ -521,50 +553,55 @@ namespace {
     // ========================================================================
 
     TYPED_TEST(fft_oracle_test, InverseOfFlatSpectrumIsHalfNImpulse) {
+        const double amp = profile<TypeParam>::k_full_scale;
         for (const std::size_t n : closed_form_sizes()) {
             std::vector<double> a(n, 0.0);
-            a[0] = 1.0;
-            a[1] = 1.0;
+            a[0] = amp;
+            a[1] = amp;
             for (std::size_t k = 1; k < n / 2; ++k) {
-                a[2 * k] = 1.0;
+                a[2 * k] = amp;
             }
             std::vector<double> expected(n, 0.0);
-            expected[0] = static_cast<double>(n) / 2.0;
+            expected[0] = amp * static_cast<double>(n) / 2.0;
             check_inverse<TypeParam>(a, expected, "inverse impulse");
         }
     }
 
     TYPED_TEST(fft_oracle_test, InverseOfDcSpectrumIsHalfNConstant) {
+        const double amp = profile<TypeParam>::k_full_scale;
         for (const std::size_t n : closed_form_sizes()) {
             std::vector<double> a(n, 0.0);
-            a[0] = 1.0;
-            std::vector<double> expected(n, 0.5);
+            a[0] = amp;
+            std::vector<double> expected(n, 0.5 * amp);
             check_inverse<TypeParam>(a, expected, "inverse dc");
         }
     }
 
     TYPED_TEST(fft_oracle_test, InverseOfNyquistSpectrumIsHalfNAlternation) {
+        const double amp = profile<TypeParam>::k_full_scale;
         for (const std::size_t n : closed_form_sizes()) {
             std::vector<double> a(n, 0.0);
-            a[1] = 1.0;
+            a[1] = amp;
             std::vector<double> expected(n);
             for (std::size_t k = 0; k < n; ++k) {
-                expected[k] = (k % 2 == 0) ? 0.5 : -0.5;
+                expected[k] = (k % 2 == 0) ? 0.5 * amp : -0.5 * amp;
             }
             check_inverse<TypeParam>(a, expected, "inverse nyquist");
         }
     }
 
     TYPED_TEST(fft_oracle_test, InverseOfOnBinSpectrumIsHalfNTone) {
+        const double amp = profile<TypeParam>::k_full_scale;
         for (const std::size_t n : closed_form_sizes()) {
             const std::size_t   k = tone_bin(n);
             std::vector<double> a(n, 0.0);
-            a[2 * k]     = 1.0; // cosine part
-            a[2 * k + 1] = 1.0; // sine part, +i convention
-            // x[j] = cos(w j) + sin(w j), unnormalized inverse gain is N/2 on
-            // the round trip, i.e. a unit bin comes back with amplitude 1.
-            const auto c = tap::dsp::test::tone<double>(n, static_cast<double>(k), 1.0, 0.0);
-            const auto s = tap::dsp::test::tone<double>(n, static_cast<double>(k), 1.0, -std::numbers::pi / 2.0);
+            a[2 * k]     = amp; // cosine part
+            a[2 * k + 1] = amp; // sine part, +i convention
+            // x[j] = amp * (cos(w j) + sin(w j)): the unnormalized inverse has
+            // gain N/2 on the round trip, so a bin of amp comes back with
+            // amplitude amp.
+            const auto c = tap::dsp::test::tone<double>(n, static_cast<double>(k), amp, 0.0);
+            const auto s = tap::dsp::test::tone<double>(n, static_cast<double>(k), amp, -std::numbers::pi / 2.0);
             std::vector<double> expected(n);
             for (std::size_t j = 0; j < n; ++j) {
                 expected[j] = c[j] + s[j];
@@ -579,7 +616,17 @@ namespace {
 
     // The oracle checks itself first: its twiddles agree with libm to double
     // rounding, and its own forward followed by its own inverse is the
-    // identity to ~1e-15 relative, so a disagreement below is the engine's.
+    // identity to double rounding, so a disagreement below is the engine's.
+    // The two constants are derived bounds, not fitted numbers. Twiddles: the
+    // comparison forms theta = 2*pi*m/n in double, and rounding theta (at most
+    // half an ulp of 2*pi, 4.4e-16 = 2 eps) moves cos/sin by up to that much;
+    // libm adds at most 1 ulp (1 eps for values in [0.5, 1]); dd_round adds
+    // half an ulp. Bound 3.5 eps, constant 4 eps; measured maximum 6.4e-16 =
+    // 2.9 eps (x86-64 Linux, glibc 2.39), i.e. the dd twiddles are as good as
+    // libm and the argument rounding dominates. Round trip: forward then
+    // inverse re-rounds through two dd_round steps plus the final 2/N
+    // multiply (exact, power of two), so ~1.5 eps relative on unit-scale data;
+    // constant 8 eps; measured maximum 1.1e-16 = 0.5 eps.
     TEST(fft_oracle_self_check, TwiddlesMatchLibmToDoubleRounding) {
         for (const std::size_t n : dft_sizes()) {
             const compensated_dft oracle(n);

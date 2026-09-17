@@ -10,13 +10,25 @@
 //
 //   - noexcept is a static_assert on the four transform entry points, on
 //     both instantiations (the pattern test_nn.cpp uses);
-//   - "allocation-free" is proved by REPLACING THE GLOBAL operator new /
+//   - "allocation-free" is checked by REPLACING THE GLOBAL operator new /
 //     operator delete in this translation unit with counting versions and
 //     asserting the count does not move across a transform. The replacement
 //     is program-wide (that is how replaceable allocation functions work),
 //     so every window below is kept tight: nothing between the two reads of
 //     the counter but the call under test, and every buffer allocated before
 //     the first read.
+//
+// WHAT THE GUARD SEES AND WHAT IT DOES NOT. It counts C++ allocation
+// functions only. An engine that allocates through malloc/calloc directly, or
+// inside a vendor library (Apple's vDSP on the macOS leg, CMSIS on the M55),
+// is invisible to it. For today's Ooura path the claim is complete: makewt
+// and makect write into the caller's preallocated ip/w tables (fftsg.c
+// 655-756) and the C never calls an allocator. For the backends the guard
+// covers the wrapper's own code and nothing more; a malloc interposer
+// (glibc's __libc_malloc, or DYLD_INTERPOSE) is the tool for the vendor
+// layer and is out of scope here. The self-test CountsAVectorAllocation
+// keeps the counter honest: if the replacement ever stopped being picked up,
+// that test fails first.
 //
 // The FIRST call after construction is covered as well as a steady-state one:
 // today Ooura builds its trig and bit-reversal tables lazily on the first
@@ -57,17 +69,6 @@
 
 #include "support/signals.h"
 #include "tap/dsp/fft.h"
-
-// GCC pairs every `new` expression it inlines in this TU with the replaced
-// operator delete below, sees std::free on the result of an "allocation
-// function" it treats as opaque, and reports -Wmismatched-new-delete once per
-// inlining site (GCC bug 101480: replaced allocation functions that forward to
-// malloc/free). The pairing is correct by construction here — every allocating
-// form returns std::malloc's result and every deallocating form frees it — so
-// the diagnostic is silenced for this file only.
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
-#endif
 
 // ----------------------------------------------------------------------------
 // Counting replacements for the replaceable global allocation functions
@@ -111,6 +112,18 @@ namespace {
     }
 
 } // namespace
+
+// GCC pairs the `new` expressions it inlines in this TU with the replaced
+// operator delete below, sees std::free on the result of an "allocation
+// function" it treats as opaque, and reports -Wmismatched-new-delete once per
+// inlining site (GCC bug 101480: replaced allocation functions that forward to
+// malloc/free). The pairing is correct by construction here — every allocating
+// form returns std::malloc's result and every deallocating form frees it — so
+// the diagnostic is silenced around the replacement functions only.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
 
 void* operator new(std::size_t n) {
     void* p = counted_malloc(n);
@@ -190,6 +203,10 @@ void operator delete[](void* p, std::align_val_t, const std::nothrow_t&) noexcep
     counted_aligned_free(p);
 }
 
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 namespace {
 
     template <typename Sample>
@@ -235,6 +252,8 @@ namespace {
     using sample_types = ::testing::Types<float, double>;
     TYPED_TEST_SUITE(fft_rt_test, sample_types);
 
+    // Already proved by the namespace-scope static_asserts above; this exists
+    // so the promise has a row in the test listing per profile.
     TYPED_TEST(fft_rt_test, TransformsAreNoexcept) {
         EXPECT_TRUE(transforms_are_noexcept<TypeParam>());
     }
