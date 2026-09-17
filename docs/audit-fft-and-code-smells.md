@@ -416,10 +416,11 @@ non-RT header and delete from the class, after checking AmbiTap.
 after Stage 3 lands in the consumers, then deleted; the bit-exact parity test is what makes
 the deletion safe.
 
-**D7. The engine's name.** Part 5 recommends `split_radix_rdft` with Ooura kept in the
-attribution, NOTICE and the parity test only. Alternatives: `ooura_rdft` (honest about
-provenance, collides with the world's forks in every search) or a coined brand (hides
-provenance the IP policy wants visible). Recommendation: `split_radix_rdft`.
+**D7. The engine's name. Settled: `split_radix_rdft`.** Part 5 has the reasoning; Ooura stays
+in the attribution banner, NOTICE.md and the parity test only. Rejected: `ooura_rdft`
+(collides with the world's forks in every search) and a coined brand (hides provenance the
+IP policy wants visible). Consumer-facing wording moves from "Ooura packing / Ooura
+contract" to "the DspTap packed spectrum / real-FFT contract" as part of Stage 1.
 
 **D8. Compile-time escape hatch.** Header-only by default; an opt-in explicit-instantiation
 `.cpp` behind a CMake option only if measured compile time in MuTap's test build says so.
