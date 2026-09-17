@@ -213,6 +213,8 @@ rules. Decide and land the `sample_traits<double>` question (Decision D1 below);
 settled, a traits-based FFT has no golden profile.
 
 ### Stage 3 — Port Ooura's `rdft` path to a C++ template (the core PR)
+*(Detailed design in Part 4; naming in Part 5.)*
+
 `include/tap/dsp/detail/ooura_rdft.h`: `template <class Sample> class ooura_rdft`, a
 mechanical transliteration of *only* the functions `rdft` reaches (`makewt`, `makeipt`,
 `makect`, `bitrv2*`, `cftfsub/cftbsub`, `cftf1st/cftb1st`, `cftrec4`, `cftleaf`, `cftmdl1/2`,
@@ -256,6 +258,129 @@ that profile later, once the house contract exists to test it against.
 
 ---
 
+## Part 4 — The C++20 port in detail
+
+### Scope
+`rdft` reaches about 2,400 of `fftsg.c`'s 3,325 lines: `makewt`, `makeipt`, `makect`,
+`bitrv2`, `bitrv2conj`, `bitrv216`, `bitrv216neg`, `bitrv208`, `bitrv208neg`, `cftfsub`,
+`cftbsub`, `cftf1st`, `cftb1st`, `cftrec4`, `cftleaf`, `cftmdl1`, `cftmdl2`, `cftfx41`,
+`cftf161`, `cftf162`, `cftf081`, `cftf082`, `cftf040`, `cftb040`, `cftx020`, `rftfsub`,
+`rftbsub`. The DCT/DST family (`ddct`, `ddst`, `dfct`, `dfst`, `dctsub`, `dstsub`), the
+complex entry point `cdft`, and the pthread/Win32 scaffolding (`cftrec4_th` and friends) are
+not ported. `cftrec4` is recursive to depth log4(N); it is bounded and allocation-free and
+stays recursive.
+
+### Shape
+- One class template, `template <std::floating_point Sample> class split_radix_rdft`, in
+  `include/tap/dsp/fft/split_radix.h`, namespace `tap::dsp::detail`. (Name discussed in
+  Part 5.) Every helper is a private static member function, so the 76 global symbols
+  disappear and the rename table has no reason to exist. The concept replaces the
+  `static_assert` enumeration.
+- Members: `std::size_t m_n`, the bit-reversal table `m_ip` and the trig table `m_w`
+  (`std::vector<Sample>`). Index types may be widened to `std::size_t` freely; they do not
+  affect the floating-point bit pattern. Arithmetic order inside every butterfly is preserved
+  exactly, because bit-exactness against the C is the gate.
+- Public surface of the engine: constructor from size, `forward_inplace(Sample*) const`,
+  `inverse_inplace(Sample*) const`, `size()`. `basic_real_fft` keeps the consumer-facing
+  surface (see Part 1) and adds `std::span<Sample>` overloads, `[[nodiscard]]` on the size
+  queries, `std::size_t` throughout with a single narrowing point, and `TAP_EXPECTS` on the
+  power-of-two precondition. The raw `cdft`/`cdft_f` declarations leave the public header; a
+  complex transform, if a consumer ever needs one, is its own class.
+
+### Tables are built in the constructor, in double, once
+This closes F6 (lazy first-call initialization on the RT path). It also fixes a defect in the
+current float build that the audit surfaced only by reading the macro: `#define double float`
+retargets the *locals* inside `makewt` too, so the float twiddles are computed from a
+float-rounded `delta = atan(1)/nwh` and their argument error grows with the table index. The
+port computes every twiddle in double and rounds once into `Sample`.
+
+Consequence for the gate: the **double** port must be bit-identical to the vendored C; the
+**float** port will differ from `fftsg_float.c` by design, because it is more accurate. The
+float gate is therefore the existing float-tracks-double test plus a small ulp bound against
+the double port, not bit identity against the old float build.
+
+### Transforms become `const`
+With immutable tables, `forward_inplace` and `inverse_inplace` are `const` member functions.
+That states in the type what the docstring promises in prose, and it lets one plan be shared
+across threads. The vDSP and CMSIS engines carry scratch buffers and stay non-const, which is
+itself a useful signal about which backends are shareable.
+
+### Two mechanical passes, one gate
+1. Port with plain `+ - *` and prove bit-exactness at every power of two from 4 to 65536, on
+   broadband, on-bin tone, impulse and DC material, forward and inverse. Build the C and the
+   C++ with the same `-ffp-contract` setting or the comparison is meaningless; if a platform
+   cannot be made bit-exact, the documented fallback is a 1-ulp bound, never a loosened
+   tolerance.
+2. Only then introduce the arithmetic policy that fixed point needs (Stage 5), under the same
+   gate. Designing the policy before the port exists means designing it blind; the gate makes
+   the second pass safe.
+
+### Header-only, with one escape hatch
+Header-only. The templates belong in headers because that is what the rest of the library
+is, and because a consumer that instantiates only `float` then compiles only the float code,
+which the current static library cannot do. `tap::dsp` becomes a true INTERFACE target and
+the compiled-library explanations disappear from MuTap's and MuTap-Max's CMake. The CMSIS
+backend still compiles C, so a small object library exists only when that option is on.
+
+The cost is compile time: the 2,400 lines are heavily unrolled radix-8/16 leaves, and MuTap
+pulls `fft.h` into every external and test translation unit through its umbrella header. The
+escape hatch is the standard one: `extern template class split_radix_rdft<double>;` (and
+`<float>`) behind an opt-in CMake option that adds one `.cpp` with the explicit
+instantiations. Default off; measure first; turn on only if the numbers say so. No C++20
+modules: the Max toolchain and the submodule consumers are not ready for them.
+
+### Cleanup the port makes possible
+- **Shareable plans.** MuTap's chains hold several FFTs of one size, each with its own tables.
+  With immutable tables the plan can be a value that copies cheaply (explicit sharing, no
+  global cache), which matters on the M55.
+- **Independent oracle.** Every FFT test today compares Ooura to Ooura. A naive long-double
+  DFT at small sizes is an oracle that is not the implementation under test.
+- **Typed tests over engines.** With the engine as a template parameter (Stage 4), one typed
+  suite runs the split-radix engine, vDSP and CMSIS in the same binary; backend parity stops
+  being a CI-matrix property.
+- **File layout.** Public `fft.h`; then `fft/split_radix.h`, `fft/spectrum.h` (the bin view
+  from Stage 1), `fft/backends/accelerate.h`, `fft/backends/cmsis.h`. A backend header is
+  included by whoever selects it, not by everyone.
+- **Fixed-point twiddles fall out of the substrate.** Q1.14 and Q1.30 are already
+  `sample_traits<int16_t/int32_t>::coeff`, so the fixed-point twiddle table needs no new
+  format design.
+- **Do not fold the port into the same PR as the bin view or the preconditions work.** The
+  bit-exact gate is convincing only when the diff around it is boring.
+
+---
+
+## Part 5 — Naming: is this still "Ooura"?
+
+What lands is a C++ port of one algorithm from Takuya Ooura's package (the split-radix real
+DFT, "Fast Version III"), not a fork of the package. Two different things want names.
+
+**Attribution stays, and stays prominent.** Ooura's terms permit modification and require
+the copyright notice. The header keeps his banner, `NOTICE.md` records the port and what was
+dropped, and the docs say "a C++ port of Takuya Ooura's `fftsg.c` `rdft`" in the first
+paragraph. The house IP policy (implement from published literature, cite it) also wants the
+provenance visible, so nothing should read as if the algorithm were new.
+
+**Identifiers should say what the code is, not whose it was.** Recommendation:
+- Engine class `split_radix_rdft<Sample>` in `include/tap/dsp/fft/split_radix.h`. Descriptive,
+  greppable, and it cannot be confused with the many `ooura_fft.h` / `namespace ooura`
+  headers in the wild (WebRTC, Chromium, assorted audio SDKs). Linkage collision is not the
+  concern (everything is inside `tap::dsp` and the port removes the global symbols); reader
+  confusion and search results are.
+- The public API is unchanged: `basic_real_fft`, `real_fft`, `real_fft32`, and later
+  `real_fft_q15` / `real_fft_q31`.
+- The words "Ooura packing" and "Ooura contract" leave the consumer headers. They become
+  "the DspTap packed spectrum" and "the DspTap real-FFT contract (inherited from Ooura's
+  `rdft`)", and the Stage 1 spectrum view is where the layout is defined. Consumers stop
+  naming the vendor of a layout they never see.
+- "Ooura" remains in exactly three places: the attribution banner, `NOTICE.md`, and the
+  bit-exact parity test, which compares against `tests/reference/ooura/fftsg.c` until that
+  file is deleted (D6).
+- Not recommended: a coined brand (`tapfft`, `taprfft`) that suggests a novel algorithm, or
+  keeping `ooura_rdft` as the type name, which invites the "is this the same as the fork I
+  already have" question the rename is meant to remove.
+
+---
+
 ## Decisions to make before Stage 3 (the "shape" discussion)
 
 **D1. Is `double` a sample format?** Today the substrate says no, on purpose, and CLAUDE.md
@@ -290,3 +415,12 @@ non-RT header and delete from the class, after checking AmbiTap.
 **D6. How long does `fftsg.c` stay?** Recommendation: as a test-only oracle for one release
 after Stage 3 lands in the consumers, then deleted; the bit-exact parity test is what makes
 the deletion safe.
+
+**D7. The engine's name.** Part 5 recommends `split_radix_rdft` with Ooura kept in the
+attribution, NOTICE and the parity test only. Alternatives: `ooura_rdft` (honest about
+provenance, collides with the world's forks in every search) or a coined brand (hides
+provenance the IP policy wants visible). Recommendation: `split_radix_rdft`.
+
+**D8. Compile-time escape hatch.** Header-only by default; an opt-in explicit-instantiation
+`.cpp` behind a CMake option only if measured compile time in MuTap's test build says so.
+Recommendation: land header-only, measure, decide.
