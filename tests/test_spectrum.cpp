@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 Timothy Place and the DspTap contributors.
 //
-// Locks down the tap::dsp::packed_spectrum view against real forward
-// transforms: the DC and Nyquist slots, bin k at a[2k] / a[2k+1], the sign of
-// im(k) for an on-bin sine under the W = exp(+2*pi*i/N) convention, power()
-// at the edges and in the interior, the engineering-convention accessor's
-// conjugation, and that the view writes through to the buffer it views.
+// Locks down the tap::dsp::packed_spectrum view. Against real transforms
+// (float/double): the DC and Nyquist slots, bin k at a[2k] / a[2k+1], the sign
+// of im(k) for an on-bin sine under the W = exp(+2*pi*i/N) convention, power()
+// at the edges and in the interior, Parseval over the packing, the
+// engineering-convention accessor's conjugation, and that a value written
+// through the view inverts to the documented tone. Over hand-filled buffers
+// (float/double/int16/int32): the slots, write-through, deduction, and
+// power()'s promotion before the multiply.
 
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <cstdint>
 #include <numbers>
+#include <random>
 #include <type_traits>
 #include <vector>
 
@@ -47,12 +52,32 @@ namespace {
     }
 
     template <typename Sample>
+    std::vector<Sample> random_signal(std::size_t n, unsigned seed) {
+        std::mt19937                           gen(seed);
+        std::uniform_real_distribution<double> dist(-1.0, 1.0);
+        std::vector<Sample>                    x(n);
+        for (auto& v : x) {
+            v = static_cast<Sample>(dist(gen));
+        }
+        return x;
+    }
+
+    // Transform-backed battery: the two profiles basic_real_fft ships today.
+    template <typename Sample>
     class packed_spectrum_test : public ::testing::Test {};
 
     using sample_types = ::testing::Types<float, double>;
     TYPED_TEST_SUITE(packed_spectrum_test, sample_types);
 
-    TYPED_TEST(packed_spectrum_test, SizeAndBinCount) {
+    // Hand-filled battery: every value type the view admits, the fixed-point
+    // profiles included, so Stage 3 does not have to reopen this header.
+    template <typename Sample>
+    class packed_spectrum_slot_test : public ::testing::Test {};
+
+    using slot_types = ::testing::Types<float, double, std::int16_t, std::int32_t>;
+    TYPED_TEST_SUITE(packed_spectrum_slot_test, slot_types);
+
+    TYPED_TEST(packed_spectrum_slot_test, SizeAndBinCount) {
         std::vector<TypeParam>                           a(1024, TypeParam(0));
         const tap::dsp::packed_spectrum<const TypeParam> s(a.data(), a.size());
         EXPECT_EQ(s.size(), 1024u);
@@ -127,7 +152,7 @@ namespace {
         }
     }
 
-    TYPED_TEST(packed_spectrum_test, AccessorsAreTheDocumentedSlots) {
+    TYPED_TEST(packed_spectrum_slot_test, AccessorsAreTheDocumentedSlots) {
         // Fill a[i] = i so every slot is distinguishable, and read it back
         // through the view: a[0], a[1], a[2k], a[2k+1].
         constexpr std::size_t  n = 32;
@@ -147,7 +172,7 @@ namespace {
         EXPECT_EQ(s.power(n / 2), a[1] * a[1]);
     }
 
-    TYPED_TEST(packed_spectrum_test, MutableViewWritesThrough) {
+    TYPED_TEST(packed_spectrum_slot_test, MutableViewWritesThrough) {
         constexpr std::size_t  n = 16;
         std::vector<TypeParam> a(n, TypeParam(0));
 
@@ -169,7 +194,7 @@ namespace {
         static_assert(std::is_same_v<decltype(s.re(3)), TypeParam&>);
     }
 
-    TYPED_TEST(packed_spectrum_test, DeductionFollowsThePointer) {
+    TYPED_TEST(packed_spectrum_slot_test, DeductionFollowsThePointer) {
         std::vector<TypeParam>    a(8, TypeParam(0));
         const auto*               ca = a.data();
         tap::dsp::packed_spectrum m(a.data(), a.size());
@@ -178,6 +203,94 @@ namespace {
         static_assert(std::is_same_v<decltype(c), tap::dsp::packed_spectrum<const TypeParam>>);
         EXPECT_EQ(m.num_bins(), 5u);
         EXPECT_EQ(c.num_bins(), 5u);
+    }
+
+    TYPED_TEST(packed_spectrum_slot_test, PowerPromotesBeforeTheMultiply) {
+        // power_type is the sample type for the floating profiles (the
+        // hand-written consumers' exact expression) and int64 for the
+        // fixed-point ones, promoted BEFORE the multiply: an int16 pair of
+        // 30000 squares to 1.8e9, which int16 arithmetic narrowed to -11776,
+        // and an int32 pair of 2^30 squares to 2^61, past int32 entirely.
+        using view = tap::dsp::packed_spectrum<const TypeParam>;
+        if constexpr (std::is_integral_v<TypeParam>) {
+            static_assert(std::is_same_v<typename view::power_type, std::int64_t>);
+        }
+        else {
+            static_assert(std::is_same_v<typename view::power_type, TypeParam>);
+        }
+
+        constexpr std::size_t  n = 8;
+        std::vector<TypeParam> a(n, TypeParam(0));
+        const TypeParam        big = std::is_same_v<TypeParam, std::int16_t>   ? TypeParam(30000)
+                                     : std::is_same_v<TypeParam, std::int32_t> ? TypeParam(1 << 30)
+                                                                               : TypeParam(30000);
+        a[0]                       = big;
+        a[1]                       = big;
+        a[2]                       = big;
+        a[3]                       = big;
+        const view s(a.data(), n);
+
+        const std::int64_t b = static_cast<std::int64_t>(big);
+        EXPECT_EQ(static_cast<std::int64_t>(s.power(0)), b * b);
+        EXPECT_EQ(static_cast<std::int64_t>(s.power(n / 2)), b * b);
+        EXPECT_EQ(static_cast<std::int64_t>(s.power(1)), b * b + b * b);
+        EXPECT_EQ(s.power(2), typename view::power_type(0));
+    }
+
+    TYPED_TEST(packed_spectrum_test, ParsevalHoldsOverThePacking) {
+        // The power() docstring's formula, with no hidden factor 2 or 1/N:
+        // sum x^2 = (1/N) (power(0) + power(N/2) + 2 sum_{1..N/2-1} power(k)).
+        constexpr std::size_t n = 512;
+        const auto            x = random_signal<TypeParam>(n, 1234);
+
+        double time_energy = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            time_energy += static_cast<double>(x[i]) * static_cast<double>(x[i]);
+        }
+
+        const auto                                       a = forward(x);
+        const tap::dsp::packed_spectrum<const TypeParam> s(a.data(), n);
+        double freq_energy = static_cast<double>(s.power(0)) + static_cast<double>(s.power(s.num_bins() - 1));
+        for (std::size_t k = 1; k < s.num_bins() - 1; ++k) {
+            freq_energy += 2.0 * static_cast<double>(s.power(k));
+        }
+        freq_energy /= static_cast<double>(n);
+
+        const double tol = std::is_same_v<TypeParam, double> ? 1e-9 : 1e-3;
+        EXPECT_NEAR(freq_energy, time_energy, tol * time_energy);
+    }
+
+    TYPED_TEST(packed_spectrum_test, WritesThroughTheViewInvertToTheDocumentedTones) {
+        // The side pvoc writes: set ONLY im(5) = +N/2 through a mutable view
+        // and run the real inverse (2/N applied). Under W = exp(+2*pi*i/N)
+        // that is a sine, not a negative sine; re(5) = N/2 alone is a cosine.
+        constexpr std::size_t n     = 128;
+        constexpr std::size_t bin   = 5;
+        const double          w     = 2.0 * std::numbers::pi * static_cast<double>(bin) / static_cast<double>(n);
+        const double          tol   = k_tolerance<TypeParam> * static_cast<double>(n);
+        const TypeParam       scale = TypeParam(2) / static_cast<TypeParam>(n);
+
+        tap::dsp::basic_real_fft<TypeParam> fft(n);
+
+        std::vector<TypeParam> sine(n, TypeParam(0));
+        {
+            const tap::dsp::packed_spectrum<TypeParam> s(sine.data(), n);
+            s.im(bin) = static_cast<TypeParam>(n) / TypeParam(2);
+        }
+        fft.inverse_inplace(sine.data());
+
+        std::vector<TypeParam> cosine(n, TypeParam(0));
+        {
+            const tap::dsp::packed_spectrum<TypeParam> c(cosine.data(), n);
+            c.re(bin) = static_cast<TypeParam>(n) / TypeParam(2);
+        }
+        fft.inverse_inplace(cosine.data());
+
+        for (std::size_t j = 0; j < n; ++j) {
+            const double arg = w * static_cast<double>(j);
+            EXPECT_NEAR(static_cast<double>(sine[j] * scale), std::sin(arg), tol) << "sine, sample " << j;
+            EXPECT_NEAR(static_cast<double>(cosine[j] * scale), std::cos(arg), tol) << "cosine, sample " << j;
+        }
     }
 
     TEST(packed_spectrum_contract, AccessorsAreNoexceptAndConstexpr) {

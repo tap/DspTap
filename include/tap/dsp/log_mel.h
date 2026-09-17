@@ -32,9 +32,10 @@
 //     geometry, never implied.
 //   - FFT: fft_size >= frame, a power of two; the windowed frame occupies
 //     [0, frame) and zeros occupy [frame, fft_size). The transform is the
-//     unnormalized real DFT of tap::dsp::basic_real_fft (Ooura contract), so
-//     the power spectrum is |X_k|^2 with X_k = sum x[n] e^{-i 2 pi k n / N}
-//     up to the sign of the imaginary part, which power discards.
+//     unnormalized real DFT of tap::dsp::basic_real_fft (the packed spectrum
+//     defined in fft/spectrum.h), so the power spectrum is |X_k|^2 with
+//     X_k = sum x[n] e^{-i 2 pi k n / N} up to the sign of the imaginary
+//     part, which power discards.
 //   - Bin frequencies: f_k = k * sample_rate / fft_size, k in [0, fft_size/2].
 //   - Mel scale (HTK): mel(f) = 2595 log10(1 + f / 700). Band edges are
 //     bands + 2 points equally spaced in mel between fmin_hz and fmax_hz.
