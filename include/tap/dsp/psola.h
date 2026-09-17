@@ -57,10 +57,14 @@ namespace tap::dsp {
     ///     input delayed by latency() (plus interpolation error) — pinned by
     ///     the test battery.
     ///   - Run time is unbounded: the sample clock is a fixed-width 32-bit
-    ///     count that wraps by a multiple of the ring size (see k_clock_span),
-    ///     so no counter overflows on any target, and the wrap changes nothing
-    ///     but the magnitude of the fractional mark positions (pinned by the
-    ///     test battery).
+    ///     count bounded below 2 * clock_wrap() (a multiple of the ring size),
+    ///     so no counter overflows on any target. The contract is that bound,
+    ///     not an observable. The wrap moves the fractional mark positions in
+    ///     magnitude only, so from 2 * clock_wrap() samples on (at most 2^19,
+    ///     10.9 s at 48 kHz; 519,552 samples for max_period 900) the output
+    ///     diverges from an unbounded-clock reference at the ~1e-8 relative
+    ///     level (measured 3.8e-9 absolute in double and one float ulp in
+    ///     float, against a 0.35 peak). Pinned by the test battery.
     template <typename Sample>
     class basic_psola {
         static_assert(std::is_same_v<Sample, float> || std::is_same_v<Sample, double>,
@@ -71,20 +75,14 @@ namespace tap::dsp {
         static constexpr Sample k_min_ratio  = Sample(0.25);
         static constexpr Sample k_max_ratio  = Sample(4);
 
-        /// The sample clock wraps every clock_wrap() samples, where clock_wrap()
-        /// is the largest multiple of the ring size not above k_clock_span (or
-        /// one ring, if the ring is larger). The span is arbitrary within
-        /// (longest test run, 2^29): 2^18 keeps every position below 2^19, i.e.
-        /// with 34 fractional bits, and wraps every 5.5 s at 48 kHz so the wrap
-        /// path is exercised routinely rather than once a shift.
-        static constexpr std::int32_t k_clock_span = std::int32_t{1} << 18;
-
-        /// @pre max_period >= 16 — the deepest period process() will be given.
+        /// @pre 16 <= max_period < 2^26 — the deepest period process() will be
+        /// given; the upper bound keeps 2 * clock_wrap() and every grain position
+        /// inside the int32 sample clock.
         explicit basic_psola(size_t max_period)
             : m_max_period(static_cast<Sample>(max_period))
             , m_latency(2 * max_period + 2) {
             assert(max_period >= 16);
-            assert(max_period < (size_t{1} << 26)); // four rings must fit the int32 sample clock
+            assert(max_period < (size_t{1} << 26)); // see @pre
             // One ring size serves both buffers; the clock wrap relies on that.
             // Input history: a grain reaches back to (mark - period) and marks lag the
             // input cursor by up to two periods -> three periods of history plus slack.
@@ -102,7 +100,9 @@ namespace tap::dsp {
 
         size_t max_period() const noexcept { return static_cast<size_t>(m_max_period); }
 
-        /// Period of the sample clock's wrap, in samples (see k_clock_span).
+        /// Period of the sample clock's wrap, in samples: the largest multiple of
+        /// the ring size not above 2^18 (or one ring, if the ring is larger). The
+        /// clock first wraps at 2 * clock_wrap() and every clock_wrap() after.
         size_t clock_wrap() const noexcept { return static_cast<size_t>(m_wrap); }
 
         /// Zero all running state (buffers, marks, counters).
@@ -174,7 +174,7 @@ namespace tap::dsp {
         /// Lets a test cross the wrap, or an elapsed count past 2^31, in O(1)
         /// instead of processing that many samples. Fractional mark positions that
         /// are not multiples of the new magnitude's ulp may round by that ulp.
-        /// Not part of the processing contract.
+        /// Not a contract point; may change or disappear without a version note.
         void advance_clock_for_testing(std::uint64_t samples) noexcept {
             const std::uint64_t ring   = m_input.size();
             const std::uint64_t wrap   = static_cast<std::uint64_t>(m_wrap);
@@ -188,8 +188,9 @@ namespace tap::dsp {
         /// the ring size, so every ring index is unchanged. process() calls it with
         /// -m_wrap when the clock reaches 2 * m_wrap; m_wrap is at least one ring, so
         /// the clock stays at or above latency() and the warm-up guard stays true.
-        /// That subtraction is exact in double: m_wrap is an integer (a multiple of
-        /// every position's ulp) no larger than twice any position at that moment.
+        /// That subtraction is exact in double: m_wrap is an integer, hence a
+        /// multiple of every position's ulp, and the result's magnitude does not
+        /// exceed the position's.
         void shift_clock(std::int32_t by) noexcept {
             const double d = static_cast<double>(by);
             m_n += by;
@@ -233,6 +234,15 @@ namespace tap::dsp {
         }
 
         static constexpr double k_pi = 3.14159265358979323846;
+
+        /// Span of the sample clock: clock_wrap() is the largest multiple of the
+        /// ring size not above this (or one ring, if the ring is larger). The
+        /// value is arbitrary within (longest test run, 2^29): 2^18 keeps every
+        /// position below 2^19 + 5 * max_period, i.e. with at least 33 fractional
+        /// bits, and wraps every 5.4 s at 48 kHz (first at 10.9 s) so the wrap
+        /// path is exercised routinely rather than once a shift. Not a contract
+        /// point; the tests pin clock_wrap() <= 2^18 as a literal.
+        static constexpr std::int32_t k_clock_span = std::int32_t{1} << 18;
 
         Sample m_max_period;
         size_t m_latency;

@@ -201,15 +201,22 @@ namespace {
     }
 
     TYPED_TEST(pvoc_test, ClockWrapIsBitExactAndCountersDoNotOverflow) {
-        // The run-time contract: the sample clock is 32 bits and wraps by the
-        // overlap-add ring (3 * fft_size), a multiple of the input ring and the
-        // hop, so the wrap changes nothing at all. Every 1 s run above already
-        // wraps 14 times; this test makes the pin explicit. Reference: a shifter
-        // run from zero, whose identity reconstruction must hold over the WHOLE
-        // run (every wrap included), not just the tail. Subject: the same shifter
-        // with its clock advanced past 2^31 elapsed samples through the documented
-        // O(1) seam (the count a 48 kHz Cortex-M or Windows build reaches after
-        // 12.4 h); its output is bit-identical to the reference's.
+        // The run-time contract is a bound, not an observable: the 32-bit sample
+        // clock stays below 2 * clock_wrap(), the overlap-add ring (3 * fft_size,
+        // a multiple of the input ring and the hop), so the wrap changes nothing
+        // at all. Every 1 s run above already wraps 14 times; this test makes
+        // the pin explicit. Reference: a shifter run from zero, whose identity
+        // reconstruction must hold over the WHOLE run (every wrap included), not
+        // just the tail. Subject: the same shifter with its clock advanced past
+        // 2^31 elapsed samples through the documented O(1) seam (the count a
+        // 48 kHz Cortex-M or Windows build reaches after 12.4 h); its output is
+        // bit-identical to the reference's. The seam is applied at a warm-up
+        // BELOW clock_wrap(): the reference clock then reads 2048 while the
+        // seeded one folds to 3072 + 2048 = 5120, and the two differ until both
+        // wrap to 3072 1024 samples later, which is what ASSERT_EQ pins (a clock
+        // value and that value plus clock_wrap() are indistinguishable). Past
+        // clock_wrap() the seam would fold to the reference's own value and the
+        // comparison would be vacuous.
         tap::dsp::basic_pvoc<TypeParam> ref(1024);
         tap::dsp::basic_pvoc<TypeParam> sub(1024);
         ref.set_formant(true); // the LPC path runs in the frame too
@@ -218,7 +225,7 @@ namespace {
 
         const double tolerance = std::is_same_v<TypeParam, double> ? 1e-8 : 2e-3;
         const int    latency   = static_cast<int>(ref.latency());
-        const int    warm      = 12000; // seam applied past the warm-up, mid-stream
+        const int    warm      = 2048; // past the warm-up guard (fft_size), below clock_wrap()
         const int    run       = 48000;
         double       worst     = 0.0;
         for (int t = 0; t < warm + run; ++t) {

@@ -148,25 +148,26 @@ namespace {
     }
 
     TYPED_TEST(psola_test, ClockWrapIsSeamlessAndCountersDoNotOverflow) {
-        // The run-time contract: the sample clock is 32 bits and wraps by a
-        // multiple of the ring size, changing nothing but the magnitude of the
-        // fractional mark positions. Reference: a shifter run from zero. Subject:
-        // the same shifter with its clock advanced past 2^31 elapsed samples
-        // through the documented O(1) seam (the count a 48 kHz Cortex-M or
-        // Windows build reaches after 12.4 h), then run for more than one wrap
-        // period so the wrap fires inside the run. Ratio 1.5 makes the synthesis
-        // step t / r inexact, so the wrap's magnitude change is exercised; the
-        // outputs agree to the rounding of those positions (measured 2e-9 against
-        // a 0.35 peak), five orders below any dropped or doubled grain.
+        // The run-time contract is a bound, not an observable: the 32-bit sample
+        // clock stays below 2 * clock_wrap(), a multiple of the ring size, and
+        // the wrap changes nothing but the magnitude of the fractional mark
+        // positions. Reference: a shifter run from zero. Subject: the same
+        // shifter with its clock advanced past 2^31 elapsed samples through the
+        // documented O(1) seam (the count a 48 kHz Cortex-M or Windows build
+        // reaches after 12.4 h), then run for more than one wrap period so the
+        // wrap fires inside the run. Ratio 1.5 makes the synthesis step t / r
+        // inexact, so the wrap's magnitude change is exercised; the outputs agree
+        // to the rounding of those positions (measured 2e-9 against a 0.35 peak),
+        // five orders below any dropped or doubled grain.
         using shifter_t = tap::dsp::basic_psola<TypeParam>;
         shifter_t ref(900);
         shifter_t sub(900);
-        ASSERT_LE(sub.clock_wrap(), static_cast<size_t>(shifter_t::k_clock_span));
+        ASSERT_LE(sub.clock_wrap(), size_t{1} << 18);    // the documented span
         ASSERT_EQ(sub.clock_wrap() % (4 * 900 + 8), 0u); // a multiple of the ring size
 
         const TypeParam period = static_cast<TypeParam>(k_sr / 150.0);
-        const int       warm   = 12000; // seam applied past the warm-up, mid-stream
-        const int       run    = shifter_t::k_clock_span + 8192;
+        const int       warm   = 12000;            // seam applied past the warm-up, mid-stream
+        const int       run    = (1 << 18) + 8192; // > clock_wrap(), so the wrap fires inside the run
         double          worst  = 0.0;
         for (int t = 0; t < warm + run; ++t) {
             if (t == warm) {

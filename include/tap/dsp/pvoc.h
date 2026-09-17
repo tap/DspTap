@@ -50,9 +50,11 @@ namespace tap::dsp {
     /// buffer is allocated there; process() is noexcept and allocation-free,
     /// safe on a real-time audio thread. Latency is exactly latency() samples.
     /// Run time is unbounded: the sample clock is a fixed-width 32-bit count
-    /// that wraps by the overlap-add ring size (3 * fft_size, a multiple of the
-    /// input ring and the hop), so no counter overflows on any target and the
-    /// output is bit-identical across the wrap (pinned by the test battery).
+    /// bounded below 2 * clock_wrap() (the overlap-add ring, 3 * fft_size, a
+    /// multiple of the input ring and the hop), so no counter overflows on any
+    /// target; the contract is that bound, not an observable. The wrap changes
+    /// no index and no value, so the output is bit-identical across it (pinned
+    /// by the test battery).
     /// At ratio == 1 every region's bin offset and residual are zero, so the
     /// output reconstructs the input's waveform delayed by exactly one FFT
     /// frame (pinned by the test battery).
@@ -80,13 +82,15 @@ namespace tap::dsp {
         static constexpr double k_env_floor = 1e-6; // |A| guard when inverting the envelope
         static constexpr double k_max_boost = 16.0; // per-bin formant-correction gain cap
 
-        /// @pre fft_size is a power of two, >= 64.
+        /// @pre fft_size is a power of two in [64, 2^28]; the upper bound keeps
+        /// 6 * fft_size inside the int32 sample clock.
         explicit basic_pvoc(size_t fft_size = 1024)
             : m_n_size(static_cast<int>(fft_size))
             , m_hop(static_cast<int>(fft_size) / k_overlap)
             , m_bins(static_cast<int>(fft_size) / 2 + 1)
             , m_fft(fft_size) {
             assert(fft_size >= 64 && (fft_size & (fft_size - 1)) == 0);
+            assert(fft_size <= (size_t{1} << 28)); // see @pre
 
             m_window.assign(static_cast<size_t>(m_n_size), Sample(0));
             for (int i = 0; i < m_n_size; ++i) {
@@ -136,6 +140,7 @@ namespace tap::dsp {
         bool formant() const noexcept { return m_formant; }
 
         /// Period of the sample clock's wrap, in samples: the overlap-add ring.
+        /// The clock first wraps at 2 * clock_wrap() and every clock_wrap() after.
         size_t clock_wrap() const noexcept { return m_accum.size(); }
 
         /// Zero all running state (buffers, phases, counters).
@@ -181,7 +186,8 @@ namespace tap::dsp {
         /// multiple of clock_wrap()) as if that many samples had elapsed with the
         /// ring contents unchanged, wrapping the clock exactly as process() does.
         /// Lets a test cross an elapsed count past 2^31 in O(1) instead of
-        /// processing that many samples. Not part of the processing contract.
+        /// processing that many samples. Not a contract point; may change or
+        /// disappear without a version note.
         void advance_clock_for_testing(std::uint64_t samples) noexcept {
             const std::uint64_t wrap   = m_accum.size();
             const std::uint64_t target = static_cast<std::uint64_t>(m_n) + (samples / wrap) * wrap;
