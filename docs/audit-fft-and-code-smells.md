@@ -229,6 +229,30 @@ immediately. Nothing else rides in this PR.
 - DspTap: state the fp-contraction policy (Part 4) as a contract point in `fft.h` before the
   port lands, so the parity target and the consumers are measured against a written rule.
 
+### Stage 1b — Benchmarks and the performance ratchet, baselined on the C
+Revision 2 had no performance stage: a host microbenchmark "as an artifact", an M55 size
+assertion, and an instruction-count idea marked optional. That is not a gate. This stage adds
+the measurement infrastructure **before** the port so that Stage 2b is ratcheted against the
+vendored C rather than against nothing. Design in Part 11.
+
+- `bench/icount/`: one deterministic binary per scenario, compile-time selected (no argv on bare
+  metal), xorshift input, a checksum on every output so nothing is dead-code-eliminated;
+  scenarios `rfft_f32_512`, `rfft_f32_2048`, `rfft_f64_512` (host-class targets only), each
+  a forward+inverse loop sized so the transforms dominate plan construction. The C and the port
+  build as two binaries per scenario from Stage 2a on (`TAP_DSP_BENCH_ENGINE`), so the ratchet
+  for 2b is a direct comparison, not a memory of a number.
+- `bench/baselines.json` keyed by target (`m4-softfp`, `m4f`, `m33`, `m55`, `m55-ooura`), seeded
+  from the vendored C on the Part 10 legs and committed with the SHA and toolchain versions.
+- `scripts/icount.py` and the QEMU TCG counting plugin, copied from MuTap (same license, same
+  plugin API pin), with `mps2-an386` added as a target.
+- `bench/bench_fft.cpp`: host wall-clock microbenchmark, min-of-N, port vs C while the C exists
+  and vs the recorded number afterwards. Informational on GitHub runners (noisy), the tool for
+  the Apple vDSP and desktop claims locally.
+- Gate: on every push and pull request, each target's scenarios within ±3% of baseline, the
+  family's tolerance. `--update` is a deliberate commit that records the measured delta and the
+  reason in `bench/README.md`; a regression that is "expected" is written down, never absorbed.
+- The `.text` ceilings from Part 10 item 4 live in the same job.
+
 ### Stage 2 — The port, in three PRs
 **2a. Add the engine beside the C, route nothing.** `detail::split_radix_rdft<Sample>` per
 Part 4, transliterated statement-for-statement, tables computed *exactly as the C computes
@@ -240,8 +264,8 @@ linux, windows and macos legs (same binary, same libm; cross-platform identity i
 and does not hold today either). A second run at default flags is informational and pinned at
 a *measured* bound. An independent oracle: closed-form vectors (impulse, DC, Nyquist, on-bin
 tone) plus a compensated-summation DFT at small N, because `long double` is `double` on MSVC
-and Apple arm64. A host microbenchmark, port vs C at N=512/2048 float/double, as a CI
-artifact. M55 leg compiles the instantiations. MuTap: nothing moves; no bump needed.
+and Apple arm64. The Stage 1b bench builds port-vs-C pairs on every leg and reports them; nothing is
+ratcheted yet because nothing is routed. MuTap: nothing moves; no bump needed.
 
 **2b. Flip routing.** One line in `fft.h`; `test_fft_backend.cpp`'s `ooura_ref` re-pointed at the
 ported float engine (on Linux/Windows the backend test becomes port-vs-port, which is fine
@@ -249,7 +273,9 @@ only because 2a's parity test exists); README rewritten in the same PR. MuTap bu
 harness bit-identical (double rows *and*, because 2a kept float table semantics, the float
 rows), icount ratchet at 0% delta on m33 and hexagon (the ratchet's ±3% is not the gate here;
 0% is, because nothing numeric changed), `test_float32`, `test_g168`, `test_nn_suppressor`
-unchanged. Rollback is a one-line revert.
+unchanged. DspTap's own ratchet (Stage 1b): the port within ±3% of the C's instruction count
+on every QEMU leg and within the `.text` ceilings; the measured deltas go into
+`bench/README.md` with the flip. Rollback is a one-line revert.
 
 **2c. Remove the C.** Delete `fftsg_float.c`; move `fftsg.c` and `readme.txt` to
 `tests/reference/ooura/`; `tap_dsp_fft` exists only when `TAP_DSP_FFT_CMSIS` is on. MuTap:
@@ -271,7 +297,9 @@ twiddles, two scaling policies (fixed, block floating point), Ooura's real post-
 so the packing and the `exp(+i)` convention are identical, Q15 and Q31 I/O widths.
 `basic_real_fft<std::int16_t>` / `<std::int32_t>` route to it; aliases `real_fft_q15`,
 `real_fft_q31`. Gates: the Part 9 fixed-point battery on the hosts, and the same battery on the
-M4 (soft-float), M4F, M33 and M55 QEMU legs.
+M4 (soft-float), M4F, M33 and M55 QEMU legs; new ratchet scenarios `rfft_q15_512`,
+`rfft_q31_512`, `rfft_q31_2048` seeded in the same PR, so the `SMMULR` and Helium seams that
+come later have a number to beat.
 
 **3c. Consumers and instruments.** The analysis instruments take `std::span<const Sample>`
 so they can score Q15/Q31 output; the capi and `dsptap_py` expose all four profiles; the
@@ -289,7 +317,8 @@ CMSIS object library stays PIC. Consumer-facing transforms stay **non-const**; s
 an engine trait (`Engine::is_shareable`), true for the ported engine, false for the two
 scratch-carrying backends. Typed tests over the engines available on the host: Ooura vs vDSP
 same-binary on macOS; CMSIS compile-only on M55 (it cannot run on a host, and nobody runs
-CMSIS-vs-Ooura parity anywhere today; that gap is recorded, not closed, by this stage).
+CMSIS-vs-Ooura parity anywhere today; that gap is recorded, not closed, by this stage). The
+`m55` and `m55-ooura` baseline keys are what make a backend regression visible.
 
 ### Stage 5 — The packed-spectrum view, DspTap only
 `fft/spectrum.h`: a non-owning view whose docstring carries the numeric definition
@@ -319,11 +348,12 @@ precondition only; a repo-wide precondition policy is its own plan.
 |---|---|---|---|
 | 0 | new overflow test | pin bump, suite green | revert 2 files |
 | 1 | M4/M33/M55 legs run the emulation-sized selection | fallback leg builds Ooura float; filter pruned | n/a |
+| 1b | baselines seeded from the C on all QEMU legs; ratchet job green | none | delete `bench/` |
 | 2a | bit identity double+float, 3 hosts + 4 QEMU legs, `-ffp-contract=off`; oracle; bench artifact | none (no bump) | delete header |
-| 2b | existing battery on the port; backend test re-pointed | fingerprint identical; icount 0%; float pins unchanged | one-line revert |
+| 2b | existing battery on the port; backend test re-pointed; ratchet ±3% vs C; `.text` ceilings | fingerprint identical; icount 0%; float pins unchanged | one-line revert |
 | 2c | build without the C | CI job rewritten; notices | re-pin |
 | 3a | traits battery incl. double; decimate re-pinned Q15-vs-double | pin bump, suite green | re-pin |
-| 3b | Part 9 fixed-point battery on hosts and all four QEMU legs; `.text` and icount per leg | none | delete header |
+| 3b | Part 9 fixed-point battery on hosts and all four QEMU legs; fixed-point scenarios seeded; `.text` ceilings | none | delete header |
 | 3c | instruments typed; capi/notebook executed | none | per item |
 | 4 | typed engine tests; macOS same-binary parity | fingerprint identical | re-pin |
 | 5 | pinned pvoc/log_mel tests | per-header fingerprint + icount 0% | per header |
@@ -416,9 +446,11 @@ for the float instantiation to the M55 leg; MuTap's pico2w job is the model.
 ### Performance
 The backends' quoted gains are "vs autovectorized Ooura", i.e. the C compiled as C. A port
 with member access and vector storage may vectorize differently (SLP over the straight-line
-leaves is what makes Ooura fast). Before the C is deleted: the host microbenchmark from 2a,
-MuTap's icount ratchet on m33 and hexagon with the port swapped in, and the M55 size
-assertion. Thresholds are decided before 2b merges.
+leaves is what makes Ooura fast). Stage 1b exists so this is measured, not argued: the
+instruction-count ratchet on every QEMU leg with the C as the seeded baseline, the `.text`
+ceilings, and the host microbenchmark. Load `m_w.data()` into a local once per transform so
+aliasing analysis matches the C, which receives `w` by parameter. Thresholds are the family's
+±3%, decided here, not after the fact.
 
 ### Other contract points to write down
 No alignment requirement on `Sample*` (Ooura needs none; a future MVE backend must not add
@@ -779,10 +811,10 @@ with the platform files missing.
    configures `MinSizeRel`, builds, runs `ctest`, then runs `arm-none-eabi-size` on the test
    binary and on a size-probe object that instantiates each profile alone, asserting per-leg
    `.text` ceilings for the float and Q31 real FFT at N = 512.
-5. **Instruction counts** (optional, after 3b): MuTap's `scripts/icount.py` + QEMU TCG plugin
-   pattern with `bench/baselines.json`; scenarios `rfft_f32_512`, `rfft_q31_512`,
-   `rfft_q15_512`, `rfft_f32_2048` per leg, ratcheted at ±3% like MuTap. This is the gate that
-   would catch a port that vectorizes worse than the C.
+5. **Instruction counts** are Stage 1b, not optional: MuTap's `scripts/icount.py` and TCG plugin
+   pattern with `bench/baselines.json`, scenarios per Part 11, ratcheted at ±3% per leg. This
+   is the gate that catches a port that vectorizes worse than the C, and later a fixed-point
+   seam that does not pay for itself.
 6. **Side effects worth knowing**: both M4 and M33 define `__ARM_FEATURE_DSP`, so
    `fir_kernels.h`'s `SMLALD` path is compiled and *run* for the first time in this repo (the
    unbraced-loop style defect in it becomes visible to a compiler); M4 soft-float is the first
@@ -792,6 +824,72 @@ with the platform files missing.
 7. **Cost**: roughly 10–15 minutes wall per leg, dominated by the toolchain install and the
    gtest build; emulation is minutes. Run on `push` and `pull_request` like the rest of CI;
    the icount jobs, if adopted, only on `pull_request`.
+
+---
+
+## Part 11 — Benchmarks and the performance ratchet (Stage 1b)
+
+### Why a ratchet and not a benchmark
+Wall-clock numbers on shared CI runners are noise; instruction counts under QEMU's TCG plugin
+are deterministic to the instruction, which is why MuTap, SampleRateTap and RatioTap all
+gate on them. DspTap is the primitive layer under those ratchets, so a regression here shows
+up downstream as a mysterious chain-level delta someone "updates" past. The primitive needs
+its own gate, per profile, per target, seeded before anything changes.
+
+### Scenarios
+One binary per scenario, selected by compile definitions (bare metal has no argv), all built
+from `bench/icount/icount_main.cpp` the way MuTap's are:
+
+| scenario | profile | N | targets | from |
+|---|---|---|---|---|
+| `rfft_f32_512`, `rfft_f32_2048` | float | 512, 2048 | all legs | Stage 1b |
+| `rfft_f64_512` | double | 512 | host-class only (soft-float double is not a profile) | Stage 1b |
+| `rfft_q15_512` | Q15 I/O | 512 | all legs | Stage 3b |
+| `rfft_q31_512`, `rfft_q31_2048` | Q31 | 512, 2048 | all legs | Stage 3b |
+
+Each scenario constructs one plan, then runs a forward+inverse loop over an xorshift-generated
+signal for enough iterations that construction is under 1% of the count, folding every
+output into a checksum that is printed (defeats dead-code elimination, pins determinism). No
+`<random>`, no `std::vector` growth in the loop, no double anywhere in the float and fixed
+scenarios (the M4 soft-float leg would otherwise measure libgcc).
+
+`TAP_DSP_BENCH_ENGINE` selects the engine under test: `reference_c` (the vendored Ooura, while
+it exists), `split_radix` (the port), `fixed_point`, `cmsis`, `accelerate`. From Stage 2a until
+2c each float scenario builds twice, C and port, and the job prints both and their ratio; that
+ratio is the Stage 2b gate.
+
+### Baselines and targets
+`bench/baselines.json` keyed by target: `m4-softfp`, `m4f`, `m33`, `m55` (CMSIS on, the
+deployed profile), `m55-ooura` (the fallback), and, if a Hexagon leg is ever added here,
+`hexagon`. Seeded by running `scripts/icount.py --update` in the target's CI environment and
+committing, with the SHA, GCC and QEMU versions recorded in `bench/README.md` next to the
+number. The plugin header is pinned to the QEMU version Ubuntu ships, digest-verified, as
+MuTap does.
+
+### Policy
+- Tolerance ±3%, the family's number. Tighter is not better: link-order and libgcc changes
+  move counts by fractions of a percent legitimately.
+- The ratchet runs on push and pull request on every QEMU leg. A red ratchet is a failing
+  check, not a warning.
+- `--update` is a commit on its own, with the measured before/after per target and the reason
+  in `bench/README.md`. Expected regressions (a correctness fix that costs instructions) are
+  written down; there is no silent absorb.
+- Size runs in the same job: `arm-none-eabi-size` on a probe object per profile, ceilings per
+  leg in the workflow file, recorded the same way.
+- The host microbenchmark (`bench/bench_fft.cpp`, min-of-N wall clock, port vs C or vs the
+  recorded number) is informational in CI and the local tool for desktop and Apple vDSP
+  claims. Its numbers go into `docs/fft-design.md` with the machine and date, never into a
+  gate.
+
+### What the ratchet catches, by stage
+2b: a port that vectorizes worse than the C. 3b: nothing yet (it seeds), but every later
+`SMMULR`, Helium or table-layout change to the fixed-point kernel has a number to beat. 4: a
+backend regression on the deployed M55 profile, or the fallback quietly getting slower. 6: the
+hygiene pass cannot slow the hot path unnoticed.
+
+### Sharing
+The plugin source and `icount.py` would then exist in four repos. Copy now (they are small and
+MIT); a later taphouse-style consolidation is the right home, out of scope here.
 
 ---
 
@@ -834,3 +932,8 @@ whether `tap::dsp` exports that flag to consumers is decided in Stage 1 and stat
 
 **D10 (new). Float stays bit-identical to the vendored C.** The port reproduces the C's table
 semantics for both precisions; no numeric change ships with the port.
+
+**D11 (new). Performance is a ratcheted gate from Stage 1b onward.** Instruction counts per
+scenario per QEMU leg at ±3%, `.text` ceilings per leg, baselines seeded from the vendored C
+before the routing flip; wall-clock is informational only. A regression is a failing check
+and an accepted regression is a written commit.
