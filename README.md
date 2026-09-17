@@ -326,9 +326,23 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The CMSIS-DSP Helium backend is compile-verified under the bare-metal M55
-toolchain (`cmake/arm-cortex-m55-mps3.cmake`); running its parity suite under
-QEMU is done in the consuming library's embedded harness.
+CI also runs an emulation-sized selection of the battery
+(`tests/bare_metal_main.cpp`) bare-metal under QEMU on four Cortex-M legs:
+`cortex-m4-softfp` and `cortex-m4f` (`cmake/arm-cortex-m4-mps2.cmake`, the
+FPU flavour selected by `-DTAP_DSP_M4_FPU=ON`), `cortex-m33`
+(`cmake/arm-cortex-m33-mps2.cmake`) and `cortex-m55`
+(`cmake/arm-cortex-m55-mps3.cmake`, where the CMSIS-DSP Helium FFT backend is
+ON and its parity suite runs against Ooura). Every suite compiled into a test
+executable runs on the target unless excluded by name in
+`tests/CMakeLists.txt` (a negative filter; each exclusion is a budget note).
+To run one locally, with `arm-none-eabi-g++` and `qemu-system-arm` on `PATH`:
+
+```sh
+cmake -S . -B build-m33 -DCMAKE_BUILD_TYPE=MinSizeRel \
+      -DCMAKE_TOOLCHAIN_FILE=cmake/arm-cortex-m33-mps2.cmake
+cmake --build build-m33
+ctest --test-dir build-m33 --output-on-failure
+```
 
 ### As a submodule
 

@@ -20,10 +20,12 @@ jobs:
           # the backend-parity suite through vDSP for real.
           - { os: macos-latest,   name: macos-vdsp }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
+      # -DTAP_DSP_BUILD_BENCH=ON is read by the benchmark PR's root option once
+      # it lands; until then CMake only notes an unused variable.
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DTAP_DSP_WERROR=ON -DTAP_DSP_BUILD_CAPI=ON
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DTAP_DSP_WERROR=ON -DTAP_DSP_BUILD_CAPI=ON -DTAP_DSP_BUILD_BENCH=ON
 
       - name: Build
         run: cmake --build build --config Release
@@ -31,21 +33,90 @@ jobs:
       - name: Test
         run: ctest --test-dir build --build-config Release --output-on-failure
 
-  build-embedded-m55:
-    name: cortex-m55-cmsis (compile)
-    runs-on: ubuntu-latest
+      # The Stage 2a informational parity target prints a max-ulp table per
+      # platform that a passing ctest swallows; run it verbosely as its own
+      # step so the number is in the log. Guarded so the step is a no-op until
+      # a tree with the `parity` label is checked out.
+      - name: Parity ulp table (informational, when the parity label exists)
+        shell: bash
+        run: |
+          if ctest --test-dir build --build-config Release -N -L parity | grep -q 'Total Tests: [1-9]'; then
+            ctest --test-dir build --build-config Release -L parity -R default_flags -V
+          else
+            echo "no parity-labelled tests in this tree; nothing to report"
+          fi
+
+  # Bare-metal Cortex-M legs (newlib + semihosting) run under qemu-system-arm:
+  # the emulation-sized selection in tests/bare_metal_main.cpp, judged on the
+  # gtest summary text (one-shot mode, tests/CMakeLists.txt). Four cores, one
+  # platform rig (platform/): the M4 twice — soft-float (no FPU: every float
+  # op a library call, the fixed-point profiles' home) and M4F (fpv4-sp-d16) —
+  # the M33 (single-precision FPU, no MVE; Pico 2 / RP2350 class) and the M55
+  # (MVE), the one leg where the CMSIS-DSP Helium FFT backend is ON and its
+  # parity suite runs against Ooura. Ubuntu 24.04's qemu-system-arm (8.2) has
+  # mps2-an386, mps2-an505 and mps3-an547; the image is pinned (not
+  # ubuntu-latest) so the toolchain under the recorded sizes and the bench
+  # baselines does not move without a diff here — the "Toolchain versions"
+  # step is the drift detector. The emulated test runs with `ctest -V` so the
+  # gtest summary, the selected/skipped counts and the completion marker are
+  # in the log; its wall time is TCG noise (+-50 % between identical runs) and
+  # is a budget signal only. The `size` step is informational for now (both
+  # Berkeley totals and per-section sizes, since Berkeley `text` folds in
+  # .rodata and `bss` includes the NOLOAD heap region); per-leg .text ceilings
+  # arrive with the benchmark workflow.
+  embedded:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: cortex-m4-softfp
+            toolchain: cmake/arm-cortex-m4-mps2.cmake
+            extra: -DTAP_DSP_M4_FPU=OFF
+          - name: cortex-m4f
+            toolchain: cmake/arm-cortex-m4-mps2.cmake
+            extra: -DTAP_DSP_M4_FPU=ON
+          - name: cortex-m33
+            toolchain: cmake/arm-cortex-m33-mps2.cmake
+            extra: ""
+          - name: cortex-m55
+            toolchain: cmake/arm-cortex-m55-mps3.cmake
+            extra: "" # CMSIS Helium FFT backend ON by default on this profile
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Install Arm GNU toolchain
-        uses: carlosperate/arm-none-eabi-gcc-action@v1
-
-      - name: Configure (M55, CMSIS Helium backend ON by default)
+      # newlib and the C++ runtime are only Recommends of gcc-arm-none-eabi;
+      # name them so the install does not depend on apt's Recommends default
+      # (and does not drag ~90 desktop packages in behind qemu-system-arm).
+      - name: Install Arm GNU toolchain and QEMU
         run: >
-          cmake -S . -B build-m55
-          -DCMAKE_TOOLCHAIN_FILE=cmake/arm-cortex-m55-mps3.cmake
-          -DCMAKE_BUILD_TYPE=Release
-          -DTAP_DSP_BUILD_TESTS=OFF
+          sudo apt-get update -q &&
+          sudo apt-get install -y -q --no-install-recommends
+          gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
+          qemu-system-arm
 
-      - name: Build the DspTap FFT library (CMSIS-DSP Helium)
-        run: cmake --build build-m55 --config Release --target tap_dsp_fft
+      - name: Toolchain versions
+        run: |
+          arm-none-eabi-gcc --version | head -1
+          qemu-system-arm --version | head -1
+
+      - name: Configure (${{ matrix.name }})
+        run: >
+          cmake -S . -B build-${{ matrix.name }}
+          -DCMAKE_BUILD_TYPE=MinSizeRel
+          -DCMAKE_TOOLCHAIN_FILE=${{ matrix.toolchain }}
+          -DTAP_DSP_WERROR=ON
+          ${{ matrix.extra }}
+
+      - name: Build
+        run: cmake --build build-${{ matrix.name }} -j 4
+
+      - name: Test under emulation
+        run: ctest --test-dir build-${{ matrix.name }} -V
+
+      - name: Size of the test binaries (informational)
+        run: |
+          arm-none-eabi-size build-${{ matrix.name }}/tests/tap_dsp_tests
+          arm-none-eabi-size -A build-${{ matrix.name }}/tests/tap_dsp_tests
