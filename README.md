@@ -364,10 +364,20 @@ extract-on-second-consumer rule that created this repo.
 
 See [`third_party/ooura/readme.txt`](third_party/ooura/readme.txt) and
 [`third_party/cmsis-dsp/VENDOR.md`](third_party/cmsis-dsp/VENDOR.md) for the
-vendored-code provenance and licenses.
+vendored-code provenance and licenses. The plan to replace the vendored C with
+a C++20 port of the same split-radix transform (and to add Q15 / Q31 profiles)
+and its design note live in [`docs/`](docs/) — `docs/fft-design.md` is the
+design note, filled in as each stage lands; nothing from it has shipped yet.
 
 ## License
 
-The DspTap wrapper is MIT (`LICENSE`). Vendored third-party code keeps its own
-license: Ooura FFT (permissive, see its readme), CMSIS-DSP / CMSIS-Core
-(Apache-2.0, SPDX headers retained in every file). See [`NOTICE.md`](NOTICE.md).
+DspTap's own code is MIT (`LICENSE`). Vendored third-party code keeps its own
+license. The Ooura FFT is under its author's own terms, quoted in full in
+`third_party/ooura/readme.txt`: "You may use, copy, modify this code for any
+purpose and without fee. You may distribute this ORIGINAL package." — a grant
+of use, copying and modification, and of distribution of the original package;
+DspTap ships that original today, and the planned C++ port is a derivative
+work whose redistribution relies on the modification grant (SPDX
+`LicenseRef-Ooura AND MIT` for the port header; the readme stays in-tree
+permanently). CMSIS-DSP / CMSIS-Core are Apache-2.0 with SPDX headers retained
+in every file. The full statement is in [`NOTICE.md`](NOTICE.md).
