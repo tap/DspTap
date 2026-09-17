@@ -319,7 +319,9 @@ images built with different defaults cannot coalesce each other's symbols. Backe
 `fft/backends/accelerate.h` and `fft/backends/cmsis.h`, included by whoever selects them; the
 CMSIS object library stays PIC. Consumer-facing transforms stay **non-const**; shareability is
 an engine trait (`Engine::is_shareable`), true for the ported engine, false for the two
-scratch-carrying backends. Typed tests over the engines available on the host: Ooura vs vDSP
+scratch-carrying backends. Each engine states its supported size range and construction
+checks it (the CMSIS engine supports 32 … 4096 only; today `fft.h` ignores the init status,
+Part 13). Typed tests over the engines available on the host: Ooura vs vDSP
 same-binary on macOS; CMSIS compile-only on M55 (it cannot run on a host, and nobody runs
 CMSIS-vs-Ooura parity anywhere today; that gap is recorded, not closed, by this stage). The
 `m55` and `m55-ooura` baseline keys are what make a backend regression visible.
@@ -985,7 +987,13 @@ opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
   `icount <key>` jobs after the seeding commit (never the artifact-merge job).
 - **The capi's audit defects had no owning stage.** Stage 6 amended.
 - **The plan branch itself needs a PR** so the design note's link resolves; opened with these
-  amendments.
+  amendments (#25).
+- **CMSIS backend size range (found by #24's oracle on the M55 leg).** `fft.h`'s CMSIS wrapper
+  ignores `arm_rfft_fast_init_f32`'s return status; CMSIS-DSP supports N = 32 … 4096 only, so
+  the documented contract "power of two, ≥ 4" is undefined behaviour under `TAP_DSP_FFT_CMSIS`
+  outside that range (the existing battery started at 64 and never saw it; N = 4 hard-faults).
+  Owned by Stage 4: the engine reports its supported range, construction checks it, and the
+  backend's docstring states it as a contract number. Until then the oracle carries the range.
 
 ---
 
