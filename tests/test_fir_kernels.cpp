@@ -5,7 +5,8 @@
 // extracted from SampleRateTap's multichannel suite, where it gates the
 // frame-major fast path — is bit-exactness: the channel-parallel kernel must
 // produce the identical bits as the planar dot for every sample type, because
-// consumers switch between the layouts by channel count and target.
+// consumers switch between the layouts by channel count and target. Typed
+// over the four substrate formats; double is the golden model.
 
 #include <cstdint>
 #include <vector>
@@ -33,6 +34,10 @@ namespace {
     template <typename S>
     S sample_from(std::uint32_t r);
     template <>
+    double sample_from<double>(std::uint32_t r) {
+        return (static_cast<double>(r % 65536) - 32768.0) / 65536.0;
+    }
+    template <>
     float sample_from<float>(std::uint32_t r) {
         return (static_cast<float>(r % 65536) - 32768.0f) / 65536.0f;
     }
@@ -53,7 +58,7 @@ namespace {
 
     template <typename S>
     class fir_kernels_test : public ::testing::Test {};
-    using sample_types = ::testing::Types<float, std::int16_t, std::int32_t>;
+    using sample_types = ::testing::Types<double, float, std::int16_t, std::int32_t>;
     TYPED_TEST_SUITE(fir_kernels_test, sample_types, );
 
     // dot_row must equal the reference accumulation: mac per tap in order,

@@ -7,9 +7,9 @@
 // 96 kHz in, 16 kHz out. Built in RatioTap's pattern — the ratio is a
 // compile-time type, the prototype is a Kaiser-windowed sinc from kaiser.h,
 // the hot loop is fir_kernels.h's dot_row over the sample_traits.h formats
-// (float golden, Q15/Q31 fixed point) — but deliberately NOT RatioTap: that
-// library's charter is 44.1 <-> 48 only. A 44.1 kHz host composes RatioTap's
-// 44.1 -> 48 in front of the by-3 stage here.
+// (double golden, float embedded, Q15/Q31 fixed point) — but deliberately
+// NOT RatioTap: that library's charter is 44.1 <-> 48 only. A 44.1 kHz host
+// composes RatioTap's 44.1 -> 48 in front of the by-3 stage here.
 //
 // Contract, as numbers:
 //   - Ratios: 2, 3 and 6 (input 32 / 48 / 96 kHz for a 16 kHz output). The
@@ -37,10 +37,16 @@
 //     bands stop at 7.6 kHz and its features carry little above 7 kHz, and
 //     economy costs 121 MACs per 16 kHz output (by 3) — under 20k MACs per
 //     10 ms hop. transparent exists for offline use.
-//   - Sample formats: float (double accumulation, the golden model, pinned
+//   - Sample formats: double (the golden model, as for every primitive),
+//     float (double accumulation, the embedded profile, pinned
 //     sample-for-sample against a committed numpy reference), Q15 and Q31
 //     through sample_traits.h with row-sum-preserving quantization so DC
-//     gain stays exactly 1. Mono: the consumer is single-channel by charter.
+//     gain stays exactly 1; the Q15 and Q31 profiles are pinned against
+//     double as measured numbers, and their coefficient tables are bit-pinned
+//     (row sum and FNV-1a-64 per ratio and profile). The decimate_by_*
+//     aliases stay float: they name the
+//     16 kHz front end's deployed profile. Mono: the consumer is
+//     single-channel by charter.
 //
 // Construction designs the filter (runtime double, off the audio path) and
 // allocates; process() and reset() are noexcept and allocation-free.
@@ -185,7 +191,7 @@ namespace tap::dsp {
         std::size_t        m_phase = 0; ///< inputs since the last emitted output, in [0, M)
     };
 
-    using decimate_by_2 = basic_decimator<float, 2>; ///< 32 kHz -> 16 kHz, float golden
+    using decimate_by_2 = basic_decimator<float, 2>; ///< 32 kHz -> 16 kHz, float embedded profile
     using decimate_by_3 = basic_decimator<float, 3>; ///< 48 kHz -> 16 kHz
     using decimate_by_6 = basic_decimator<float, 6>; ///< 96 kHz -> 16 kHz
 
