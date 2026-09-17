@@ -125,26 +125,51 @@ namespace {
     template <typename Sample>
     struct profile;
 
+    // Size range a profile's engine accepts. fft.h promises any power of two
+    // >= 4 for Ooura, and the double profile is always Ooura. The float
+    // profile is whatever backend the build selected: under TAP_DSP_FFT_CMSIS
+    // (the M55 leg) CMSIS-DSP's arm_rfft_fast_init_f32 accepts 32..4096 only
+    // (arm_rfft_fast_init_f32.c, the switch at the end) and fft.h's wrapper
+    // does not check its return status, so a size outside that range is
+    // undefined behaviour — a HardFault at N = 4 on the QEMU M55 leg is how
+    // this was found. Until fft.h rejects or falls back on those sizes (a
+    // finding for the fft.h owner, not this file), the float sweeps on that
+    // backend run over the range the backend supports. vDSP (macOS) takes the
+    // full range.
+    constexpr std::size_t k_ooura_min_n = 4;
+    constexpr std::size_t k_ooura_max_n = std::size_t{1} << 20;
+#if defined(TAP_DSP_FFT_CMSIS)
+    constexpr std::size_t k_float_backend_min_n = 32;
+    constexpr std::size_t k_float_backend_max_n = 4096;
+#else
+    constexpr std::size_t k_float_backend_min_n = k_ooura_min_n;
+    constexpr std::size_t k_float_backend_max_n = k_ooura_max_n;
+#endif
+
     template <>
     struct profile<double> {
-        static constexpr double k_epsilon    = std::numeric_limits<double>::epsilon();
-        static constexpr double k_full_scale = 1.0; ///< closed-form drive amplitude
-        static double           to_double(double v) { return v; }
-        static double           from_double(double v) { return v; }
-        static double           forward_scale(std::size_t) { return 1.0; } ///< engine forward = scale * DFT
-        static double           inverse_scale(std::size_t) { return 1.0; } ///< engine inverse = scale * unnormalized
-        static double           tolerance(std::size_t n, double norm2) { return higham_tolerance(k_epsilon, n, norm2); }
+        static constexpr double      k_epsilon    = std::numeric_limits<double>::epsilon();
+        static constexpr double      k_full_scale = 1.0; ///< closed-form drive amplitude
+        static constexpr std::size_t k_min_n      = k_ooura_min_n;
+        static constexpr std::size_t k_max_n      = k_ooura_max_n;
+        static double                to_double(double v) { return v; }
+        static double                from_double(double v) { return v; }
+        static double                forward_scale(std::size_t) { return 1.0; } ///< engine forward = scale * DFT
+        static double inverse_scale(std::size_t) { return 1.0; } ///< engine inverse = scale * unnormalized
+        static double tolerance(std::size_t n, double norm2) { return higham_tolerance(k_epsilon, n, norm2); }
     };
 
     template <>
     struct profile<float> {
-        static constexpr double k_epsilon    = std::numeric_limits<float>::epsilon();
-        static constexpr double k_full_scale = 1.0;
-        static double           to_double(float v) { return static_cast<double>(v); }
-        static float            from_double(double v) { return static_cast<float>(v); }
-        static double           forward_scale(std::size_t) { return 1.0; }
-        static double           inverse_scale(std::size_t) { return 1.0; }
-        static double           tolerance(std::size_t n, double norm2) { return higham_tolerance(k_epsilon, n, norm2); }
+        static constexpr double      k_epsilon    = std::numeric_limits<float>::epsilon();
+        static constexpr double      k_full_scale = 1.0;
+        static constexpr std::size_t k_min_n      = k_float_backend_min_n;
+        static constexpr std::size_t k_max_n      = k_float_backend_max_n;
+        static double                to_double(float v) { return static_cast<double>(v); }
+        static float                 from_double(double v) { return static_cast<float>(v); }
+        static double                forward_scale(std::size_t) { return 1.0; }
+        static double                inverse_scale(std::size_t) { return 1.0; }
+        static double tolerance(std::size_t n, double norm2) { return higham_tolerance(k_epsilon, n, norm2); }
     };
 
     using oracle_types = ::testing::Types<float, double>;
@@ -401,24 +426,32 @@ namespace {
         }
     }
 
-    /// The closed-form sweep: 4 .. min(65536, TAP_DSP_PARITY_MAX_N). The cap is
-    /// the same knob the parity gate uses (tests/CMakeLists.txt); the QEMU legs
-    /// set 4096 because a 65536-point double sweep needs several 512 KB
-    /// buffers that the MPS2 data region does not have.
-    std::vector<std::size_t> closed_form_sizes() {
+    /// Powers of two from the profile's minimum up to min(limit,
+    /// TAP_DSP_PARITY_MAX_N, the profile's maximum). The cap is the same knob
+    /// the parity gate uses (tests/CMakeLists.txt); the QEMU legs set 4096
+    /// because a 65536-point double sweep needs several 512 KB buffers that
+    /// the MPS2 data region does not have.
+    template <typename Sample>
+    std::vector<std::size_t> sizes_up_to(std::size_t limit) {
+        const std::size_t top =
+            std::min({limit, static_cast<std::size_t>(TAP_DSP_PARITY_MAX_N), profile<Sample>::k_max_n});
         std::vector<std::size_t> s;
-        for (std::size_t n = 4; n <= 65536 && n <= static_cast<std::size_t>(TAP_DSP_PARITY_MAX_N); n *= 2) {
+        for (std::size_t n = profile<Sample>::k_min_n; n <= top; n *= 2) {
             s.push_back(n);
         }
         return s;
     }
 
+    /// The closed-form sweep: up to 65536.
+    template <typename Sample>
+    std::vector<std::size_t> closed_form_sizes() {
+        return sizes_up_to<Sample>(65536);
+    }
+
+    /// The compensated-DFT sizes: up to 256 (see "What the bound cannot see").
+    template <typename Sample>
     std::vector<std::size_t> dft_sizes() {
-        std::vector<std::size_t> s;
-        for (std::size_t n = 4; n <= 256; n *= 2) {
-            s.push_back(n);
-        }
-        return s;
+        return sizes_up_to<Sample>(256);
     }
 
     /// Bin used for the on-bin materials: n/8, or 1 below n = 8. Always in
@@ -472,7 +505,7 @@ namespace {
 
     TYPED_TEST(fft_oracle_test, ImpulseIsFlatAtEverySize) {
         const double a = profile<TypeParam>::k_full_scale;
-        for (const std::size_t n : closed_form_sizes()) {
+        for (const std::size_t n : closed_form_sizes<TypeParam>()) {
             std::vector<double> x(n, 0.0);
             x[0] = a;
             std::vector<double> expected(n, 0.0);
@@ -487,7 +520,7 @@ namespace {
 
     TYPED_TEST(fft_oracle_test, DcLandsAsNInSlotZero) {
         const double a = profile<TypeParam>::k_full_scale;
-        for (const std::size_t n : closed_form_sizes()) {
+        for (const std::size_t n : closed_form_sizes<TypeParam>()) {
             std::vector<double> x(n, a);
             std::vector<double> expected(n, 0.0);
             expected[0] = a * static_cast<double>(n);
@@ -497,7 +530,7 @@ namespace {
 
     TYPED_TEST(fft_oracle_test, NyquistAlternationLandsAsNInSlotOne) {
         const double a = profile<TypeParam>::k_full_scale;
-        for (const std::size_t n : closed_form_sizes()) {
+        for (const std::size_t n : closed_form_sizes<TypeParam>()) {
             std::vector<double> x(n);
             for (std::size_t j = 0; j < n; ++j) {
                 x[j] = (j % 2 == 0) ? a : -a;
@@ -510,7 +543,7 @@ namespace {
 
     TYPED_TEST(fft_oracle_test, OnBinCosineIsPlusHalfNInTheRealSlot) {
         const double a = profile<TypeParam>::k_full_scale;
-        for (const std::size_t n : closed_form_sizes()) {
+        for (const std::size_t n : closed_form_sizes<TypeParam>()) {
             const std::size_t   k = tone_bin(n);
             const auto          x = tap::dsp::test::tone<double>(n, static_cast<double>(k), a, 0.0);
             std::vector<double> expected(n, 0.0);
@@ -523,7 +556,7 @@ namespace {
     // (it would be -N/2 in the engineering convention exp(-2*pi*i/N)).
     TYPED_TEST(fft_oracle_test, OnBinSineIsPlusHalfNInTheImaginarySlot) {
         const double a = profile<TypeParam>::k_full_scale;
-        for (const std::size_t n : closed_form_sizes()) {
+        for (const std::size_t n : closed_form_sizes<TypeParam>()) {
             const std::size_t k = tone_bin(n);
             // sin(w j) = cos(w j - pi/2)
             const auto          x = tap::dsp::test::tone<double>(n, static_cast<double>(k), a, -std::numbers::pi / 2.0);
@@ -535,7 +568,7 @@ namespace {
 
     TYPED_TEST(fft_oracle_test, TwoToneSuperposesLinearly) {
         const double a = profile<TypeParam>::k_full_scale;
-        for (const std::size_t n : closed_form_sizes()) {
+        for (const std::size_t n : closed_form_sizes<TypeParam>()) {
             if (n < 8) {
                 continue; // needs two distinct complex bins
             }
@@ -562,7 +595,7 @@ namespace {
 
     TYPED_TEST(fft_oracle_test, InverseOfFlatSpectrumIsHalfNImpulse) {
         const double amp = profile<TypeParam>::k_full_scale;
-        for (const std::size_t n : closed_form_sizes()) {
+        for (const std::size_t n : closed_form_sizes<TypeParam>()) {
             std::vector<double> a(n, 0.0);
             a[0] = amp;
             a[1] = amp;
@@ -577,7 +610,7 @@ namespace {
 
     TYPED_TEST(fft_oracle_test, InverseOfDcSpectrumIsHalfNConstant) {
         const double amp = profile<TypeParam>::k_full_scale;
-        for (const std::size_t n : closed_form_sizes()) {
+        for (const std::size_t n : closed_form_sizes<TypeParam>()) {
             std::vector<double> a(n, 0.0);
             a[0] = amp;
             std::vector<double> expected(n, 0.5 * amp);
@@ -587,7 +620,7 @@ namespace {
 
     TYPED_TEST(fft_oracle_test, InverseOfNyquistSpectrumIsHalfNAlternation) {
         const double amp = profile<TypeParam>::k_full_scale;
-        for (const std::size_t n : closed_form_sizes()) {
+        for (const std::size_t n : closed_form_sizes<TypeParam>()) {
             std::vector<double> a(n, 0.0);
             a[1] = amp;
             std::vector<double> expected(n);
@@ -600,7 +633,7 @@ namespace {
 
     TYPED_TEST(fft_oracle_test, InverseOfOnBinSpectrumIsHalfNTone) {
         const double amp = profile<TypeParam>::k_full_scale;
-        for (const std::size_t n : closed_form_sizes()) {
+        for (const std::size_t n : closed_form_sizes<TypeParam>()) {
             const std::size_t   k = tone_bin(n);
             std::vector<double> a(n, 0.0);
             a[2 * k]     = amp; // cosine part
@@ -636,7 +669,7 @@ namespace {
     // multiply (exact, power of two), so ~1.5 eps relative on unit-scale data;
     // constant 8 eps; measured maximum 1.1e-16 = 0.5 eps.
     TEST(fft_oracle_self_check, TwiddlesMatchLibmToDoubleRounding) {
-        for (const std::size_t n : dft_sizes()) {
+        for (const std::size_t n : dft_sizes<double>()) {
             const compensated_dft oracle(n);
             for (std::size_t m = 0; m < n; ++m) {
                 const double theta = 2.0 * std::numbers::pi * static_cast<double>(m) / static_cast<double>(n);
@@ -653,7 +686,7 @@ namespace {
     }
 
     TEST(fft_oracle_self_check, RoundTripIsIdentityToDoubleRounding) {
-        for (const std::size_t n : dft_sizes()) {
+        for (const std::size_t n : dft_sizes<double>()) {
             const compensated_dft     oracle(n);
             const std::vector<double> x    = tap::dsp::test::random_signal<double>(n, 0xC0FFEEu);
             const std::vector<double> a    = oracle.forward(x);
@@ -681,7 +714,7 @@ namespace {
     }
 
     TYPED_TEST(fft_oracle_test, ForwardMatchesCompensatedDftOnBroadband) {
-        for (const std::size_t n : dft_sizes()) {
+        for (const std::size_t n : dft_sizes<TypeParam>()) {
             // Drawn in the profile first so the oracle sees exactly the bits
             // the engine sees; from_doubles is then the identity.
             const auto x = to_doubles(tap::dsp::test::random_signal<TypeParam>(n, 0x2545F491u));
@@ -690,7 +723,7 @@ namespace {
     }
 
     TYPED_TEST(fft_oracle_test, ForwardMatchesCompensatedDftOnOffBinTone) {
-        for (const std::size_t n : dft_sizes()) {
+        for (const std::size_t n : dft_sizes<TypeParam>()) {
             // Off-bin (k + 0.37) so every bin carries leakage and none is
             // numerically empty: the opposite regime from the closed forms.
             const auto x =
@@ -700,7 +733,7 @@ namespace {
     }
 
     TYPED_TEST(fft_oracle_test, InverseMatchesCompensatedDftOnBroadbandSpectrum) {
-        for (const std::size_t n : dft_sizes()) {
+        for (const std::size_t n : dft_sizes<TypeParam>()) {
             // An arbitrary packed spectrum, not one produced by a forward, so
             // the inverse is judged on its own definition.
             const auto a = to_doubles(tap::dsp::test::random_signal<TypeParam>(n, 0x1D872B41u));
@@ -709,7 +742,7 @@ namespace {
     }
 
     TYPED_TEST(fft_oracle_test, InverseMatchesCompensatedDftOnToneSpectrum) {
-        for (const std::size_t n : dft_sizes()) {
+        for (const std::size_t n : dft_sizes<TypeParam>()) {
             const compensated_dft oracle(n);
             const auto            x =
                 to_doubles(tap::dsp::test::tone<TypeParam>(n, static_cast<double>(tone_bin(n)) + 0.37, 0.8, 1.1));

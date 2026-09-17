@@ -401,8 +401,10 @@ namespace {
                 }
             }
             overall = std::max({overall, fwd, inv});
-            std::printf("[ ulp ] %10zu %14llu %14llu   %s / %s\n", n, static_cast<unsigned long long>(fwd),
-                        static_cast<unsigned long long>(inv), fwd_worst, inv_worst);
+            // %lu, not %zu: newlib-nano's printf on the QEMU legs prints "zu".
+            std::printf("[ ulp ] %10lu %14llu %14llu   %s / %s\n", static_cast<unsigned long>(n),
+                        static_cast<unsigned long long>(fwd), static_cast<unsigned long long>(inv), fwd_worst,
+                        inv_worst);
             ::testing::Test::RecordProperty(std::string(precision_name<Sample>()) + "_N" + std::to_string(n) + "_fwd",
                                             std::to_string(fwd));
             ::testing::Test::RecordProperty(std::string(precision_name<Sample>()) + "_N" + std::to_string(n) + "_inv",
