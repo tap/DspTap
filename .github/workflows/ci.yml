@@ -39,8 +39,11 @@ jobs:
   # the M33 (single-precision FPU, no MVE; Pico 2 / RP2350 class) and the M55
   # (MVE), the one leg where the CMSIS-DSP Helium FFT backend is ON and its
   # parity suite runs against Ooura. Ubuntu 24.04's qemu-system-arm (8.2) has
-  # mps2-an386, mps2-an505 and mps3-an547. The `size` step is informational
-  # for now; per-leg .text ceilings arrive with the benchmark workflow.
+  # mps2-an386, mps2-an505 and mps3-an547. First measured run: emulation
+  # 88 s / 62 s / 97 s / 14 s and .text 912868 / 907468 / 906316 / 965636 B
+  # for m4-softfp / m4f / m33 / m55 (the M55 carries the CMSIS-DSP tables).
+  # The `size` step is informational for now; per-leg .text ceilings arrive
+  # with the benchmark workflow.
   embedded:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest

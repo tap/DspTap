@@ -29,9 +29,10 @@
 //
 // Budget: under 5 minutes of emulation per leg. The whole hosted battery is
 // ~1.4 s on a desktop core; the selection here drops most of the double
-// work, and the M4 soft-float leg (every float op a library call) is the one
-// that sets the ceiling. Measured times per leg are in the CI job logs
-// (ctest prints the wall time of tap_dsp_tests_emulated).
+// work. Measured on the first CI run (QEMU 8.2.2, GCC 13.2.1, MinSizeRel,
+// 114 tests): cortex-m4-softfp 88 s, cortex-m4f 62 s, cortex-m33 97 s,
+// cortex-m55 14 s (hardware FP64 there; soft-float double on the others).
+// ctest prints the current number as the wall time of tap_dsp_tests_emulated.
 // SPDX-License-Identifier: MIT
 // Copyright 2025-2026 Timothy Place and the DspTap contributors.
 #include <cstdio>
