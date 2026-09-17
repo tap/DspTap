@@ -2,7 +2,8 @@
 
 *September 2026. Baseline at the time of the audit: `5ca3b1c`, builds warning-free with
 `-DTAP_DSP_WERROR=ON`, 160/160 tests pass on Linux/Ooura. Revision 2: Parts 3-5 rewritten
-after the adversarial review recorded in Part 6.*
+after the adversarial review recorded in Part 6. Revision 3: fixed point reinstated as
+Stage 3 (Part 7); documentation, testing and embedded-CI plans added (Parts 8-10).*
 
 The trigger was one smell: the float Ooura build is produced by `#define double float` plus
 forty symbol-renaming `#define`s in `third_party/ooura/fftsg_float.c`. This document records
@@ -190,14 +191,16 @@ Ranked by severity. Every item was read in the source; line numbers are at `5ca3
 
 ---
 
-## Part 3 — Plan (revision 2)
+## Part 3 — Plan (revision 3)
 
-The stated goal is one real-FFT implementation over `double`, `float` and, when a consumer
-needs it, the fixed-point profiles. Revision 1 mixed that goal with unrelated hygiene, made the
-float numbers move in the same PR as the port, promised M55 gates the repo cannot run, and
-carried a fixed-point design that does not survive arithmetic (Part 6). Revision 2 is the
-minimum path to "no `#define double float`, no global symbols, header-only, one template",
-with everything else either sequenced behind it or moved to Appendix A.
+The stated goal is one real-FFT contract over `double`, `float`, Q15 and Q31, with the
+fixed-point profiles a committed deliverable: fixed-point projects not yet started need FFT
+support, so they are on the main line, not in an appendix. Revision 1 mixed the port with
+unrelated hygiene, made the float numbers move in the same PR as the port, promised M55 gates
+the repo cannot run, and carried a fixed-point design that does not survive arithmetic
+(Part 6). Revision 3 keeps revision 2's port sequence, puts fixed point back as Stage 3 with
+the design in Part 7, and adds the documentation plan (Part 8), the test plan (Part 9) and the
+embedded CI legs that make the fixed-point gates real (Part 10).
 
 **Rollout rule for every stage.** DspTap PR, squash to `main`; MuTap PR that bumps the pin *and*
 carries that stage's MuTap-side change in one PR; MuTap-Max pin. Each stage names which MuTap
@@ -217,13 +220,12 @@ immediately. Nothing else rides in this PR.
   Generalize `tests/branchless_parity_check.cpp` into a fingerprint harness over the fdaf,
   fd_kalman, pem_afc, postfilter and nn_suppressor chain outputs, runnable at any pin; this is
   the bit-identity gate every later MuTap bump uses.
-- DspTap: make the M55 leg honest. The toolchain file links `../platform/*` files that live in
-  MuTap, and CI builds only the static library with tests off. Decision: strip the link flags,
-  declare the toolchain compile-only, and add a compile-only object target that instantiates
-  the engine for `float` and `double` (Stage 2a onward) so the M55 leg compiles the port. No
-  sentence in this plan calls an M55 *runtime* property a DspTap gate; the on-target gates are
-  MuTap's M33 and M55 QEMU legs, which run the float suppressor suite on the Ooura float path
-  once the flag above is fixed. Porting the platform files here is deferred to Appendix A.
+- DspTap: make the embedded legs real. The toolchain file links `../platform/*` files that
+  live in MuTap, and CI builds only the static library with tests off. Decision (Part 10):
+  bring the platform files in, add the bare-metal one-shot gtest harness, and run the
+  emulation-sized selection under QEMU on Cortex-M4 (soft-float and M4F), Cortex-M33 and
+  Cortex-M55. Fixed point's gates (Stage 3) run on those legs; until they exist, no sentence
+  in this plan calls an on-target property a DspTap gate.
 - DspTap: state the fp-contraction policy (Part 4) as a contract point in `fft.h` before the
   port lands, so the parity target and the consumers are measured against a written rule.
 
@@ -254,7 +256,29 @@ unchanged. Rollback is a one-line revert.
 rewrite the CI job that compiles `submodules/dsptap/third_party/ooura/fftsg*.c` by path
 (`ci.yml:319-324`) header-only; rewrite `THIRD_PARTY_NOTICES.md`. Licensing text per Part 5.
 
-### Stage 3 — Engine as an explicit parameter, with an ABI tag
+### Stage 3 — Fixed point: Q15 and Q31 profiles of the same contract
+Design in Part 7; this is the sequence. Three PRs.
+
+**3a. Substrate.** `sample_traits<double>` (`coeff = double`, `accum = double`; D1) so the
+concept covers all four sample types, plus a sibling trait for butterfly arithmetic
+(`fft_arith<Sample>`: `mul_coeff` with the single documented rounding, saturating `add`/`sub`,
+`shr_round`, `headroom_bits`), because the FIR trait's `mac`/`finalize` shape is the wrong one
+for an FFT. Named fraction-bit constants replace the bare literals. `test_sample_traits.cpp:108`
+flips; `test_decimate.cpp:192` becomes Q15-vs-double; the numpy pin does not move.
+
+**3b. The fixed-point kernel** (`fft/fixed_point.h`): one int32 complex kernel with Q1.30
+twiddles, two scaling policies (fixed, block floating point), Ooura's real post-pass formulas
+so the packing and the `exp(+i)` convention are identical, Q15 and Q31 I/O widths.
+`basic_real_fft<std::int16_t>` / `<std::int32_t>` route to it; aliases `real_fft_q15`,
+`real_fft_q31`. Gates: the Part 9 fixed-point battery on the hosts, and the same battery on the
+M4 (soft-float), M4F, M33 and M55 QEMU legs.
+
+**3c. Consumers and instruments.** The analysis instruments take `std::span<const Sample>`
+so they can score Q15/Q31 output; the capi and `dsptap_py` expose all four profiles; the
+executed notebook measures the noise floors (Part 8). MuTap: nothing moves (no consumer is on
+fixed point yet); the fixed-point projects start from the header's numbers.
+
+### Stage 4 — Engine as an explicit parameter, with an ABI tag
 `basic_real_fft<Sample, Engine = default_real_fft_engine_t<Sample>>`. The default alias lives
 in one place, selected by the one remaining build define. To close F4 where it actually lives
 (the consumers that embed the FFT by value), the selection also opens an inline namespace ABI
@@ -267,7 +291,7 @@ scratch-carrying backends. Typed tests over the engines available on the host: O
 same-binary on macOS; CMSIS compile-only on M55 (it cannot run on a host, and nobody runs
 CMSIS-vs-Ooura parity anywhere today; that gap is recorded, not closed, by this stage).
 
-### Stage 4 — The packed-spectrum view, DspTap only
+### Stage 5 — The packed-spectrum view, DspTap only
 `fft/spectrum.h`: a non-owning view whose docstring carries the numeric definition
 (`bin[k] = a[2k] + i a[2k+1]`, DC at `a[0]`, Nyquist at `a[1]`, `W = exp(+2πi/N)`, inverse
 unnormalized). Primary accessors are **native**: `dc()`, `nyquist()`, `re(k)`, `im(k)`,
@@ -277,9 +301,9 @@ gated by the existing pinned tests. MuTap adopts the view per header when each i
 touched, each such PR gated by the fingerprint harness and 0% icount, because those 77 sites
 do native-convention complex products by hand in ratcheted hot loops and a wholesale rewrite
 is not the mechanical migration revision 1 called it. This stage is **not** a prerequisite for
-Stage 2: the packing is a kept contract.
+Stage 2 or 3: the packing is a kept contract, and the fixed-point profiles present it too.
 
-### Stage 5 — Hygiene (after the port, not before)
+### Stage 6 — Hygiene (after the port, not before)
 `detail/math.h` (pi via `std::numbers`, periodic Hann, dB helpers), `tests/support/` for the
 copy-pasted helpers, `solve_dense` noexcept, kaiser includes and doc drift, NOTICE names,
 the two duplicated `fft.h` paragraphs, the unbraced SMLALD loops. Gate the Hann/pi
@@ -294,13 +318,16 @@ precondition only; a repo-wide precondition policy is its own plan.
 | Stage | DspTap gate | MuTap gate | Rollback |
 |---|---|---|---|
 | 0 | new overflow test | pin bump, suite green | revert 2 files |
-| 1 | M55 leg compiles instantiations | fallback leg builds Ooura float; filter pruned | n/a |
-| 2a | bit identity double+float, 3 hosts, `-ffp-contract=off`; oracle; bench artifact | none (no bump) | delete header |
+| 1 | M4/M33/M55 legs run the emulation-sized selection | fallback leg builds Ooura float; filter pruned | n/a |
+| 2a | bit identity double+float, 3 hosts + 4 QEMU legs, `-ffp-contract=off`; oracle; bench artifact | none (no bump) | delete header |
 | 2b | existing battery on the port; backend test re-pointed | fingerprint identical; icount 0%; float pins unchanged | one-line revert |
 | 2c | build without the C | CI job rewritten; notices | re-pin |
-| 3 | typed engine tests; macOS same-binary parity | fingerprint identical | re-pin |
-| 4 | pinned pvoc/log_mel tests | per-header fingerprint + icount 0% | per header |
-| 5 | fingerprint on Hann/pi change | pin bump | per item |
+| 3a | traits battery incl. double; decimate re-pinned Q15-vs-double | pin bump, suite green | re-pin |
+| 3b | Part 9 fixed-point battery on hosts and all four QEMU legs; `.text` and icount per leg | none | delete header |
+| 3c | instruments typed; capi/notebook executed | none | per item |
+| 4 | typed engine tests; macOS same-binary parity | fingerprint identical | re-pin |
+| 5 | pinned pvoc/log_mel tests | per-header fingerprint + icount 0% | per header |
+| 6 | fingerprint on Hann/pi change | pin bump | per item |
 
 ---
 
@@ -353,7 +380,8 @@ every float pin unchanged. Double-computed tables are dropped from the plan. A s
 worth keeping: libm `cos`/`sin` differ in the last bit between glibc, newlib, UCRT and Apple,
 which is why `test_log_mel.cpp` carries a per-platform double tolerance; a
 platform-independent table (compensated evaluation or a checked-in generator) is the only way
-to make *double* outputs identical across hosts, and is Appendix A material.
+to make *double* outputs identical across hosts; it is a Stage 3a candidate because the
+fixed-point twiddles are generated there anyway, and is otherwise out of scope.
 
 ### fp-contraction policy (a contract point, not a build detail)
 Measured: `gcc -std=c17` does not contract; `gcc -std=gnu17` does; `g++` contracts in both
@@ -478,13 +506,14 @@ not listed. **P** = process review, **N** = numerics review, **A** = author.
   stage; and fixed 1/N scaling gives ~25 dB per-bin SNR at −40 dBFS and ~5 dB at −60 dBFS for
   log_mel's N=512, i.e. quiet speech becomes rounding noise. Also `cftf1st` derives half its
   twiddles at run time as `csc1 * (wd1r + w[k])`, a sum of two cosines up to 2.0 that does not
-  fit Q1.14, so "the same table" is false for the first stage. Resolution: fixed point moves to
-  Appendix A with these constraints as its entry conditions.
+  fit Q1.14, so "the same table" is false for the first stage. Resolution: the fixed-point
+  design is rebuilt in Part 7 with these constraints as inputs (one int32 kernel, Q1.30
+  twiddles, shift-before-multiply, BFP for round-trip consumers, its own inverse scaling).
 
 ### Should-fix (all adopted)
 - **P6/N15/A — Stage 2's coupling to D1 was artificial**; the engine is `std::floating_point`
   until fixed point. D1 also had the coefficient type wrong (`coeff` must be `double` or the
-  double FFT cannot be bit-identical). Moved to Appendix A, corrected.
+  double FFT cannot be bit-identical). Moved to Stage 3a, corrected.
 - **P7/A — The counter bug shipped inside a hygiene PR.** Now Stage 0, alone.
 - **P8 — Deleting `TAP_DSP_CHANNEL_PARALLEL` without grepping SampleRateTap/RatioTap.** Held.
 - **P9/N12/A — D4 did not close F4 for the embedding consumers.** ABI tag added; F4 reworded to
@@ -493,8 +522,9 @@ not listed. **P** = process review, **N** = numerics review, **A** = author.
 - **P11 — "True INTERFACE target" was conditional and contradicted by the escape hatch; no
   `install()` exists.** Reworded; hatch dropped.
 - **P12 — Fixed point is scope creep against every consumer's written plan** (MuTap
-  `wake-word-plan.md:978-981`: float32 on every target including RP2350, Q15 front end only if
-  a measured M33 count misses, "DspTap has no fixed-point FFT"). Appendix A.
+  `wake-word-plan.md:978-981`). Overruled by the maintainer: fixed-point projects not yet
+  started need FFT support. Kept on the main line as Stage 3; MuTap's plan is unaffected
+  because MuTap does not consume it.
 - **P14 — Stage 3 was not rollback-able.** Split into 2a/2b/2c.
 - **P15/N17/A — No performance, size or compile-time gate.** Added (Part 4).
 - **P18 — A MuTap CI job compiles the vendored C by path.** Stage 2c.
@@ -504,7 +534,8 @@ not listed. **P** = process review, **N** = numerics review, **A** = author.
   measured sizes.
 - **N11 — Const transforms would make the public API's constness depend on the selected
   engine.** Public methods stay non-const; `Engine::is_shareable`.
-- **N13 — Runtime twiddle derivation in `cftf1st`.** Recorded under fixed point.
+- **N13 — Runtime twiddle derivation in `cftf1st`.** The fixed-point kernel does not reuse
+  Ooura's first stage; it has a full Q1.30 table (Part 7).
 - **N14 — `std::cos(float)` resolves to `cosf`.** Explicit-cast rule in Part 4.
 - **N16 — Downstream float pins enumerated** (DspTap `test_fft.cpp:37,209`,
   `test_fft_backend.cpp:90,249`, `test_log_mel.cpp:97,135,389` at 2× margin, `test_pvoc.cpp:81,183,209`;
@@ -533,42 +564,251 @@ not listed. **P** = process review, **N** = numerics review, **A** = author.
 
 ---
 
-## Appendix A — Deferred: fixed point, and the substrate questions it drags in
+## Part 7 — Fixed-point design (Stage 3)
 
-Deferred until a consumer measures the need (MuTap's wake-word plan says float32 on every
-target, RP2350 included). Entry conditions, so the work is not re-derived:
-- **D1 (was Stage 2).** Is `double` a sample format? If yes, `sample_traits<double>` has
-  `coeff = double`, `accum = double`; `test_sample_traits.cpp:108` flips; `test_decimate.cpp:192`
-  becomes Q15-vs-double. Its FIR `mac`/`finalize` shape (int64 accumulate, one rounding) is
-  not what an FFT needs; the FFT wants a second trait (`add`, `sub`, `mul_coeff`,
-  `shift_round`, named fraction-bit constants), so "extend sample_traits" means "add a sibling".
-- **D2. One structure or two.** The ported split-radix can be reused as a *data-flow graph*
-  only: Q15 needs a shift before each radix-4 sub-stage or int64 products inside the 16-point
-  leaves; Q31 needs shift-before-multiply or 32×32→high-half multiplies. Either way the
-  operation order is not Ooura's. `cftf1st`'s runtime twiddle sums (up to 2.0) need a
-  materialized first-stage table or int32 twiddle arithmetic. Block floating point is feasible
-  (sub-blocks finish at different times, so per-block exponents plus a final normalization
-  pass), just bookkeeping.
-- **D3. Scales, both directions, as numbers.** Forward per-sub-stage input shifts plus one /2
-  at the real post-pass; the inverse needs its own per-stage scaling because Ooura's inverse
-  has structural gain N/2; the round-trip identity, the caller's required pre-shift and the
-  saturation-free input level (one headroom bit, or an input contract of ≤ −3 dBFS) are all
-  header numbers with a worst-case-pattern test. Per-bin noise floor pinned: fixed 1/N in Q15
-  is unfit for log_mel at N=512 (≈25 dB per-bin SNR at −40 dBFS); the profile is Q31 data with
-  Q15 at the I/O boundary, or BFP.
-- **CMSIS q15/q31 as an engine** requires vendoring more of CMSIS (the subset here is f32 only)
-  and adopting its size-dependent output scaling; it can only be tested once the house
-  contract above exists.
-- **On-target runtime gates in DspTap** require porting MuTap's three platform files and a
-  one-shot gtest harness (`TAP_DSP_BARE_METAL`, modeled on MuTap `tests/CMakeLists.txt:7-19`).
-- **Platform-independent double tables** (Part 4) if cross-host bit identity of the double
-  golden model is ever wanted.
+Inputs: the arithmetic constraints from Part 6 (N6-N8, N13), the substrate's rule that fixed
+point is traits over raw sample types with the Q ladder visible at the use site, and the
+literature: Welch 1969, "A fixed-point fast Fourier transform error analysis" (IEEE Trans.
+Audio Electroacoust.); Oppenheim & Weinstein 1972, "Effects of finite register length in
+digital filtering and the fast Fourier transform" (Proc. IEEE); block floating point per
+Oppenheim & Schafer, *Discrete-Time Signal Processing*, the finite-precision FFT section. No
+shipping product's behaviour is reverse-engineered; CMSIS-DSP's *documented* output-scaling
+convention is noted only where compatibility with it is a stated goal.
+
+### One kernel, two I/O widths
+- **Internal data is int32 for both profiles.** Q31 for the Q31 profile; the Q15 profile widens
+  on input and narrows (round-half-up, saturating, the substrate's `finalize` rule) on output.
+  This is what makes the Q15 profile usable: fixed 1/N scaling in 16-bit data gives about
+  25 dB per-bin SNR at −40 dBFS for N=512 (Part 6, N8); in 32-bit data the same scaling leaves
+  22 bits at N=512, a floor below −130 dB. The cost is an int32 work buffer of N allocated at
+  construction; the in-place API is preserved at the caller's int16 buffer.
+- **Q15 input placement uses the spare width as guard bits.** Input is shifted left by 14, not
+  16, so full-scale ±1 has two guard bits and the worst-case radix-4 growth (component bound
+  4√2 per stage under rotation) cannot saturate under fixed scaling without any input-level
+  contract. The Q31 profile has no spare width: under fixed scaling it takes one input
+  pre-shift (−6 dB, one bit of 31) and the header says so; under block floating point no
+  pre-shift is needed because scaling happens only when the data has grown.
+- **Twiddles are Q1.30 int32** (`sample_traits<std::int32_t>::coeff`) for both profiles, a full
+  table for the complex kernel and the post-pass, generated in double at construction and
+  rounded once (`round_sat`). 1.0 is representable, so no special case. The Q1.14 idea from
+  revision 1 is dropped: it was the wrong width for an int32 kernel and could not hold Ooura's
+  run-time first-stage twiddle sums.
+- **Multiply is shift-before-multiply with one rounding.** `int32 × Q1.30 → int64`, then
+  `>> 30` with round-half-up: the single documented rounding point per product. Portable C++
+  first; the Armv7E-M/Armv8-M `SMMULR`/`SMMLAR` (32×32 high-half with rounding) is the
+  designated seam behind the same contract, the way `SMLALD` is for the FIR kernels.
+- **Structure is its own radix-4 DIF complex kernel of length N/2 with a radix-2 final stage
+  for odd log2, plus Ooura's real post-pass formulas.** Part 6 established that Ooura's
+  split-radix graph can be reused only as a data-flow graph with a different operation order,
+  and that its first stage derives twiddles at run time; a dedicated kernel is simpler to
+  scale, simpler to prove against Welch's model, and shares the *contract* (packing, `exp(+i)`,
+  DC/Nyquist slots) rather than the code. Bit-reversal table and twiddle generator live in
+  `fft/tables.h`, shared with nothing else by design.
+
+### Two scaling policies, as a template parameter
+- **`scaling::fixed`.** Shift-before-butterfly by 2 bits per radix-4 stage (1 per radix-2) and
+  one more in the real post-pass, so the forward output is exactly `X / N` in the sample's Q
+  format, deterministic, with a statically known exponent. For magnitude and power consumers
+  (log_mel-class front ends, detectors).
+- **`scaling::block_floating`.** Before each stage, a `clz` scan of the block finds the
+  available headroom; the stage shifts only as much as growth requires and accumulates the
+  exponent, which the transform returns. Sub-blocks of a DIF kernel finish together per stage,
+  so the bookkeeping is one exponent per transform. For round-trip consumers (overlap-add
+  resynthesis, adaptive filters), where fixed scaling's forward-and-inverse halving would
+  discard log2(N) bits twice.
+- **The inverse has its own scaling.** Ooura's unnormalized inverse has structural gain N/2 and
+  saturates on the first stage if run unscaled in fixed point (Part 6, N7). Under `fixed` the
+  inverse halves per stage the same way and the round-trip factor is a fixed power of two,
+  stated in the header and pinned by a test; under `block_floating` the round trip returns
+  `x · 2^-(e_fwd + e_inv)` with both exponents returned. Whether to match CMSIS's documented
+  q15/q31 output scaling is a compatibility decision made in 3b, not an accident.
+
+### Numbers the header states and the tests pin (Part 9)
+Per profile and policy: forward scale; inverse scale; round-trip identity; saturation-free
+input level; twiddle quantization (max |w_q − w| ≤ 0.5 LSB of Q1.30); per-bin noise floor vs
+input level at N = 256/512/2048 for white noise and an on-bin tone, against Welch's model and
+against the double golden model; DC of a constant exact; worst-case growth pattern does not
+saturate; NaN not applicable; no denormals; latency 0; `noexcept`, allocation-free; copyable;
+`is_shareable` true.
+
+### Target notes
+Cortex-M4 (Armv7E-M) and Cortex-M33 (Armv8-M Mainline) both define `__ARM_FEATURE_DSP`, so
+`SMMULR`/`SMLALD`-class instructions exist on both; the M4 without FPU is the profile's reason
+to exist. The M55 has Helium (MVE) with `vqdmulh`-class Q31 lanes; that is a later backend
+behind the same contract, as CMSIS f32 is today. Measured `.text` and instruction counts per
+leg are CI artifacts from 3b onward (Part 10).
 
 ---
 
-## Decisions (revision 2)
+## Part 8 — Documentation plan
 
-**D1, D2, D3** — moved to Appendix A; not on the port's critical path.
+The house rule is that the header owns the contract as numbers and the tests pin them. The
+FFT work adds three documentation surfaces and touches three more.
+
+1. **Header docstrings are the contract.** `fft.h` carries, per profile: packing, sign
+   convention, forward/inverse scale, round-trip identity, saturation-free input level,
+   noise-floor numbers, latency, alignment (none), NaN/denormal behaviour, fp-contraction
+   policy, thread-shareability, real-time safety, and the measured performance table with the
+   target and date. Each contract bullet ends with the name of the test that pins it, the
+   pattern README already uses. `@param` per STYLE.md, not `\param`. The engine header
+   (`fft/split_radix.h`) carries the transliteration rules from Part 4 (statement fidelity,
+   explicit `static_cast<double>` on libm calls) so the next person does not undo them.
+2. **`docs/fft-design.md`** is the design note that is too long for a header, in the role
+   `kaiser.h`'s design note plays for the FIR substrate: why split-radix for floating point and
+   a radix-4 kernel for fixed point, the halving-count and headroom derivations, the
+   twiddle-quantization argument, the Welch noise model against the measured floors, the
+   contraction policy and its measurements, the per-target size and instruction-count tables,
+   the licensing and provenance statement, and a changelog of contract-affecting SHAs. This
+   audit document is the plan of record until every stage has landed; each PR links its stage.
+3. **README FFT section rewrite** at Stage 2b, extended at 3b: the profiles table
+   (double / float / Q15 / Q31 with scale, floor, target), the backend table, the two-line
+   migration note for consumers (what words change, what does not), and the "header-only
+   unless CMSIS is on" statement. The intro's "seven primitives" line stays; profiles are not
+   primitives.
+4. **Provenance and licensing** per Part 5: the port header's banner, `NOTICE.md`, MuTap's
+   `THIRD_PARTY_NOTICES.md`, and one glossary line in MuTap's `docs/itu-compliance.md`.
+5. **CLAUDE.md** updates at 2c and 3b: the header-only statement, the four-profile ladder in
+   the design-discipline section, the embedded CI legs in the build section, and one line in
+   the adding-a-primitive checklist: "state each profile's numbers, and name the on-target leg
+   that runs its battery".
+6. **Verification layer.** `tools/capi` and `notebooks/dsptap_py.py` gain FFT entry points for
+   all four profiles (today the notebooks cannot measure the FFT at all), and
+   `notebooks/fft.ipynb` is committed *executed*: float-vs-double, the per-bin noise floor vs
+   input level for Q15 and Q31 under both scaling policies (the Welch curve, measured on the
+   shipping C++), BFP exponent behaviour on speech-like material, and the backend comparison on
+   the host that runs it.
+7. **Consumer-side docs** ride the pin bumps: MuTap-Max's per-external CMake comments about the
+   compiled FFT library go when a bump proves they can; MuTap's `docs/optimization.md` M55
+   section is corrected with the CI flag fix (Stage 1).
+
+---
+
+## Part 9 — Unit testing plan
+
+Structure first, then what each file pins. Everything is GoogleTest, typed where the house
+pattern is typed, and named for the promise it pins.
+
+### Files
+- `tests/test_fft.cpp` (existing, widened): the contract battery, `TYPED_TEST_SUITE` over
+  `float, double, std::int16_t, std::int32_t`, with a per-type traits helper supplying the
+  tolerance, the forward scale and the input conversion so the same `RoundTripReproducesInput`,
+  `ImpulseHasFlatSpectrum`, `DcAndNyquistPacking`, `SignConventionIsPlusI`,
+  `ParsevalEnergyConservation` run on every profile. Cross-precision: `FloatTracksDouble`
+  (existing), `Q15TracksDouble`, `Q31TracksDouble`, each a measured number pinned at 2×
+  margin, the log_mel pattern.
+- `tests/test_fft_parity_ooura.cpp` (Stage 2a): its **own CMake target** so it can carry
+  `-ffp-contract=off` for both the C and the C++; bit identity for `double` and `float`,
+  forward and inverse, N = 4 … 65536 plus one run at 2^20, on broadband, on-bin tone, impulse,
+  DC, and a full-scale alternating pattern. A second target at default flags reports the
+  measured max-ulp deviation as an informational number, never as a pass/fail with an
+  assumed bound. Runs on the three hosts and, size-limited to N ≤ 4096, on the four QEMU legs
+  (same-binary identity against newlib's libm is exactly the property that matters there).
+- `tests/test_fft_oracle.cpp`: the independent oracle. Closed-form vectors (impulse, DC,
+  Nyquist, on-bin cosine and sine, two-tone) with exact answers, and a compensated-summation
+  DFT (double-double, not `long double`, which is `double` on MSVC and Apple arm64) for
+  N ≤ 256, driven against all four profiles with the profile's documented scale applied.
+- `tests/test_fft_fixed.cpp` (Stage 3b): saturation-free worst case (the packed-pair pattern
+  at a 45° twiddle from Part 6, plus full-scale ±1 and `INT16_MIN` inputs) does not wrap;
+  forward scale exactly `X/N` under `fixed` on an integer-valued impulse and DC; round-trip
+  identity per policy as the header states it; BFP exponent reconstructs the fixed-scaling
+  result bit-for-bit after shifting; per-bin noise floor vs level at −0/−20/−40/−60 dBFS for
+  N = 256/512/2048 pinned against the Welch-model number and the double golden model;
+  twiddle quantization ≤ 0.5 LSB; rounding symmetry on negated input (the half-up bias is
+  bounded and stated); Q15 and Q31 agree with each other to the Q15 floor.
+- `tests/test_fft_backend.cpp` (existing, re-pointed at 2b, typed over engines at Stage 4):
+  parity, alignment stability and tonal accuracy as today; `ooura_ref` becomes the ported
+  float engine; on macOS the Ooura-vs-vDSP comparison is same-binary.
+- `tests/test_fft_rt.cpp`: `static_assert(noexcept(...))` on every transform (the nn pattern);
+  an operator-new counting guard proving no allocation inside the transforms for every
+  profile and engine; copy and copy-assignment leave the source and copy bit-identical;
+  `is_shareable` is what the header says; `std::span` overloads equal the pointer overloads.
+- `tests/test_spectrum.cpp` (Stage 5): the view's numeric definition against forward outputs,
+  including the DC/Nyquist slots and the sign of `im(k)` for a sine.
+- `tests/support/` (Stage 6, but started at 2a for the new files): one `random_signal`, one
+  `xorshift32`, one tone synthesizer, one dB helper; the three existing copies migrate later.
+- `tests/bare_metal_main.cpp` + `TAP_DSP_BARE_METAL` one-shot mode (Part 10): a positive filter
+  of the emulation-sized selection, judged on the gtest summary text.
+
+### Rules
+- Every contract bullet in a header names its test; every test's name is the promise.
+- Fixed seeds, no wall-clock, no filesystem (bare metal has none).
+- Tolerances are measured numbers with a stated margin, never round numbers.
+- A cross-precision test compares to the **double** golden model, not to a sibling profile,
+  except the one Q15-vs-Q31 agreement test whose purpose is the I/O-width narrowing.
+- The benchmark target is informational and lives under `bench/`, not `tests/`; the
+  on-target `.text` and instruction-count assertions live in CI, not in gtest.
+- MuTap's fingerprint harness (Stage 1) is the downstream bit-identity gate for every bump.
+
+---
+
+## Part 10 — Embedded CI: Cortex-M4, M33 and M55 under QEMU
+
+### What exists to copy
+MuTap already runs its float suite on QEMU: `cmake/arm-cortex-m33-mps2.cmake`
+(`-mcpu=cortex-m33 -mthumb -mfloat-abi=hard`, `--specs=rdimon.specs -nostartfiles`,
+`qemu-system-arm -M mps2-an505 -semihosting -kernel`), `platform/armv8m_startup.c` (161 lines:
+vector table, `MSPLIM`, CPACR enable for CP10/CP11, bss clear, semihosting init, static
+constructors, `exit(main())`), `platform/mps2_an505.ld` (CODE at 0x10000000, DATA at
+0x38000000, 4 MB each), `platform/mps3_an547.ld` for the M55, and a one-shot gtest mode in
+`tests/CMakeLists.txt` (`gtest_disable_pthreads`, `GTEST_HAS_POSIX_RE=0`,
+`GTEST_HAS_STREAM_REDIRECTION=0`, `GTEST_HAS_FILE_SYSTEM=0`, `PASS_REGULAR_EXPRESSION` on a
+completion marker because semihosting does not propagate exit codes reliably). Its M33
+selection runs in about 3 minutes of emulation. DspTap's M55 toolchain is a copy of MuTap's
+with the platform files missing.
+
+### What adding the legs entails
+1. **`platform/` in DspTap**: the startup file with the `MSPLIM` write guarded by
+   `__ARM_ARCH_8M_MAIN__` (it does not exist on Armv7E-M; the CPACR write is harmless on a core
+   without an FPU), `mps2_an505.ld`, `mps3_an547.ld`, and a new **`mps2_an386.ld`** for QEMU's
+   Cortex-M4 board model (`-M mps2-an386`; code SRAM at 0x00000000 and data SRAM at 0x20000000,
+   sizes to be taken from QEMU's `hw/arm/mps2.c` when the script is written, not from memory).
+2. **Toolchain files**: `arm-cortex-m4-mps2.cmake` in two flavours selected by a cache
+   variable, `-mcpu=cortex-m4 -mfloat-abi=soft` (no FPU: the fixed-point profile's reason to
+   exist; everything float is soft) and `-mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard`
+   (M4F); `arm-cortex-m33-mps2.cmake` as MuTap's; the existing M55 file with its link line
+   made valid. All set `TAP_DSP_BARE_METAL ON` (the variable is renamed from `MUTAP_`).
+3. **Test harness**: the one-shot mode and `tests/bare_metal_main.cpp` with a positive filter:
+   the fixed-point battery in full; the float contract battery; the parity test at N ≤ 4096;
+   decimate, log_mel and nn float suites; the double suites limited to the small-N contract
+   tests (soft-float double is a correctness check here, not a profile). Budget: under
+   5 minutes of emulation per leg, measured and written into the job comment as MuTap does.
+4. **CI matrix**: four jobs, `cortex-m4-softfp`, `cortex-m4f`, `cortex-m33`, `cortex-m55`
+   (the last replacing today's compile-only job; CMSIS stays on there and its parity test
+   finally runs somewhere). Each installs `gcc-arm-none-eabi` and `qemu-system-arm` from apt
+   (Ubuntu 24.04 ships QEMU 8.2, which has `mps2-an386`, `mps2-an505` and `mps3-an547`),
+   configures `MinSizeRel`, builds, runs `ctest`, then runs `arm-none-eabi-size` on the test
+   binary and on a size-probe object that instantiates each profile alone, asserting per-leg
+   `.text` ceilings for the float and Q31 real FFT at N = 512.
+5. **Instruction counts** (optional, after 3b): MuTap's `scripts/icount.py` + QEMU TCG plugin
+   pattern with `bench/baselines.json`; scenarios `rfft_f32_512`, `rfft_q31_512`,
+   `rfft_q15_512`, `rfft_f32_2048` per leg, ratcheted at ±3% like MuTap. This is the gate that
+   would catch a port that vectorizes worse than the C.
+6. **Side effects worth knowing**: both M4 and M33 define `__ARM_FEATURE_DSP`, so
+   `fir_kernels.h`'s `SMLALD` path is compiled and *run* for the first time in this repo (the
+   unbraced-loop style defect in it becomes visible to a compiler); M4 soft-float is the first
+   leg where `double` costs enough that any accidental double in a float or fixed path shows
+   up in the emulation budget; `-Wconversion` on `int16x2_t` casts needs checking under the
+   M4's GCC.
+7. **Cost**: roughly 10–15 minutes wall per leg, dominated by the toolchain install and the
+   gtest build; emulation is minutes. Run on `push` and `pull_request` like the rest of CI;
+   the icount jobs, if adopted, only on `pull_request`.
+
+---
+
+## Decisions (revision 3)
+
+**D1. `double` becomes a sample format. Settled.** `sample_traits<double>` with
+`coeff = double`, `accum = double`, landed in Stage 3a; the concept covers four types; decimate's
+Q15 oracle is re-pinned against double. Not on the port's (Stage 2) critical path.
+
+**D2. Fixed point is its own radix-4 kernel over int32 data, sharing the contract, not
+Ooura's code. Settled.** Part 7 has the reasons (operation order, run-time first-stage twiddles,
+headroom). Both profiles run the same kernel; Q15 is an I/O width.
+
+**D3. Two scaling policies as a template parameter, each with both directions' scales as
+header numbers. Settled.** `fixed` for analysis consumers, `block_floating` for round-trip
+consumers; the inverse has its own per-stage scaling; CMSIS compatibility of the output
+convention is decided in 3b.
 
 **D4. Engine as a template parameter with a build-selected default, plus an inline-namespace
 ABI tag derived from the selection.** The default alone leaves the layout-by-define hazard in
