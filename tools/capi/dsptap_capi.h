@@ -1,11 +1,12 @@
 /// @file dsptap_capi.h
-/// @brief Minimal C ABI over the DspTap primitives (yin, psola, pvoc, log_mel, decimate), for language bindings and
-///        the verification notebooks (notebooks/ drive it via ctypes).
+/// @brief Minimal C ABI over the DspTap primitives (fft, yin, psola, pvoc, log_mel, decimate), for language
+///        bindings and the verification notebooks (notebooks/ drive it via ctypes).
 ///
 ///        Conventions: plain C types only; the caller owns all arrays and sizes them. Handle-based
 ///        functions return 0 on success and -1 on any error (bad argument, bad handle). No global
 ///        state. Everything runs the double-precision golden profile — the notebooks verify the
-///        same code the consuming libraries compile.
+///        same code the consuming libraries compile — except where a function documents a profile
+///        selector (the FFT), so the notebooks can measure the embedded profiles as well.
 // SPDX-License-Identifier: MIT
 // Copyright 2026 Timothy Place and the DspTap contributors.
 
@@ -21,11 +22,80 @@ extern "C" {
 #define DSPTAP_API __attribute__((visibility("default")))
 #endif
 
+/// The FFT entry points are declared noexcept: dsptap_fft_create catches and returns NULL; the
+/// others call the header's noexcept transforms and plain copy loops and cannot throw (if that
+/// ever changed they would std::terminate rather than return -1). A C translation unit sees
+/// nothing. The older entry points predate this and are not annotated; making the whole ABI
+/// uniform (typed opaque handles, exception safety, no allocation in process) is Stage 6 hygiene
+/// in docs/audit-fft-and-code-smells.md.
+#ifdef __cplusplus
+#define DSPTAP_NOEXCEPT noexcept
+#else
+#define DSPTAP_NOEXCEPT
+#endif
+
+typedef void* dsptap_fft;
 typedef void* dsptap_yin;
 typedef void* dsptap_psola;
 typedef void* dsptap_pvoc;
 typedef void* dsptap_log_mel;
 typedef void* dsptap_decimator;
+
+/// -- fft ------------------------------------------------------------------------------------
+
+/// Numeric profile of a real FFT handle: which tap::dsp::basic_real_fft<Sample> instantiation
+/// it runs. DOUBLE is the golden model; FLOAT is the embedded profile (Ooura, or the platform
+/// backend the build selected — see dsptap_fft_backend). Q15 and Q31 are reserved for the
+/// fixed-point profiles of Stage 3 (docs/audit-fft-and-code-smells.md, Stage 3c wires them
+/// here); until then dsptap_fft_create returns NULL for them.
+#define DSPTAP_FFT_PROFILE_DOUBLE 0
+#define DSPTAP_FFT_PROFILE_FLOAT 1
+#define DSPTAP_FFT_PROFILE_Q15 2
+#define DSPTAP_FFT_PROFILE_Q31 3
+
+/// Create a real FFT of `size` points (a power of two >= 4) in the given profile, or NULL on a
+/// bad size, an unavailable profile, or allocation failure. All workspace is allocated here; the
+/// transforms below are allocation-free.
+DSPTAP_API dsptap_fft dsptap_fft_create(int size, int profile) DSPTAP_NOEXCEPT;
+DSPTAP_API void       dsptap_fft_destroy(dsptap_fft h) DSPTAP_NOEXCEPT;
+DSPTAP_API int        dsptap_fft_size(dsptap_fft h) DSPTAP_NOEXCEPT;
+/// size/2 + 1 (DC .. Nyquist).
+DSPTAP_API int dsptap_fft_num_bins(dsptap_fft h) DSPTAP_NOEXCEPT;
+/// The DSPTAP_FFT_PROFILE_* the handle was created with.
+DSPTAP_API int dsptap_fft_profile(dsptap_fft h) DSPTAP_NOEXCEPT;
+/// sizeof the profile's native sample (8 for DOUBLE, 4 for FLOAT) — the element width of the
+/// buffers the *_inplace_raw transforms take.
+DSPTAP_API int dsptap_fft_sample_bytes(dsptap_fft h) DSPTAP_NOEXCEPT;
+/// The float32 engine this build compiled: "ooura", "accelerate" (Apple vDSP) or "cmsis"
+/// (CMSIS-DSP Helium). The double profile is always Ooura.
+DSPTAP_API const char* dsptap_fft_backend(void) DSPTAP_NOEXCEPT;
+
+/// Forward transform of size() real samples into the packed spectrum, in double regardless of
+/// profile (the FLOAT profile converts at the boundary, so `in` is rounded to float32 first and
+/// the result is widened back). `out` may alias `in`. Packing and sign convention are the
+/// header's contract (fft.h): out[0] = DC, out[1] = Nyquist (both real), out[2k] + i*out[2k+1]
+/// = bin k for 1 <= k < size/2, with W = exp(+2*pi*i/size) — CONJUGATE to the engineering
+/// convention numpy.fft.rfft uses.
+///
+/// Fixed point (Stage 3c, forward-looking so it extends rather than reinterprets): the Q15 and
+/// Q31 profiles convert at this boundary as x / 2^15 and x / 2^31 (full scale = 1.0) on the way
+/// in and the inverse on the way out, with the profile's fixed scaling policy; the block-
+/// floating-point policy and its per-transform exponent arrive through a separate create
+/// variant and a separate raw-path entry point, not through a change to these signatures.
+DSPTAP_API int dsptap_fft_forward(dsptap_fft h, const double* in, double* out) DSPTAP_NOEXCEPT;
+/// Inverse of dsptap_fft_forward, scaled by 2/size like basic_real_fft::inverse() so
+/// forward -> inverse reproduces the input. `out` may alias `in`.
+DSPTAP_API int dsptap_fft_inverse(dsptap_fft h, const double* in, double* out) DSPTAP_NOEXCEPT;
+
+/// In-place transforms on the profile's NATIVE sample type: `data` points at size() samples of
+/// dsptap_fft_sample_bytes() each (double for DOUBLE, float for FLOAT), in the same packing,
+/// and must be aligned for that type (a double* or float* the caller obtained as such; not an
+/// offset into a byte buffer). These are the header's forward_inplace()/inverse_inplace() with
+/// no conversion at all, so the notebooks measure the embedded profile's own arithmetic rather
+/// than a double round trip. The inverse is UNSCALED (multiply by 2/size for a round trip),
+/// exactly as in fft.h.
+DSPTAP_API int dsptap_fft_forward_inplace_raw(dsptap_fft h, void* data) DSPTAP_NOEXCEPT;
+DSPTAP_API int dsptap_fft_inverse_inplace_raw(dsptap_fft h, void* data) DSPTAP_NOEXCEPT;
 
 /// -- yin ------------------------------------------------------------------------------------
 

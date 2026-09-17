@@ -8,10 +8,11 @@ building it first if missing (requires cmake in PATH):
 
 The C ABI (tools/capi/) wraps the *same* portable DSP headers the consuming
 libraries compile — so the notebooks exercise the real shipping code, not a
-Python re-implementation. Exposed primitives: the YIN pitch detector (`Yin`),
-the TD-PSOLA shifter (`Psola`), and the peak-locked phase-vocoder shifter
-(`Pvoc`, with optional LPC formant preservation), the log-mel/PCEN feature
-front end (`LogMel`) and the fixed-ratio decimators to 16 kHz (`Decimator`).
+Python re-implementation. Exposed primitives: the real FFT (`RealFFT`, in the
+double and float profiles), the YIN pitch detector (`Yin`), the TD-PSOLA
+shifter (`Psola`), and the peak-locked phase-vocoder shifter (`Pvoc`, with
+optional LPC formant preservation), the log-mel/PCEN feature front end
+(`LogMel`) and the fixed-ratio decimators to 16 kHz (`Decimator`).
 
 Copyright 2026 Timothy Place and the DspTap contributors. MIT License.
 """
@@ -61,6 +62,17 @@ def load() -> ctypes.CDLL:
     vp = ctypes.c_void_p
     f64p = ctypes.POINTER(ctypes.c_double)
     sigs = {
+        "dsptap_fft_create":        ([ctypes.c_int, ctypes.c_int], vp),
+        "dsptap_fft_destroy":       ([vp], None),
+        "dsptap_fft_size":          ([vp], ctypes.c_int),
+        "dsptap_fft_num_bins":      ([vp], ctypes.c_int),
+        "dsptap_fft_profile":       ([vp], ctypes.c_int),
+        "dsptap_fft_sample_bytes":  ([vp], ctypes.c_int),
+        "dsptap_fft_backend":       ([], ctypes.c_char_p),
+        "dsptap_fft_forward":       ([vp, f64p, f64p], ctypes.c_int),
+        "dsptap_fft_inverse":       ([vp, f64p, f64p], ctypes.c_int),
+        "dsptap_fft_forward_inplace_raw": ([vp, vp], ctypes.c_int),
+        "dsptap_fft_inverse_inplace_raw": ([vp, vp], ctypes.c_int),
         "dsptap_yin_create":        ([ctypes.c_int, ctypes.c_int, ctypes.c_int], vp),
         "dsptap_yin_destroy":       ([vp], None),
         "dsptap_yin_set_threshold": ([vp, ctypes.c_double], ctypes.c_int),
@@ -99,7 +111,12 @@ def load() -> ctypes.CDLL:
         "dsptap_decimator_process": ([vp, f64p, ctypes.c_int, f64p, ctypes.c_int], ctypes.c_int),
     }
     for name, (argtypes, restype) in sigs.items():
-        fn = getattr(lib, name)
+        try:
+            fn = getattr(lib, name)
+        except AttributeError as e:
+            raise RuntimeError(
+                f"{_lib_path()} lacks {name}: build_capi/ is older than tools/capi/dsptap_capi.h. "
+                "Delete build_capi/ and import again (it rebuilds on first import).") from e
         fn.argtypes = argtypes
         fn.restype = restype
     return lib
@@ -110,6 +127,128 @@ _lib = load()
 
 def _f64(x: np.ndarray):
     return np.ascontiguousarray(x, dtype=np.float64)
+
+
+class RealFFT:
+    """tap::dsp::basic_real_fft<Sample> — `profile` "double" (the golden model) or "float"
+    (the embedded profile: Ooura, or the vDSP/CMSIS backend the build selected — see
+    `RealFFT.backend()`). "q15" and "q31" are reserved for the fixed-point profiles
+    (Stage 3c of docs/audit-fft-and-code-smells.md) and raise until they land.
+
+    `forward`/`inverse` take and return float64 arrays in the header's PACKED layout and
+    Ooura's exp(+i) sign convention, whatever the profile (the float profile converts at the
+    boundary). `forward_inplace_raw`/`inverse_inplace_raw` run on the profile's native dtype
+    with no conversion at all — the path that measures the embedded profile's own arithmetic —
+    and the raw inverse is UNSCALED, exactly as in fft.h.
+
+    Packing (fft.h): packed[0] = DC, packed[1] = Nyquist (both real);
+    packed[2k] + 1j*packed[2k+1] = bin k for 1 <= k < n/2, with W = exp(+2*pi*i/n).
+    `unpack`/`pack` convert to and from a complex array of n/2 + 1 bins in the ENGINEERING
+    convention (exp(-2*pi*i/n), what numpy.fft.rfft returns) — i.e. they CONJUGATE, so
+    `unpack(forward(x))` matches `numpy.fft.rfft(x)` bin for bin.
+    """
+
+    PROFILES = {"double": 0, "float": 1, "q15": 2, "q31": 3}
+    _DTYPES = {0: np.float64, 1: np.float32, 2: np.int16, 3: np.int32}
+
+    def __init__(self, size: int, profile: str | int = "double"):
+        code = self.PROFILES.get(profile) if isinstance(profile, str) else profile
+        if code not in self.PROFILES.values():
+            raise ValueError(f"profile must be one of {sorted(self.PROFILES)} "
+                             f"(or the codes {sorted(self.PROFILES.values())}), not {profile!r}")
+        self._h = _lib.dsptap_fft_create(size, code)
+        if not self._h:
+            if code in (2, 3):
+                raise NotImplementedError("the Q15/Q31 FFT profiles land at Stage 3c")
+            raise ValueError(f"size must be a power of two >= 4, not {size!r}")
+        self.size = size
+        self.profile = next(k for k, v in self.PROFILES.items() if v == code)
+        self.dtype = np.dtype(self._DTYPES[code])
+        assert self.dtype.itemsize == _lib.dsptap_fft_sample_bytes(self._h)
+
+    def __del__(self):
+        if getattr(self, "_h", None):
+            _lib.dsptap_fft_destroy(self._h)
+
+    @property
+    def num_bins(self) -> int:
+        return _lib.dsptap_fft_num_bins(self._h)
+
+    @staticmethod
+    def backend() -> str:
+        """The float32 engine this build compiled: "ooura", "accelerate" or "cmsis"."""
+        return _lib.dsptap_fft_backend().decode()
+
+    def forward(self, x: np.ndarray) -> np.ndarray:
+        """Packed spectrum (float64, length n) of n real samples; the float profile rounds x to
+        float32 at the boundary."""
+        x = _f64(x)
+        self._check_len(x)
+        out = np.empty_like(x)
+        _lib.dsptap_fft_forward(self._h, x.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                                out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)))
+        return out
+
+    def inverse(self, packed: np.ndarray) -> np.ndarray:
+        """Normalized inverse (scaled by 2/n): inverse(forward(x)) reproduces x."""
+        packed = _f64(packed)
+        self._check_len(packed)
+        out = np.empty_like(packed)
+        _lib.dsptap_fft_inverse(self._h, packed.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                                out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)))
+        return out
+
+    def forward_inplace_raw(self, data: np.ndarray) -> np.ndarray:
+        """In-place forward on the profile's native dtype (no conversion); returns `data`."""
+        self._check_raw(data)
+        _lib.dsptap_fft_forward_inplace_raw(self._h, data.ctypes.data_as(ctypes.c_void_p))
+        return data
+
+    def inverse_inplace_raw(self, data: np.ndarray) -> np.ndarray:
+        """In-place UNSCALED inverse on the native dtype (multiply by 2/n yourself); returns
+        `data`."""
+        self._check_raw(data)
+        _lib.dsptap_fft_inverse_inplace_raw(self._h, data.ctypes.data_as(ctypes.c_void_p))
+        return data
+
+    def _check_len(self, a: np.ndarray) -> None:
+        if a.ndim != 1 or a.size != self.size:
+            raise ValueError(f"expected a 1-D array of length {self.size}, got shape {a.shape}")
+
+    def _check_raw(self, data: np.ndarray) -> None:
+        if (not isinstance(data, np.ndarray) or data.dtype != self.dtype or data.ndim != 1
+                or data.size != self.size or not data.flags.c_contiguous or not data.flags.writeable):
+            raise TypeError(f"raw buffers must be 1-D, contiguous, writeable {self.dtype} of length {self.size}")
+
+    @staticmethod
+    def unpack(packed: np.ndarray) -> np.ndarray:
+        """Packed Ooura spectrum -> complex bins 0..n/2 in the engineering convention
+        (conjugated: rfft-compatible)."""
+        packed = np.asarray(packed, dtype=np.float64)
+        n = packed.size
+        bins = np.empty(n // 2 + 1, dtype=np.complex128)
+        bins[0] = packed[0]
+        bins[-1] = packed[1]
+        bins[1:-1] = packed[2::2] - 1j * packed[3::2]
+        return bins
+
+    @staticmethod
+    def pack(bins: np.ndarray) -> np.ndarray:
+        """Engineering-convention complex bins 0..n/2 -> packed Ooura spectrum (float64,
+        length n). The imaginary parts of DC and Nyquist are discarded (the packing has no
+        slot for them; a real signal's are zero)."""
+        bins = np.asarray(bins, dtype=np.complex128)
+        n = 2 * (bins.size - 1)
+        packed = np.empty(n, dtype=np.float64)
+        packed[0] = bins[0].real
+        packed[1] = bins[-1].real
+        packed[2::2] = bins[1:-1].real
+        packed[3::2] = -bins[1:-1].imag
+        return packed
+
+    def spectrum(self, x: np.ndarray) -> np.ndarray:
+        """Convenience: unpack(forward(x)) — rfft-compatible complex bins."""
+        return self.unpack(self.forward(x))
 
 
 class Yin:
