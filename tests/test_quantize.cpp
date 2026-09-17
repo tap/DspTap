@@ -64,6 +64,38 @@ namespace {
         check_rows_sum_exact<std::int32_t>();
     }
 
+    TEST(Quantize, DoubleIsPlainConversion) {
+        // The golden model's coefficients are the designed values themselves.
+        const std::vector<double> row{0.25, -0.125, 1.0, -0.9999, 0.0, 1e-300};
+        std::vector<double>       q(row.size());
+        quantize_row_preserving_sum<double>(row, q);
+        EXPECT_EQ(q, row);
+    }
+
+    // The +/-1 correction steps saturate. A row whose design exceeds the
+    // coefficient format has a tap at the rail with a huge positive remainder,
+    // so the largest-remainder pick lands on it: the step must leave it at
+    // the rail, never wrap it to the opposite sign, and the routine returns.
+    TEST(Quantize, CorrectionNeverWrapsATapAtTheRail) {
+        const std::vector<double> row{3.0, 0.4, -0.25};
+        std::vector<std::int16_t> q15(row.size());
+        quantize_row_preserving_sum<std::int16_t>(row, q15);
+        EXPECT_EQ(q15[0], 32767); // saturated, not wrapped
+        EXPECT_EQ(q15[1], 6554);  // 0.4 * 16384 = 6553.6, its own rounding, untouched
+        EXPECT_EQ(q15[2], -4096);
+        std::vector<std::int32_t> q31(row.size());
+        quantize_row_preserving_sum<std::int32_t>(row, q31);
+        EXPECT_EQ(q31[0], 2147483647);
+        EXPECT_EQ(q31[1], 429496730); // 0.4 * 2^30 = 429496729.6
+        EXPECT_EQ(q31[2], -268435456);
+        // The negative rail too.
+        const std::vector<double> neg{-3.0, -0.4};
+        std::vector<std::int16_t> n15(neg.size());
+        quantize_row_preserving_sum<std::int16_t>(neg, n15);
+        EXPECT_EQ(n15[0], -32768);
+        EXPECT_EQ(n15[1], -6554);
+    }
+
     TEST(Quantize, FloatIsPlainConversion) {
         const std::vector<double> row{0.25, -0.125, 1.0, -0.9999, 0.0};
         std::vector<float>        q(row.size());

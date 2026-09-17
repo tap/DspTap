@@ -12,7 +12,6 @@
 #include <cmath>
 #include <cstdint>
 #include <span>
-#include <type_traits>
 #include <vector>
 
 #include "tap/dsp/sample_traits.h"
@@ -35,18 +34,25 @@ namespace tap::dsp {
     /// llround(exact_sum * k_coeff_scale), so a table built row-by-row holds
     /// DC gain within one coefficient LSB across all phases.
     ///
-    /// For floating-point coefficient types this is a plain conversion (no
-    /// correction runs; k_coeff_scale is 1). Design-time code: allocates a
-    /// scratch vector for integer formats, so keep it off the audio path.
+    /// The algorithm is selected by the trait's k_is_fixed_point property:
+    /// for the floating formats (double, float) this is a plain conversion
+    /// (no correction runs; k_coeff_scale is 1). Each +/-1 correction step is
+    /// saturating: a tap already at the coefficient format's rail is never
+    /// wrapped. Such a tap cannot absorb a step, so the correction stops
+    /// there and the row keeps its saturated sum — a row whose design exceeds
+    /// the format (|c| >= 2.0 in Q1.14 / Q1.30) had no representable DC gain
+    /// to preserve, and every tap of it is still the nearest representable
+    /// value. Design-time code: allocates a scratch vector for integer
+    /// formats, so keep it off the audio path.
     ///
-    /// \pre dst.size() == src.size()
+    /// @pre dst.size() == src.size()
     template <sample_type S>
     inline void quantize_row_preserving_sum(std::span<const double>                     src,
                                             std::span<typename sample_traits<S>::coeff> dst) {
         using tr            = sample_traits<S>;
         using coeff         = typename tr::coeff;
         const std::size_t n = src.size();
-        if constexpr (std::is_floating_point_v<coeff>) {
+        if constexpr (!tr::k_is_fixed_point) {
             for (std::size_t t = 0; t < n; ++t) {
                 dst[t] = tr::make_coeff(src[t]);
             }
@@ -72,9 +78,14 @@ namespace tap::dsp {
                         best = u;
                     }
                 }
-                dst[best] = static_cast<coeff>(dst[best] + (residual > 0 ? 1 : -1));
+                const std::int64_t step    = residual > 0 ? 1 : -1;
+                const coeff        stepped = detail::clamp_sat<coeff>(static_cast<std::int64_t>(dst[best]) + step);
+                if (stepped == dst[best]) {
+                    break; // at the rail: saturate, never wrap, and the residual is unabsorbable
+                }
+                dst[best] = stepped;
                 remainder[best] -= sgn;
-                residual -= residual > 0 ? 1 : -1;
+                residual -= step;
             }
         }
     }

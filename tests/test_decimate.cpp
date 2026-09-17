@@ -2,18 +2,21 @@
 // Copyright 2026 Timothy Place and the DspTap contributors.
 //
 // Locks down the tap::dsp::basic_decimator contract: the pinned tap counts,
-// sample-for-sample agreement of the float golden model with the committed
-// numpy reference for every ratio and profile, chunking invariance, exact
-// output counting, unity DC gain (exact in Q15 through row-sum-preserving
+// sample-for-sample agreement of the float profile with the committed numpy
+// reference for every ratio and profile (and of the double golden model to
+// the reference's own float32 rounding), chunking invariance, exact output
+// counting, unity DC gain (exact in Q15 through row-sum-preserving
 // quantization), the stated passband/stopband numbers measured from the
-// shipped coefficients, the integer group delay, and the Q15 profile
-// tracking float within the format's own floor.
+// shipped coefficients, the integer group delay, and the Q15 / Q31 profiles
+// tracking the double golden model within each format's own floor. The
+// float/double contract tests are typed over both profiles.
 
 #include <algorithm>
 #include <cmath>
 #include <complex>
 #include <cstdint>
 #include <numbers>
+#include <type_traits>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -25,6 +28,11 @@ namespace {
 
     using tap::dsp::basic_decimator;
     using tap::dsp::decimate_profile;
+
+    template <typename S>
+    class decimate_test : public ::testing::Test {};
+    using floating_types = ::testing::Types<float, double>;
+    TYPED_TEST_SUITE(decimate_test, floating_types, );
 
     // Float coefficient storage against float64 reference coefficients: the
     // same -90 dB floor RatioTap pins at 3e-5 on a 0.9 peak.
@@ -66,19 +74,50 @@ namespace {
                                     k_dec_transparent_6.size());
     }
 
-    TEST(Decimate, ChunkingIsBitIdentical) {
-        const auto&               x = frontend_ref::k_dec_input;
-        basic_decimator<float, 3> whole;
-        std::vector<float>        ref(whole.outputs_for(x.size()));
-        whole.process(x.data(), x.size(), ref.data());
+    // The double golden model against the numpy float64 reference, which is
+    // committed rounded to float32: the disagreement is the reference's own
+    // rounding. Measured 2026-09 at 5.75e-8 over every ratio and profile
+    // (half a float ulp at the signal's level); pinned at 2x.
+    TEST(Decimate, DoubleMatchesNumpyReferenceToItsFloatRounding) {
+        using namespace frontend_ref;
+        const auto check = [](auto ratio, const decimate_profile& p, const float* ref, std::size_t n_ref) {
+            constexpr std::size_t      M = decltype(ratio)::value;
+            basic_decimator<double, M> dec(p);
+            const std::vector<double>  x(k_dec_input.begin(), k_dec_input.end());
+            std::vector<double>        y(n_ref);
+            ASSERT_EQ(dec.process(x.data(), x.size(), y.data()), n_ref);
+            double worst = 0.0;
+            for (std::size_t i = 0; i < n_ref; ++i) {
+                worst = std::max(worst, std::abs(y[i] - static_cast<double>(ref[i])));
+            }
+            EXPECT_LT(worst, 1.15e-7) << "ratio " << M << " taps " << dec.taps();
+        };
+        using two   = std::integral_constant<std::size_t, 2>;
+        using three = std::integral_constant<std::size_t, 3>;
+        using six   = std::integral_constant<std::size_t, 6>;
+        check(two{}, decimate_profile::economy(), k_dec_economy_2.data(), k_dec_economy_2.size());
+        check(three{}, decimate_profile::economy(), k_dec_economy_3.data(), k_dec_economy_3.size());
+        check(six{}, decimate_profile::economy(), k_dec_economy_6.data(), k_dec_economy_6.size());
+        check(two{}, decimate_profile::transparent(), k_dec_transparent_2.data(), k_dec_transparent_2.size());
+        check(three{}, decimate_profile::transparent(), k_dec_transparent_3.data(), k_dec_transparent_3.size());
+        check(six{}, decimate_profile::transparent(), k_dec_transparent_6.data(), k_dec_transparent_6.size());
+    }
+
+    TYPED_TEST(decimate_test, ChunkingIsBitIdentical) {
+        using sample                 = TypeParam;
+        const auto&                x = frontend_ref::k_dec_input;
+        const std::vector<sample>  xs(x.begin(), x.end());
+        basic_decimator<sample, 3> whole;
+        std::vector<sample>        ref(whole.outputs_for(xs.size()));
+        whole.process(xs.data(), xs.size(), ref.data());
         for (const std::size_t chunk :
              {std::size_t{1}, std::size_t{2}, std::size_t{7}, std::size_t{255}, std::size_t{1000}}) {
-            basic_decimator<float, 3> dec;
-            std::vector<float>        y;
-            for (std::size_t i = 0; i < x.size(); i += chunk) {
-                const std::size_t  n = std::min(chunk, x.size() - i);
-                std::vector<float> part(dec.outputs_for(n));
-                ASSERT_EQ(dec.process(x.data() + i, n, part.data()), part.size());
+            basic_decimator<sample, 3> dec;
+            std::vector<sample>        y;
+            for (std::size_t i = 0; i < xs.size(); i += chunk) {
+                const std::size_t   n = std::min(chunk, xs.size() - i);
+                std::vector<sample> part(dec.outputs_for(n));
+                ASSERT_EQ(dec.process(xs.data() + i, n, part.data()), part.size());
                 y.insert(y.end(), part.begin(), part.end());
             }
             ASSERT_EQ(y.size(), ref.size()) << "chunk " << chunk;
@@ -103,13 +142,16 @@ namespace {
         EXPECT_EQ(dec.outputs_for(6), 2U);             // x[9] too
     }
 
-    TEST(Decimate, DcGainIsUnity) {
-        basic_decimator<float, 6> dec;
-        std::vector<float>        x(dec.taps() * 2, 0.5f);
-        std::vector<float>        y(dec.outputs_for(x.size()));
+    TYPED_TEST(decimate_test, DcGainIsUnity) {
+        using sample = TypeParam;
+        basic_decimator<sample, 6> dec;
+        std::vector<sample>        x(dec.taps() * 2, sample{0.5});
+        std::vector<sample>        y(dec.outputs_for(x.size()));
         dec.process(x.data(), x.size(), y.data());
-        EXPECT_NEAR(y.back(), 0.5f, 1e-6f);
+        EXPECT_NEAR(y.back(), 0.5, 1e-6);
+    }
 
+    TEST(Decimate, DcGainIsExactInQ15) {
         basic_decimator<std::int16_t, 3> q15;
         std::vector<std::int16_t>        xq(q15.taps() * 2, std::int16_t{16384});
         std::vector<std::int16_t>        yq(q15.outputs_for(xq.size()));
@@ -154,42 +196,60 @@ namespace {
         expect_profile_met<6>(decimate_profile::transparent());
     }
 
-    TEST(Decimate, GroupDelayIsHalfTheTaps) {
-        basic_decimator<float, 3> dec;
+    TYPED_TEST(decimate_test, GroupDelayIsHalfTheTaps) {
+        using sample = TypeParam;
+        basic_decimator<sample, 3> dec;
         EXPECT_EQ(dec.latency_input_samples(), (dec.taps() - 1) / 2);
-        std::vector<float> x(dec.taps() + 3, 0.0f);
-        x[0] = 1.0f;
-        std::vector<float> y(dec.outputs_for(x.size()));
+        std::vector<sample> x(dec.taps() + 3, sample{0});
+        x[0] = sample{1};
+        std::vector<sample> y(dec.outputs_for(x.size()));
         dec.process(x.data(), x.size(), y.data());
         const auto peak = static_cast<std::size_t>(std::max_element(y.begin(), y.end()) - y.begin());
         // y[k] = h[3k]; the centre tap (index 60) lands on output 20 exactly.
         EXPECT_EQ(peak * 3, dec.latency_input_samples());
-        EXPECT_FLOAT_EQ(y[peak], dec.coefficients()[dec.latency_input_samples()]);
+        EXPECT_EQ(y[peak], dec.coefficients()[dec.latency_input_samples()]);
     }
 
-    TEST(Decimate, Q15TracksFloatWithinTheFormatFloor) {
-        // The input is scaled to half full scale: at 0.9 the float output
-        // overshoots 1.0 on this noise and Q15 saturates, which is the format's
-        // contract, not tracking error. Measured 2026-09 at 1.6e-4 (Q1.14
-        // coefficient rounding over 121 taps, plus one output LSB); pinned at 2x.
-        const auto&                      x = frontend_ref::k_dec_input;
-        basic_decimator<float, 3>        ff;
-        basic_decimator<std::int16_t, 3> fq;
-        std::vector<float>               xh(x.size());
-        std::vector<std::int16_t>        xq(x.size());
+    // The fixed-point profiles against the double golden model (the house
+    // rule: cross-precision compares to double, never to a sibling profile).
+    // The input is scaled to half full scale: at 0.9 the output overshoots
+    // 1.0 on this noise and the fixed formats saturate, which is their
+    // contract, not tracking error. Returns the worst deviation in full-scale
+    // units.
+    template <typename S>
+    double worst_deviation_from_double(double full_scale) {
+        const auto&                x = frontend_ref::k_dec_input;
+        basic_decimator<double, 3> fd;
+        basic_decimator<S, 3>      fq;
+        std::vector<double>        xd(x.size());
+        std::vector<S>             xq(x.size());
         for (std::size_t i = 0; i < x.size(); ++i) {
-            xh[i] = 0.5f * x[i];
-            xq[i] = static_cast<std::int16_t>(std::lround(xh[i] * 32768.0f));
+            xd[i] = 0.5 * static_cast<double>(x[i]);
+            xq[i] = static_cast<S>(std::llround(xd[i] * full_scale));
         }
-        std::vector<float>        yf(ff.outputs_for(xh.size()));
-        std::vector<std::int16_t> yq(fq.outputs_for(xq.size()));
-        ff.process(xh.data(), xh.size(), yf.data());
+        std::vector<double> yd(fd.outputs_for(xd.size()));
+        std::vector<S>      yq(fq.outputs_for(xq.size()));
+        fd.process(xd.data(), xd.size(), yd.data());
         fq.process(xq.data(), xq.size(), yq.data());
         double worst = 0.0;
-        for (std::size_t i = 0; i < yf.size(); ++i) {
-            worst = std::max(worst, std::abs(static_cast<double>(yq[i]) / 32768.0 - static_cast<double>(yf[i])));
+        for (std::size_t i = 0; i < yd.size(); ++i) {
+            worst = std::max(worst, std::abs(static_cast<double>(yq[i]) / full_scale - yd[i]));
         }
-        EXPECT_LT(worst, 3.2e-4) << "Q15 vs float, in full-scale units";
+        return worst;
+    }
+
+    TEST(Decimate, Q15TracksDoubleWithinTheFormatFloor) {
+        // Measured 2026-09 at 1.57e-4 (Q1.14 coefficient rounding over 121
+        // taps, plus one output LSB); pinned at 2x. The same number as the
+        // former Q15-vs-float pin: float sits 2.5e-8 from double here.
+        EXPECT_LT(worst_deviation_from_double<std::int16_t>(32768.0), 3.2e-4) << "Q15 vs double, in full-scale units";
+    }
+
+    TEST(Decimate, Q31TracksDoubleWithinTheFormatFloor) {
+        // Measured 2026-09 at 2.45e-9 (Q1.30 coefficient rounding over 121
+        // taps, the 16-bit product pre-shift, one output LSB); pinned at 2x.
+        EXPECT_LT(worst_deviation_from_double<std::int32_t>(2147483648.0), 4.9e-9)
+            << "Q31 vs double, in full-scale units";
     }
 
     TEST(Decimate, Q15SaturatesInsteadOfWrapping) {

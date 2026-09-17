@@ -245,16 +245,30 @@ constexpr (the header's design note does the arithmetic); run it in a
 constructor, off the audio path. Also exports `solve_dense`, the small dense
 solver the compensated design and the analysis instruments share.
 
-### `tap/dsp/sample_traits.h` — sample formats: float, Q15, Q31
+### `tap/dsp/sample_traits.h` — sample formats: double, float, Q15, Q31
 
 The family's sample-format substrate: how each sample type stores
 coefficients, accumulates dot products, and rounds/saturates back to samples.
+`double` is a sample format because it is the golden model of every
+primitive: a traits-based primitive instantiates its reference profile
+through the same substrate as its embedded profiles, and the cross-precision
+pins measure float/Q15/Q31 against it.
 
 | Type | Coefficients | Accumulation | Output |
 |---|---|---|---|
+| `double` | double | double | identity (the golden model) |
 | `float` | float | double | plain cast |
 | `std::int16_t` | Q1.14 | int64, exact | single Q29→Q15 round-half-up, saturating |
 | `std::int32_t` | Q1.30 | int64, products pre-shifted to Q45 | Q45→Q31, saturating |
+
+The Q ladder is spelled as named constants on each fixed-point
+specialization (`k_sample_frac_bits`, `k_coeff_frac_bits`,
+`k_accum_pre_shift`) with the accumulator format and the single 14-bit
+finalize shift derived from them and `static_assert`ed; `k_coeff_scale` is
+`2^k_coeff_frac_bits`, and `k_is_fixed_point` is what selects the
+fixed-point algorithm in `quantize.h`. Every member is `constexpr`, and the
+`sample_type` concept requires a value-initialized accumulator to be the
+additive identity.
 
 **Fixed point is a first-class embedded direction, not a legacy path.** The
 Q15/Q31 profiles exist for targets where double (sometimes any float) is
@@ -273,6 +287,21 @@ This header is the format core only. Engine-specific extensions (e.g.
 SampleRateTap's inter-phase coefficient blending) derive from these
 specializations and refine the `tap::dsp::sample_type` concept.
 
+### `tap/dsp/fft/fft_arith.h` — butterfly arithmetic for the FFT profiles
+
+The sibling trait the fixed-point real FFT is written against (its docstrings
+are that kernel's specification; `tests/test_fft_arith.cpp` pins every
+number). One int32 kernel serves both fixed profiles: `fft_arith<std::int32_t>`
+carries `mul_coeff` (int32 × Q1.30 → int64, `>> 30` with one round-half-up,
+saturating), saturating `add` / `sub`, `shr_round` (round-half-up), and
+`headroom_bits` (the block's shared redundant sign bits, via
+`std::countl_zero`); `fft_arith<std::int16_t>` is the Q15 I/O width —
+`widen` (`<< 14`, two guard bits) and `narrow` (round-half-up, saturating) —
+and names the int32 trait as its `work`. Twiddles are
+`sample_traits<std::int32_t>::coeff` (Q1.30) for both fixed profiles, and 1.0
+is representable. The `float` / `double` specializations are the same names
+over plain arithmetic. Everything is `constexpr` and `noexcept`.
+
 ### `tap/dsp/fir_kernels.h` — dot-product kernels
 
 The FIR hot loops, target-gated the way SampleRateTap's optimization campaign
@@ -290,8 +319,10 @@ targets prefer which layout.
 `quantize_row_preserving_sum`: quantizes one polyphase branch to a fixed-point
 coefficient format while preserving the row's DC sum *exactly*
 (largest-remainder distribution of the rounding residual — "the coefficients
-of every phase must add to one", R. Bristow-Johnson, music-dsp). Plain
-conversion for float. Design-time code.
+of every phase must add to one", R. Bristow-Johnson, music-dsp). Selected by
+the trait's `k_is_fixed_point`: plain conversion for double and float. Each
+correction step saturates, so a tap at the format's rail is never wrapped.
+Design-time code.
 
 ### `tap/dsp/analysis/` — measurement instruments
 
