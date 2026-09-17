@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Timothy Place and the DspTap contributors.
+# Adapted from MuTap's scripts/icount.py (MIT, MuTap contributors).
 """Deterministic instruction-count ratchet (see bench/README.md).
 
 Runs every tap_dsp_icount_* binary in a build directory under QEMU with the
@@ -6,22 +9,24 @@ instruction-counting plugin (tools/qemu_insn_plugin), then compares against
 bench/baselines.json.
 
   icount.py --target {m4-softfp,m4f,m33,m55,m55-ooura} --build-dir DIR
-            --plugin LIB [--update] [--baselines bench/baselines.json]
-            [--tolerance 0.03]
+            --plugin LIB [--update] [--record FILE]
+            [--baselines bench/baselines.json] [--tolerance 0.03]
   icount.py --merge FILE [FILE ...] [--baselines bench/baselines.json]
 
 The gate is two-sided: exit nonzero if any scenario regresses beyond
 tolerance, improves beyond tolerance (the baseline must be re-recorded so
-the gate stays tight), or has no recorded baseline. --update rewrites the
-target's entry to exactly the measured scenarios instead. Seed a new target
-by running once with --update in the target's CI environment (the bench.yml
-job does this automatically for an unseeded target and uploads the result)
-and committing bench/baselines.json; --merge folds several such per-target
-files (each with one target filled in) into one, which is how the seeding
-commit is assembled from the job's artifacts.
+the gate stays tight), has no recorded baseline, or has a recorded baseline
+but no binary (a renamed or removed workload must not linger as a dead gate
+entry). --update rewrites the target's entry to exactly the measured
+scenarios instead. --record FILE always writes {target: measured} as JSON,
+whatever the verdict, so a run that fails on NO BASELINE still hands back
+the numbers to commit (bench.yml uploads it as measured-<key> on every run).
+Seeding runs on pushes to main, never from a pull request (bench.yml); --merge
+folds several per-target files (each with one target filled in) into one,
+which is how the seeding commit is assembled from the job's artifacts.
 
-Adapted from MuTap's scripts/icount.py (MIT, MuTap contributors): the QEMU
-machine per target, the binary prefix and the output markers are DspTap's.
+The QEMU machine per target, the binary prefix and the output markers are
+DspTap's; the gate logic is MuTap's.
 """
 import argparse
 import glob
@@ -99,6 +104,8 @@ def main() -> int:
     ap.add_argument("--baselines", default="bench/baselines.json")
     ap.add_argument("--tolerance", type=float, default=0.03)
     ap.add_argument("--update", action="store_true")
+    ap.add_argument("--record", metavar="FILE",
+                    help="always write {target: measured} here, whatever the verdict")
     ap.add_argument("--merge", nargs="+", metavar="FILE")
     args = ap.parse_args()
 
@@ -146,6 +153,19 @@ def main() -> int:
                 failures.append(scenario)
             print(f"{scenario}: {count} insns vs baseline {recorded} "
                   f"({delta:+.2%}) {verdict}")
+
+    # A recorded scenario with no binary is a dead gate entry (renamed or
+    # removed workload); compare mode fails on it, --update drops it.
+    for scenario in sorted(set(base) - set(measured)):
+        print(f"{scenario}: baseline {base[scenario]} but no binary "
+              "(STALE BASELINE — run icount.py --update and commit)")
+        if not args.update:
+            failures.append(scenario)
+
+    if args.record:
+        pathlib.Path(args.record).write_text(
+            json.dumps({args.target: measured}, indent=2, sort_keys=True) + "\n")
+        print(f"recorded {args.record}")
 
     if args.update:
         # Exactly the measured scenarios: stale keys for renamed/removed

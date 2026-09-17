@@ -7,9 +7,17 @@
  * (bench/README.md). Counting uses the inline-add fast path; the single
  * counter is exact for our single-vCPU deterministic workloads.
  *
- * Build (qemu-plugin.h fetched for the matching QEMU 8.2.x; API v2):
+ * Build (qemu-plugin.h fetched for the matching QEMU 8.2.x, whose header
+ * defines QEMU_PLUGIN_VERSION 1 — the plugin API version is the header's, and
+ * the pinned v8.2.2 header says 1, not 2 as MuTap's copy of this comment had it):
  *   gcc -shared -fPIC $(pkg-config --cflags glib-2.0) \
  *       -I<dir with qemu-plugin.h> insn_count.c -o libinsncount.so
+ *
+ * Licensing: qemu-plugin.h is QEMU's, SPDX GPL-2.0-or-later. It is fetched at
+ * CI time (digest-verified), never vendored into this repo, and this file is
+ * compiled against it only to build a test tool that runs in CI and is not
+ * shipped; nothing in the DspTap tree or in what consumers link is GPL.
+ * This file itself is MIT.
  *
  * Provenance: copied from MuTap's tools/qemu_insn_plugin/insn_count.c (MIT,
  * MuTap contributors) with only the output marker renamed; the same file

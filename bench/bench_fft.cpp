@@ -83,8 +83,9 @@ namespace {
 } // namespace
 
 int main() {
-    std::printf("tap_dsp_bench_fft  engine=%s  min of %zu reps, %zu samples per batch per direction\n",
-                tap::dsp::bench::k_engine_name.data(), k_reps, k_batch_samples);
+    std::printf(
+        "tap_dsp_bench_fft  engine=%s  float backend=%s  min of %zu reps, %zu samples per batch per direction\n",
+        tap::dsp::bench::k_engine_name, tap::dsp::bench::backend_name<float>(), k_reps, k_batch_samples);
     std::printf("%-16s %12s %12s %14s\n", "scenario", "forward ns", "inverse ns", "round-trip ns");
 
     float  sink32 = 0.0f;

@@ -29,9 +29,11 @@ cmake --build build
 same-load comparisons mean anything; record the machine, compiler, load
 average and date with any number that goes into `docs/fft-design.md`.
 
-On the host the `tap_dsp_icount_*` binaries are a smoke test: they must run,
-and two runs of the same binary must print the same checksum. There is no
-instruction count on the host; the count comes from QEMU on the legs.
+On the host the `tap_dsp_icount_*` binaries are a smoke test, registered with
+ctest (`tap_dsp_icount_<scenario>_smoke`, `bench/icount/smoke.cmake`): each
+binary runs twice, both runs must report `ok=1`, and the two `DONE` lines
+must be byte-identical. There is no instruction count on the host; the count
+comes from QEMU on the legs.
 
 ## Scenarios
 
@@ -48,21 +50,40 @@ Stage 3b adds `rfft_q15_512`, `rfft_q31_512` and `rfft_q31_2048` (Part 11).
 
 Each scenario constructs one `tap::dsp::basic_real_fft<Sample>`, then runs a
 forward + inverse loop over a four-block xorshift corpus for 2^20 samples per
-direction (2048 iterations at N = 512, 512 at N = 2048), folding every output
-into a checksum of the scenario's own sample type, printed at the end as its
-bit pattern:
+direction (2048 iterations at N = 512, 512 at N = 2048). Every output word
+of every iteration — the spectrum and the scaled inverse — goes through an
+integer FNV-1a-64 fold over its bit pattern (`bench_common.h`), printed at
+the end:
 
 ```
-TAP_DSP_ICOUNT_DONE ok=1 engine=reference_c scenario=rfft_f32_512 checksum=0x446b9819
+TAP_DSP_ICOUNT_DONE ok=1 engine=reference_c backend=ooura scenario=rfft_f32_512 checksum=0x662dd085b5b88325
 ```
+
+The fold is exact and order-sensitive: two runs of the same binary print the
+same value, and a 1-ulp change in any single output changes it (verified by
+nudging one spectrum bin at one iteration with `nextafterf`: `0x662dd085b5b88325`
+becomes `0x259510dc8721cba8`). A floating running sum cannot promise that — it
+absorbs differences below the accumulator's ulp — which is why the checksum
+is an integer hash: it is the fingerprint Stage 2b compares between the C
+and the port on the QEMU legs, where the host parity TU does not run. `ok`
+is a sanity check that the last iteration round-trips its input within
+1e-3 in the scenario's own precision; `backend=` names what the build routed
+`basic_real_fft<float>` through (`ooura`, `cmsis` on the `m55` key,
+`accelerate` on Apple), independently of the engine value.
 
 Why these numbers: on the host (x86-64, GCC 13 `-O2`, callgrind) the three
-scenarios execute 98 M, 114 M and 102 M instructions, and construction plus
-the one-time Ooura table build plus the print is under 0.2 M — well under the
-1 % the design asks for; the Arm counts are larger but the ratio holds. No
-`<random>` (a toolchain's libstdc++ would move the count), no allocation in
-the loop, and no double anywhere in the float scenarios (the M4 soft-float
-leg would otherwise measure libgcc).
+scenarios execute 109 M, 125 M and 108 M instructions.
+Construction plus the one-time Ooura table build plus the print is under
+0.2 M — well under the 1 % the design asks for. The share of the count that
+is not the transform itself — the class's out-of-place copies, the 2/N
+scaling loop and the fold — is 16.1 % / 14.0 % / 16.6 %
+(`main` inclusive minus `rdft`/`rdft_f` inclusive); it is constant per
+scenario, so the ratchet works, but a 3 % change in the FFT alone reads as
+roughly 3 % × (1 − that share) at the gate, and the share is larger on a
+scalar Cortex-M. The Arm counts are larger than the host's; the ratios
+hold. No `<random>` (a toolchain's libstdc++ would move the count), no
+allocation in the loop, and no double anywhere in the float scenarios (the
+M4 soft-float leg would otherwise measure libgcc).
 
 `TAP_DSP_BENCH_ENGINE` (`bench_common.h`, a CMake cache variable of the same
 name) selects the engine: `reference_c` today — the class as built, which is
@@ -84,31 +105,60 @@ and their ratio. That ratio is the Stage 2b gate.
 | `m55-ooura` | Cortex-M55, `-DTAP_DSP_FFT_CMSIS=OFF` | `mps3-an547` | Ooura — the fallback |
 
 JSON carries no comments, so the provenance of every recorded set lives here,
-in the table below: the commit that recorded it, and the GCC and QEMU
+in the table below: the `main` run that recorded it, and the GCC and QEMU
 versions, because the counts are only comparable within a toolchain/QEMU
 pair. The plugin header is pinned to the QEMU that Ubuntu 24.04 ships
-(8.2.2, plugin API v2) and digest-verified on download, as MuTap does.
+(8.2.2; that header defines `QEMU_PLUGIN_VERSION 1`, plugin API v1) and
+digest-verified on download, as MuTap does.
 
-### Recorded baselines
+### Recorded baselines and updates
 
-| key | recorded at (commit) | arm-none-eabi-gcc | qemu-system-arm | note |
-|---|---|---|---|---|
-| all | — | — | — | **unseeded**: the skeleton is empty by design; numbers are measured on CI, never typed in |
+Every seeding or `--update` commit adds one row per key it touched. The
+shape is fixed so the record stays greppable:
+
+| key | scenario | before | after | delta | reason | main run (URL) | main SHA | arm-none-eabi-gcc | qemu-system-arm |
+|---|---|---|---|---|---|---|---|---|---|
+| all | all | — | — | — | **unseeded**: the skeleton is empty by design; numbers are measured on CI, never typed in | — | — | — | — |
+
+`before` is `—` for a seed. `main SHA` is the commit on `main` whose push
+run measured the numbers: a pull-request head SHA stops resolving after
+this repo's rebase/squash + branch-delete flow, so a seed or update is never
+taken from a PR run.
 
 ### Seeding, and how the job decides what to do
 
-The workflow reads `baselines.json` per key. A key whose dict is **empty** is
-unseeded: its job runs `scripts/icount.py --update`, prints every scenario's
-count, writes it to the job summary and uploads the file as the artifact
-`baselines-<key>`; the `seed-summary` job then merges the per-key artifacts
-into one `baselines-merged` artifact. The seeding commit copies that file to
-`bench/baselines.json`, fills the table above with the run's commit and the
-versions the job printed in its "Toolchain versions" step, and nothing else
-rides in it. From that commit on, the key's job **compares** and a red
-ratchet is a failing check.
+The workflow decides per key from `baselines.json`:
 
-The first run of `bench.yml` after the QEMU legs are green is therefore a
-seeding run for all five keys (wave 2 of Part 12).
+- **compare** — the key has baselines. The normal mode: ±3 %, two-sided,
+  and a recorded scenario with no binary fails too (`STALE BASELINE`).
+- **seed** — the key is empty **and** the event is a push to `main` or a
+  `workflow_dispatch`. The job runs `scripts/icount.py --update`, prints
+  every scenario's count into the step summary and uploads
+  `baselines-<key>`; the `seed-summary` job (which fails if any key failed,
+  and is never a required check) merges the per-key files into one
+  `baselines-merged` artifact.
+- **refuse** — the key is empty on a `pull_request`. The job **fails** with
+  the seeding instructions. Seeding from a PR would be a gate bypass (empty
+  the key, go green), so it is never allowed; likewise a PR whose
+  `baselines.json` empties a key that its base branch had seeded fails in
+  the "Baselines state" step, before anything is counted.
+
+Every run, in every mode, uploads `measured-<key>` — the counts this run
+measured, as JSON — so a scenario added later (Stage 3b's `rfft_q15_512`,
+`rfft_q31_*`) gets its number by "run CI, copy the artifact, commit", never
+by typing one in.
+
+The seeding commit copies `baselines-merged` to `bench/baselines.json`,
+adds the rows above with the `main` run's URL and SHA and the versions the
+job printed in its "Toolchain versions" step, sets the `text_ceiling`
+numbers in `bench.yml` from the same run's size step, and nothing else rides
+in it. From that commit on, the key's job compares and a red ratchet is a
+failing check.
+
+The first push to `main` after the QEMU legs (#17) and this scaffold have
+merged is therefore the seeding run for all five keys (wave 2 of Part 12);
+re-recording later is a `workflow_dispatch` on `main`, or the hand
+procedure below.
 
 Re-recording by hand, in the target's environment (cross toolchain, QEMU and
 the plugin on PATH):
@@ -121,7 +171,7 @@ cmake -S . -B build-m33 -DCMAKE_BUILD_TYPE=Release \
     -DTAP_DSP_BUILD_TESTS=OFF -DTAP_DSP_BUILD_BENCH=ON
 cmake --build build-m33 -j
 python3 scripts/icount.py --target m33 --build-dir build-m33 \
-    --plugin /tmp/libinsncount.so [--update]
+    --plugin /tmp/libinsncount.so [--update] [--record measured-m33.json]
 python3 scripts/icount.py --merge a.json b.json    # fold per-key files into one
 ```
 
@@ -132,18 +182,26 @@ python3 scripts/icount.py --merge a.json b.json    # fold per-key files into one
 - **Two-sided.** A regression beyond tolerance fails; an *improvement* beyond
   tolerance also fails, so a stale, too-high baseline can never let a later
   regression hide in the slack — the winning commit re-records.
-- **The ratchet runs on push and pull request** on every QEMU leg. A red
-  ratchet is a failing check, not a warning.
+- **The ratchet runs on every pull request and on every push to `main`**
+  on every QEMU leg (one run per ref at a time). A red ratchet is a failing
+  check, not a warning. Once seeded, the five `icount <key>` jobs are the
+  required checks; the artifact-merge job never is.
 - **`--update` is a written commit on its own**: the measured before/after per
-  key and the reason go into the table above. An expected regression (a
-  correctness fix that costs instructions) is written down; there is no
-  silent absorb. A key is never emptied to "reset" it — that is an update
-  without its reason.
-- **Size runs in the same job.** Today the job prints `arm-none-eabi-size`
-  for every scenario binary (report only: a whole binary carries newlib and
-  semihosting). The `.text` ceilings of Part 10 item 4 — asserted per key on
-  a size-probe object per profile — become numbers in `bench.yml` once the
-  legs are seeded, and are recorded the same way as the counts.
+  key and the reason go into the table above, in its fixed shape. An expected
+  regression (a correctness fix that costs instructions) is written down;
+  there is no silent absorb. A key is never emptied to "reset" it — the
+  workflow fails a pull request that does.
+- **Size runs in the same job, MinSizeRel.** The job builds
+  `tap_dsp_size_probe_rfft_f32_512` (`bench/size_probe.cpp`: one profile,
+  no stdio) a second time with `-DCMAKE_BUILD_TYPE=MinSizeRel` — the build
+  type the test legs and Part 10 item 4 use, so a ceiling here and a size in
+  `ci.yml` describe the same object — and reads the `.text` row of
+  `arm-none-eabi-size -A` (Berkeley format folds `.rodata` and NOLOAD
+  sections into "text"). Each key carries a `text_ceiling` in `bench.yml`;
+  `0` means not yet recorded and the step only prints. The ceilings are a
+  **promised item for wave 2**: the seeding commit sets them from the same
+  `main` run that seeds the counts, and they are updated the same way as the
+  counts, in the table above.
 - **Wall clock is never a gate.** `bench_fft` is the local tool for the
   desktop and Apple vDSP claims; its numbers go into `docs/fft-design.md`
   with machine and date.
@@ -163,4 +221,12 @@ python3 scripts/icount.py --merge a.json b.json    # fold per-key files into one
 `tools/qemu_insn_plugin/insn_count.c` are adapted from MuTap's (MIT, MuTap
 contributors; the same pattern lives in SampleRateTap and RatioTap). Copied
 rather than shared because they are small; a taphouse-style consolidation is
-the eventual home (Part 11, "Sharing").
+the eventual home (Part 11, "Sharing"). Everything under `bench/` and
+`scripts/` is DspTap-authored MIT.
+
+The plugin is compiled against QEMU's `qemu-plugin.h`, which is
+`SPDX-License-Identifier: GPL-2.0-or-later`. That header is fetched at CI
+time (digest-verified), never vendored into this repo, and used only to
+build a test tool that runs in CI and is not shipped; nothing in the DspTap
+tree or in what consumers link is GPL, so `NOTICE.md` carries no entry for
+it.

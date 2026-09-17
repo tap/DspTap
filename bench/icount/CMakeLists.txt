@@ -36,4 +36,14 @@ foreach(_sc IN LISTS _tap_dsp_icount_scenarios)
         tap_dsp_warnings)
     # The QEMU legs link the semihosting startup through the toolchain file's
     # linker flags exactly as the test binary does; nothing extra here.
+
+    # Host smoke test, the README's rule made executable: the binary runs
+    # twice, both runs report ok=1 and print the same DONE line. There is no
+    # instruction count on the host; that is the QEMU job's.
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Generic")
+        add_test(NAME tap_dsp_icount_${_name}_smoke
+            COMMAND ${CMAKE_COMMAND}
+                -DBINARY=$<TARGET_FILE:tap_dsp_icount_${_name}>
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/smoke.cmake)
+    endif()
 endforeach()
