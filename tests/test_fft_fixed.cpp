@@ -181,6 +181,13 @@ namespace {
         return std::ldexp(1.0, e);
     }
 
+    /// printf argument for a size: newlib's printf on the QEMU legs has no
+    /// %lu (it prints "zu" and desynchronises the varargs), so sizes go
+    /// through %lu as unsigned long everywhere in this file.
+    unsigned long ul(std::size_t v) {
+        return static_cast<unsigned long>(v);
+    }
+
     double db(double power) {
         return 10.0 * std::log10(std::max(power, 1e-300));
     }
@@ -669,9 +676,10 @@ namespace {
                 }
             }
         }
-        std::printf("[ measured ] %s saturation sweep: max |out - G/2^e| = %.3f LSB (pin %.3f) at %s %s n=%zu e=%d "
-                    "index %zu; largest rail shortfall %.3f LSB\n",
-                    cfg::name(), worst.value, pin, worst.what, worst.name, worst.n, worst.e, worst.index, rail.value);
+        std::printf("[ measured ] %s saturation sweep: max |out - G/2^e| = %.3f LSB (pin %.3f) at %s %s n=%lu e=%d "
+                    "index %lu; largest rail shortfall %.3f LSB\n",
+                    cfg::name(), worst.value, pin, worst.what, worst.name, ul(worst.n), worst.e, ul(worst.index),
+                    rail.value);
         EXPECT_GT(pin, 0.0) << "unmeasured pin";
         EXPECT_LE(worst.value, pin) << cfg::name() << " " << worst.what << " " << worst.name << " n=" << worst.n
                                     << " e=" << worst.e << " index " << worst.index;
@@ -732,9 +740,10 @@ namespace {
                 }
             }
         }
-        std::printf("[ measured ] %s round trip: max error %.3f reconstructed LSB (pin %.3f) at %s n=%zu "
-                    "e_fwd=%d e_inv=%d index %zu\n",
-                    cfg::name(), worst.value, pin, worst.what, worst.n, worst.e / 100, worst.e % 100, worst.index);
+        std::printf("[ measured ] %s round trip: max error %.3f reconstructed LSB (pin %.3f) at %s n=%lu "
+                    "e_fwd=%d e_inv=%d index %lu\n",
+                    cfg::name(), worst.value, pin, worst.what, ul(worst.n), worst.e / 100, worst.e % 100,
+                    ul(worst.index));
         EXPECT_GT(pin, 0.0) << "unmeasured pin";
         EXPECT_LE(worst.value, pin) << cfg::name() << " " << worst.what << " n=" << worst.n
                                     << " e_fwd=" << worst.e / 100 << " e_inv=" << worst.e % 100 << " index "
@@ -815,10 +824,10 @@ namespace {
                 }
             }
         }
-        std::printf("[ measured ] %s vs fixed after shift: max %.1f LSB (pin %.1f) at %s %s n=%zu e_fixed=%d e_bfp=%d "
-                    "index %zu\n",
-                    cfg::name(), worst.value, pin, worst.what, worst.name, worst.n, worst.e / 100, worst.e % 100,
-                    worst.index);
+        std::printf("[ measured ] %s vs fixed after shift: max %.1f LSB (pin %.1f) at %s %s n=%lu e_fixed=%d e_bfp=%d "
+                    "index %lu\n",
+                    cfg::name(), worst.value, pin, worst.what, worst.name, ul(worst.n), worst.e / 100, worst.e % 100,
+                    ul(worst.index));
         EXPECT_GT(pin, 0.0) << "unmeasured pin";
         EXPECT_LE(worst.value, pin) << cfg::name() << " " << worst.what << " " << worst.name << " n=" << worst.n
                                     << " e_fixed=" << worst.e / 100 << " e_bfp=" << worst.e % 100 << " index "
@@ -849,8 +858,8 @@ namespace {
         // makes BFP shift like fixed at every stage.
         EXPECT_GT(attained, 0u) << cfg::name() << ": no full-scale pattern out of " << tried
                                 << " reached the fixed exponent";
-        std::printf("[ measured ] %s: %zu of %zu full-scale patterns reach the fixed exponent\n", cfg::name(), attained,
-                    tried);
+        std::printf("[ measured ] %s: %lu of %lu full-scale patterns reach the fixed exponent\n", cfg::name(),
+                    ul(attained), ul(tried));
     }
 
     // ========================================================================
@@ -897,10 +906,11 @@ namespace {
                 }
             }
         }
-        std::printf("[ measured ] %s F(x)+F(-x): max %.2f LSB (pin %.2f) at %s %s n=%zu index %zu; bias %.4f LSB "
-                    "(pin %.4f) at %s %s n=%zu\n",
-                    cfg::name(), worst_max.value, max_pin, worst_max.what, worst_max.name, worst_max.n, worst_max.index,
-                    worst_bias.value, bias_pin, worst_bias.what, worst_bias.name, worst_bias.n);
+        std::printf("[ measured ] %s F(x)+F(-x): max %.2f LSB (pin %.2f) at %s %s n=%lu index %lu; bias %.4f LSB "
+                    "(pin %.4f) at %s %s n=%lu\n",
+                    cfg::name(), worst_max.value, max_pin, worst_max.what, worst_max.name, ul(worst_max.n),
+                    ul(worst_max.index), worst_bias.value, bias_pin, worst_bias.what, worst_bias.name,
+                    ul(worst_bias.n));
         EXPECT_GT(max_pin, 0.0) << "unmeasured pin";
         EXPECT_GT(bias_pin, 0.0) << "unmeasured pin";
         EXPECT_LE(worst_max.value, max_pin) << cfg::name() << " " << worst_max.what << " " << worst_max.name
@@ -945,8 +955,8 @@ namespace {
             }
         }
         std::printf(
-            "[ measured ] Q15 vs Q31 (%s): max %.3f Q15 LSB (pin %.3f) at %s %s n=%zu e15=%d e31=%d index %zu\n", what,
-            worst.value, pin, worst.what, worst.name, worst.n, worst.e / 100, worst.e % 100, worst.index);
+            "[ measured ] Q15 vs Q31 (%s): max %.3f Q15 LSB (pin %.3f) at %s %s n=%lu e15=%d e31=%d index %lu\n", what,
+            worst.value, pin, worst.what, worst.name, ul(worst.n), worst.e / 100, worst.e % 100, ul(worst.index));
         EXPECT_GT(pin, 0.0) << "unmeasured pin";
         EXPECT_LE(worst.value, pin) << what << " " << worst.what << " " << worst.name << " n=" << worst.n
                                     << " e15=" << worst.e / 100 << " e31=" << worst.e % 100 << " index " << worst.index;
@@ -1152,9 +1162,9 @@ namespace {
         noise_row row{material,           n,         level_db,        r.exponent,
                       db(signal),         db(noise), db(model.noise), db(late.noise),
                       noise / model.noise};
-        std::printf("[ floor ] %s %-5s N=%5zu %4.0f dBFS e=%2d  signal %7.2f  floor %7.2f  model %7.2f (late %7.2f) "
+        std::printf("[ floor ] %s %-5s N=%5lu %4.0f dBFS e=%2d  signal %7.2f  floor %7.2f  model %7.2f (late %7.2f) "
                     "dBFS/component  ratio %.3f  snr %6.2f dB\n",
-                    Cfg::name(), material, n, level_db, r.exponent, row.signal_db, row.floor_db, row.model_db,
+                    Cfg::name(), material, ul(n), level_db, r.exponent, row.signal_db, row.floor_db, row.model_db,
                     row.model_late_db, row.ratio, row.signal_db - row.floor_db);
         return row;
     }
@@ -1268,7 +1278,7 @@ namespace {
                 ASSERT_LE(ei, slack) << "wki n=" << n << " k=" << k;
             }
             if (n <= 2048) {
-                std::printf("[ measured ] tables n=%zu: max |w_q - w| = %.6f LSB\n", n, worst);
+                std::printf("[ measured ] tables n=%lu: max |w_q - w| = %.6f LSB\n", ul(n), worst);
             }
         }
     }
@@ -1300,8 +1310,10 @@ namespace {
             const auto post_sum = fnv1a64(post);
             // Printed before any assertion so a -V log carries every host's
             // values whether or not they match.
-            std::printf("[ checksum ] n=%zu twiddles fnv1a64=%016llx post-pass fnv1a64=%016llx\n", p.n,
-                        static_cast<unsigned long long>(tw_sum), static_cast<unsigned long long>(post_sum));
+            // Two 32-bit halves: newlib's printf has no %llx either.
+            std::printf("[ checksum ] n=%lu twiddles fnv1a64=%08lx%08lx post-pass fnv1a64=%08lx%08lx\n", ul(p.n),
+                        static_cast<unsigned long>(tw_sum >> 32), static_cast<unsigned long>(tw_sum & 0xffffffffu),
+                        static_cast<unsigned long>(post_sum >> 32), static_cast<unsigned long>(post_sum & 0xffffffffu));
             // The kernel's own checksum helper is the same fold.
             EXPECT_EQ(tap::dsp::detail::table_checksum(twiddles.data(), twiddles.size()), tw_sum);
             EXPECT_EQ(tap::dsp::detail::table_checksum(post.data(), post.size()), post_sum);

@@ -232,9 +232,10 @@ namespace {
         if constexpr (profile<Sample>::k_fixed_point) {
             const int    e    = profile<Sample>::fft::fixed_scaling_exponent(n);
             const double unit = sample_scale<Sample>::k_lsb * std::ldexp(1.0, 2 * e + 1 - log2_of(n));
-            std::printf("[ measured ] %s %s n=%zu: max error %.4f reconstructed LSB (unit %.3g; pin %.3f)\n",
-                        sizeof(Sample) == 2 ? "Q15" : "Q31", test, n, max_error / unit, unit,
-                        k_round_trip_units<Sample>);
+            // %lu, not %zu: newlib's printf on the QEMU legs has no %zu.
+            std::printf("[ measured ] %s %s n=%lu: max error %.4f reconstructed LSB (unit %.3g; pin %.3f)\n",
+                        sizeof(Sample) == 2 ? "Q15" : "Q31", test, static_cast<unsigned long>(n), max_error / unit,
+                        unit, k_round_trip_units<Sample>);
         }
     }
 
