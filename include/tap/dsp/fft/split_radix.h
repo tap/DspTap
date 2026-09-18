@@ -55,6 +55,13 @@
 //    Sample with an explicit cast exactly where the C's assignment converted
 //    it. Each explicit cast below reproduces an implicit conversion of the C
 //    (int operand to Sample, double result to Sample); none introduces one.
+//    In the float instantiation -Wdouble-promotion fires on exactly these
+//    intended promotions — the statements where a Sample operand meets a
+//    double literal (0.5 * (a[0] - a[1]), 0.5 / wk1r, 0.5 / wk3r, 0.5 * c[0],
+//    0.5 - c[nc - kk]), which is where the C's float build promoted too.
+//    They are the contract, not an accident: no cast is added to silence the
+//    warning (rule 1 keeps the statements textually intact), and no Tap flag
+//    set enables it.
 //
 // 3. TABLES ARE BUILT ONCE, IN THE CONSTRUCTOR, with the first-call protocol
 //    of the C's rdft (ip[0] = 0 requests the build) executed there and
