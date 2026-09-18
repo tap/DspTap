@@ -118,7 +118,45 @@ namespace tap::dsp {
         /// buffer; Q31 transforms in place with no work buffer). The
         /// transforms are noexcept and allocation-free; the object is
         /// copyable; there is no alignment requirement; one transform at a
-        /// time per object.
+        /// time per object (Q15 uses its work buffer; Q31 touches no object
+        /// state, but the contract is stated once for all profiles).
+        ///
+        /// Measured floors (verification against basic_real_fft<double> on
+        /// the same quantized input, output-referred; N = 256 / 512 / 2048,
+        /// input levels 0 / -20 / -40 / -60 dBFS, white noise and an on-bin
+        /// tone; docs/fft-fixed-point.md carries the full table and the
+        /// Welch model beside it):
+        ///   - Q15, fixed: 0.28 - 0.30 LSB rms, max 0.5 LSB, at every N and
+        ///     level: the narrow's own round-half-up. The int32 kernel's
+        ///     noise (0.55 LSB32 predicted) is 2^-14 of a Q15 LSB. Per-bin
+        ///     SNR on full-scale white noise 68.7 / 65.8 / 60.1 dB at
+        ///     N = 256 / 512 / 2048, falling 20 dB per 20 dB of input level:
+        ///     the floor is level-independent, as Welch's model says.
+        ///   - Q31, fixed: 0.65 - 0.83 LSB rms (forward 0.69 - 0.73, inverse
+        ///     0.76 - 0.83), max <= 3 LSB, at every N and level. Welch's
+        ///     variance-only model predicts 0.53 - 0.55 LSB; the remainder is
+        ///     the round-half-up bias of shr_round (+2^-(s+1) LSB per s-bit
+        ///     shift): +0.22 - 0.28 LSB mean over the interior bins from the
+        ///     final one-bit shift, and about 20% more variance than the
+        ///     model from earlier stages' biases arriving with rotated
+        ///     phases. Per-bin SNR on full-scale white noise 151 / 149 / 143 dB
+        ///     at N = 256 / 512 / 2048.
+        ///   - Block floating point: the floor follows the block, not the
+        ///     format. Q15: 84 - 90 dB per-bin SNR on full-scale noise
+        ///     (e = 5 - 7 where fixed takes 8 - 11), 77 - 87 dB at -40 dBFS
+        ///     (e = 0). Q31: 157 - 161 dB at full scale, 135 - 136 dB at
+        ///     -60 dBFS (e = 0: the input's own 2^-31 quantum is the floor).
+        ///   - Honest limit: the round-half-up bias accumulates coherently
+        ///     along the unrotated (DC) path. Under fixed scaling the DC
+        ///     bin's mean error is +1.0 to +2.1 LSB (Q31, N = 256 .. 65536).
+        ///     Under block floating point, where a stage typically shifts one
+        ///     bit against a magnitude gain of two, the DC bias doubles per
+        ///     stage: ~15 LSB at N = 2048 and ~140 LSB at N = 65536 (Q31,
+        ///     full-scale noise; still -143 dBFS and 3% of the block's noise
+        ///     power), with the three lowest and highest bins carrying about
+        ///     half of that. Q15 never sees it (below the narrow's quantum).
+        ///     Convergent rounding would remove it; that is a different
+        ///     trait contract (fft_arith.h), not this kernel's choice.
         template <typename Sample, typename Scaling>
         class fixed_point_rdft {
             static_assert(std::is_same_v<Sample, std::int16_t> || std::is_same_v<Sample, std::int32_t>,

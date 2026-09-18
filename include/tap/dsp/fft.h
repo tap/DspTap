@@ -490,12 +490,28 @@ namespace tap::dsp {
     ///    pre-shift (fixed) or the headroom rule (block floating); the
     ///    worst case is the packed pair at full scale under a 45-degree
     ///    twiddle. `WorstCaseGrowthDoesNotSaturate`.
-    ///  - CMSIS-DSP compatibility (Decision D3): the Q15 fixed forward scale
-    ///    X / N is the one CMSIS documents for arm_rfft_q15; the Q31 fixed
-    ///    forward is one bit below CMSIS's documented X / N because of the
-    ///    pre-shift; the inverse follows Ooura's unnormalized convention over
-    ///    2^e, not CMSIS's; block floating point has no CMSIS analogue. The
-    ///    exponent, not a fixed Q format per N, is the contract here.
+    ///  - Noise floor (output-referred, against the double golden model on
+    ///    the same quantized input; N = 256 / 512 / 2048, 0 to -60 dBFS):
+    ///    Q15 fixed 0.28 - 0.30 LSB rms (the narrow's rounding; per-bin SNR
+    ///    68.7 / 65.8 / 60.1 dB on full-scale white noise); Q31 fixed
+    ///    0.65 - 0.83 LSB rms (151 / 149 / 143 dB), level-independent, i.e.
+    ///    SNR falls 20 dB per 20 dB of level; block floating point keeps
+    ///    84 - 90 dB (Q15) and 157 - 161 dB (Q31) at full scale and does not
+    ///    lose the low-level signal (77 - 87 dB Q15 at -40 dBFS). Welch's
+    ///    variance model predicts 0.55 LSB32 for the kernel; the rest is the
+    ///    round-half-up bias, largest at DC under block floating point
+    ///    (fft/fixed_point.h, "Honest limit"). `NoiseFloorTracksWelch`,
+    ///    `Q15TracksDouble`, `Q31TracksDouble`.
+    ///  - CMSIS-DSP compatibility (Decision D3): CMSIS documents its q15 /
+    ///    q31 real FFTs as "downscaled by 2 for every stage", i.e. a forward
+    ///    output of X / N with log2 N bits to upscale. The Q15 fixed forward
+    ///    here is that same X / N; the Q31 fixed forward is X / 2N, one bit
+    ///    below, because of the pre-shift; the inverse here is Ooura's
+    ///    unnormalized inverse over 2^e, i.e. (1/N) sum X W^-jk divided by 2
+    ///    (Q15) or 4 (Q31), which is not CMSIS's inverse table; block
+    ///    floating point has no CMSIS analogue. The exponent, not a fixed
+    ///    Q format per N, is the contract here; nothing of CMSIS's
+    ///    behaviour was measured or reproduced, only its documentation read.
     ///  - Size 4 <= N <= 65536, a power of two, fixed at construction. Q15
     ///    allocates an int32 work buffer of N at construction (in-place API
     ///    preserved at the caller's int16 buffer); Q31 transforms in place.
