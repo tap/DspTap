@@ -27,8 +27,8 @@ its own license text:
   and without fee; and distribution of the *original* package. Distribution of
   a modified derivative is not expressly granted.
 
-- What DspTap ships today: one source file of the package, `fftsg.c`, plus its
-  `readme.txt`. The vendored `fftsg.c` is textually identical to the
+- What DspTap ships from the package itself: one source file, `fftsg.c`,
+  plus its `readme.txt`. The vendored `fftsg.c` is textually identical to the
   2006-12-28 `fft.tgz` except for a provenance banner Tap added at the top
   (the upstream file carries no notice of its own; the notice lives in
   `readme.txt`) and stripped trailing whitespace. That is a partial copy of
@@ -36,11 +36,16 @@ its own license text:
   the maintainer's reading is that it is within the intent of the
   distribution grant, and the draft email in `docs/fft-design.md` puts the
   question to the author.
-- What DspTap relies on going forward: the planned C++20 port of `rdft`
+- What DspTap relies on going forward: the C++20 port of `rdft`
   (`include/tap/dsp/fft/split_radix.h`, a statement-for-statement
-  transliteration) is a **derivative work, not the ORIGINAL package**, and its
-  redistribution relies on the **modification grant** ("modify this code for
-  any purpose"). Precedent exists but is not relied on: WebRTC/Chromium ship a
+  transliteration). It landed at Stage 2a (tap/DspTap#28) beside the vendored
+  C, bit-identical to it for both precisions under the parity gate
+  (`tests/test_fft_parity_ooura.cpp`), and nothing is routed at it yet:
+  `basic_real_fft` still runs `fftsg.c` until Stage 2b flips the routing, and
+  the C leaves the shipping tree at Stage 2c. The port is a **derivative work,
+  not the ORIGINAL package**, and its redistribution relies on the
+  **modification grant** ("modify this code for any purpose"). Precedent
+  exists but is not relied on: WebRTC/Chromium ship a
   modified `fft4g.c` under `common_audio/third_party/ooura/`, and their
   `LICENSE` quotes a broader notice — "You may use, copy, modify and
   distribute this code for any purpose (include commercial use) and without
@@ -50,7 +55,7 @@ its own license text:
   explicit statement on derivative distribution (draft in
   `docs/fft-design.md`); the decision and any outcome are recorded here at
   Stage 2c.
-- SPDX plan: the port header carries `SPDX-License-Identifier:
+- SPDX: the port header carries `SPDX-License-Identifier:
   LicenseRef-Ooura AND MIT` — Ooura's notice verbatim as the governing terms
   for the derived portion, MIT for the wrapper and DspTap's additions — plus a
   line stating that it is a derivative work with the modification copyright.
