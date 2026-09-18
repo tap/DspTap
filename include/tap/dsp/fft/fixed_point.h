@@ -40,6 +40,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "tap/dsp/fft/fft_arith.h"
@@ -161,20 +162,314 @@ namespace tap::dsp {
             /// In-place forward transform: N samples -> packed spectrum, scaled
             /// by 2^-e. @return e (see the class docstring).
             int forward_inplace(Sample* data) noexcept {
-                // TODO(3b): kernel. Skeleton: data unchanged, fixed exponent.
-                (void)data;
-                return fixed_scaling_exponent(m_n);
+                wide* const a = enter(data);
+                // The fixed policy's cumulative shift is tracked beside the
+                // exponent actually applied; the two coincide under
+                // scaling::fixed and the first bounds the second under
+                // scaling::block_floating (stage_shift).
+                int e   = 0;
+                int cum = arith::k_fixed_scaling_input_pre_shift; // folded into the first stage's shift
+                e       = complex_kernel<false>(a, e, cum);
+                permute(a);
+                cum += 1; // the real post-pass: one bit
+                e += shift_block(a, stage_shift(a, 1, e, cum));
+                real_post_pass<false>(a);
+                return leave(a, data, e, cum);
             }
 
             /// In-place inverse transform: packed spectrum -> N samples, the
             /// unnormalized inverse scaled by 2^-e. @return e.
             int inverse_inplace(Sample* data) noexcept {
-                // TODO(3b): kernel. Skeleton: data unchanged, fixed exponent.
-                (void)data;
-                return fixed_scaling_exponent(m_n);
+                wide* const a   = enter(data);
+                int         e   = 0;
+                int         cum = arith::k_fixed_scaling_input_pre_shift + 1; // pre-shift and the pre-pass bit
+                e += shift_block(a, stage_shift(a, 1, e, cum));
+                real_post_pass<true>(a);
+                e = complex_kernel<true>(a, e, cum);
+                permute(a);
+                return leave(a, data, e, cum);
             }
 
           private:
+            static constexpr bool k_widens = !std::is_same_v<Sample, wide>; ///< Q15: I/O width != kernel width
+
+            /// The kernel's view of the caller's buffer: the widened work
+            /// buffer for Q15, the buffer itself for Q31.
+            wide* enter(Sample* data) noexcept {
+                if constexpr (k_widens) {
+                    for (std::size_t i = 0; i < m_n; ++i) {
+                        m_work[i] = arith::widen(data[i]);
+                    }
+                    return m_work.data();
+                }
+                else {
+                    return data;
+                }
+            }
+
+            /// Hands the block back to the caller. Q15 narrows Q2.29 -> Q0.15
+            /// (round-half-up, saturating); under block floating point the
+            /// block is first shifted so that it fits below full scale, one
+            /// more stage of growth 1 whose shift is 0 under scaling::fixed
+            /// (the fixed schedule already put the result within +-1.0).
+            int leave(wide* a, Sample* data, int e, int cum) noexcept {
+                if constexpr (k_widens) {
+                    e += shift_block(a, stage_shift(a, 1, e, cum));
+                    for (std::size_t i = 0; i < m_n; ++i) {
+                        data[i] = arith::narrow(a[i]);
+                    }
+                }
+                else {
+                    (void)a;
+                    (void)data;
+                    (void)cum;
+                }
+                return e;
+            }
+
+            /// The shift applied before a stage whose outputs can grow by
+            /// `growth` bits, given the exponent applied so far and the fixed
+            /// policy's cumulative shift through this stage.
+            ///   scaling::fixed:          cum - e, i.e. exactly the stage's growth
+            ///                            (plus the input pre-shift on the first).
+            ///   scaling::block_floating: the headroom scan's demand,
+            ///                            growth + 1 - headroom (one bit is never
+            ///                            consumed: fft_arith.h), clamped to
+            ///                            [0, cum - e]. The upper clamp is what
+            ///                            makes e <= fixed_scaling_exponent(N)
+            ///                            a contract; it binds only when the
+            ///                            block is at full scale, where the
+            ///                            fixed schedule's saturation-freedom
+            ///                            proof applies to the same data.
+            int stage_shift(const wide* a, int growth, int e, int cum) const noexcept {
+                const int cap = cum - e;
+                if constexpr (k_block_floating) {
+                    const int headroom = work::headroom_bits(a, m_n);
+                    return std::clamp(growth + 1 - headroom, 0, cap);
+                }
+                else {
+                    (void)a;
+                    (void)growth;
+                    return cap;
+                }
+            }
+
+            /// shr_round every value of the block by `bits`; returns bits.
+            int shift_block(wide* a, int bits) const noexcept {
+                if (bits > 0) {
+                    for (std::size_t i = 0; i < m_n; ++i) {
+                        a[i] = work::shr_round(a[i], bits);
+                    }
+                }
+                return bits;
+            }
+
+            /// (xr + i xi) * (wr + i wi), or by the conjugate twiddle when
+            /// Inverse: two mul_coeff roundings per output component, exactly
+            /// the form fft_arith.h specifies (no fused variant).
+            template <bool Inverse>
+            static void rotate(wide& xr, wide& xi, coeff wr, coeff wi) noexcept {
+                const wide rr = work::mul_coeff(xr, wr);
+                const wide ii = work::mul_coeff(xi, wi);
+                const wide ri = work::mul_coeff(xr, wi);
+                const wide ir = work::mul_coeff(xi, wr);
+                if constexpr (Inverse) {
+                    xr = work::add(rr, ii);
+                    xi = work::sub(ir, ri);
+                }
+                else {
+                    xr = work::sub(rr, ii);
+                    xi = work::add(ri, ir);
+                }
+            }
+
+            /// The radix-4 decimation-in-frequency kernel of length M = N/2 on
+            /// the interleaved block, radix-2 final stage when log2 M is odd,
+            /// output in bit-reversed order (permute() follows). Each stage
+            /// shifts its inputs by stage_shift() before the butterfly (2 bits
+            /// of growth per radix-4 stage, 1 per radix-2). Returns e.
+            template <bool Inverse>
+            int complex_kernel(wide* a, int e, int& cum) noexcept {
+                const std::size_t m = m_n / 2;
+                std::size_t       span;
+                for (span = m; span >= 4; span /= 4) {
+                    cum += 2;
+                    const int s = stage_shift(a, 2, e, cum);
+                    e += s;
+                    radix4_stage<Inverse>(a, span, m / span, s);
+                }
+                if (span == 2) {
+                    cum += 1;
+                    const int s = stage_shift(a, 1, e, cum);
+                    e += s;
+                    radix2_stage(a, s);
+                }
+                return e;
+            }
+
+            /// One radix-4 DIF stage over sub-transforms of `span` complex
+            /// values. For each butterfly (inputs at q, q + L/4, q + L/2,
+            /// q + 3L/4, each shr_round'ed by `shift` first), with
+            /// t0 = a0 + a2, t1 = a0 - a2, t2 = a1 + a3, t3 = a1 - a3:
+            ///   y0 = t0 + t2               -> q
+            ///   y1 = (t1 + i t3) W^q        -> q + L/2   (W_4 = +i forward, -i inverse)
+            ///   y2 = (t0 - t2) W^2q         -> q + L/4
+            ///   y3 = (t1 - i t3) W^3q       -> q + 3L/4
+            /// y1 and y2 swap places relative to the textbook radix-4 so the
+            /// final order is a plain bit reversal (radix-2^2 placement),
+            /// W = exp(+2*pi*i/L) forward and its conjugate inverse. q = 0
+            /// skips the rotation: mul_coeff by k_coeff_one is the identity,
+            /// so the skip is bit-identical. `stride` is M/L, the table step.
+            template <bool Inverse>
+            void radix4_stage(wide* a, std::size_t span, std::size_t stride, int shift) const noexcept {
+                const std::size_t quarter = span / 4;
+                const coeff*      w       = m_twiddles.data();
+                for (std::size_t block = 0; block < m_n / 2; block += span) {
+                    for (std::size_t q = 0; q < quarter; ++q) {
+                        wide* const p0 = a + 2 * (block + q);
+                        wide* const p1 = p0 + 2 * quarter;
+                        wide* const p2 = p1 + 2 * quarter;
+                        wide* const p3 = p2 + 2 * quarter;
+
+                        const wide a0r = work::shr_round(p0[0], shift);
+                        const wide a0i = work::shr_round(p0[1], shift);
+                        const wide a1r = work::shr_round(p1[0], shift);
+                        const wide a1i = work::shr_round(p1[1], shift);
+                        const wide a2r = work::shr_round(p2[0], shift);
+                        const wide a2i = work::shr_round(p2[1], shift);
+                        const wide a3r = work::shr_round(p3[0], shift);
+                        const wide a3i = work::shr_round(p3[1], shift);
+
+                        const wide t0r = work::add(a0r, a2r);
+                        const wide t0i = work::add(a0i, a2i);
+                        const wide t1r = work::sub(a0r, a2r);
+                        const wide t1i = work::sub(a0i, a2i);
+                        const wide t2r = work::add(a1r, a3r);
+                        const wide t2i = work::add(a1i, a3i);
+                        const wide t3r = work::sub(a1r, a3r);
+                        const wide t3i = work::sub(a1i, a3i);
+
+                        // y1 = t1 + i t3 (forward) / t1 - i t3 (inverse); y3 the other.
+                        wide y1r;
+                        wide y1i;
+                        wide y3r;
+                        wide y3i;
+                        if constexpr (Inverse) {
+                            y1r = work::add(t1r, t3i);
+                            y1i = work::sub(t1i, t3r);
+                            y3r = work::sub(t1r, t3i);
+                            y3i = work::add(t1i, t3r);
+                        }
+                        else {
+                            y1r = work::sub(t1r, t3i);
+                            y1i = work::add(t1i, t3r);
+                            y3r = work::add(t1r, t3i);
+                            y3i = work::sub(t1i, t3r);
+                        }
+                        wide y2r = work::sub(t0r, t2r);
+                        wide y2i = work::sub(t0i, t2i);
+
+                        if (q != 0) {
+                            const std::size_t k1 = 2 * (q * stride);
+                            const std::size_t k2 = 2 * k1;
+                            const std::size_t k3 = 3 * k1;
+                            rotate<Inverse>(y1r, y1i, w[k1], w[k1 + 1]);
+                            rotate<Inverse>(y2r, y2i, w[k2], w[k2 + 1]);
+                            rotate<Inverse>(y3r, y3i, w[k3], w[k3 + 1]);
+                        }
+
+                        p0[0] = work::add(t0r, t2r);
+                        p0[1] = work::add(t0i, t2i);
+                        p2[0] = y1r; // X[4m+1] sequence at q + L/2
+                        p2[1] = y1i;
+                        p1[0] = y2r; // X[4m+2] sequence at q + L/4
+                        p1[1] = y2i;
+                        p3[0] = y3r;
+                        p3[1] = y3i;
+                    }
+                }
+            }
+
+            /// The radix-2 final stage (span 2, twiddle exactly 1): y0 = a0 + a1
+            /// at q, y1 = a0 - a1 at q + 1, inputs shr_round'ed by `shift`.
+            /// Direction-free: with W_2 = -1 there is nothing to conjugate.
+            void radix2_stage(wide* a, int shift) const noexcept {
+                for (std::size_t i = 0; i < m_n; i += 4) {
+                    const wide a0r = work::shr_round(a[i], shift);
+                    const wide a0i = work::shr_round(a[i + 1], shift);
+                    const wide a1r = work::shr_round(a[i + 2], shift);
+                    const wide a1i = work::shr_round(a[i + 3], shift);
+                    a[i]           = work::add(a0r, a1r);
+                    a[i + 1]       = work::add(a0i, a1i);
+                    a[i + 2]       = work::sub(a0r, a1r);
+                    a[i + 3]       = work::sub(a0i, a1i);
+                }
+            }
+
+            /// Bit-reversal permutation of the M complex values (no arithmetic).
+            void permute(wide* a) const noexcept {
+                const std::size_t m = m_n / 2;
+                for (std::size_t i = 0; i < m; ++i) {
+                    const std::size_t j = m_bitrev[i];
+                    if (i < j) {
+                        std::swap(a[2 * i], a[2 * j]);
+                        std::swap(a[2 * i + 1], a[2 * j + 1]);
+                    }
+                }
+            }
+
+            /// Ooura's real post-pass and DC/Nyquist glue in the trait's
+            /// arithmetic (rdft / rftfsub forward, rdft isgn < 0 / rftbsub
+            /// inverse; third_party/ooura/fftsg.c). The block has already
+            /// been shifted by this stage's shift. For each bin k in
+            /// [1, N/4) paired with N/2 - k (a[j..j+1] and a[l..l+1],
+            /// j = 2k, l = N - j), with (wkr, wki) from m_post:
+            ///   xr = a[j] - a[l];  xi = a[j+1] + a[l+1]
+            ///   forward: yr = wkr xr - wki xi;  yi = wkr xi + wki xr
+            ///   inverse: yr = wkr xr + wki xi;  yi = wkr xi - wki xr
+            ///   a[j] -= yr;  a[j+1] -= yi;  a[l] += yr;  a[l+1] -= yi
+            /// Bin N/4 (a[N/2], a[N/2+1]) is its own mirror and is untouched.
+            /// Glue: forward  a[0], a[1] = a[0] + a[1], a[0] - a[1]
+            ///       inverse  a[0], a[1] = (a[0] + a[1]) / 2, (a[0] - a[1]) / 2
+            /// (Ooura's a[1] = 0.5 (a[0] - a[1]); a[0] -= a[1], written with
+            /// one shr_round on each output instead of the second subtraction).
+            template <bool Inverse>
+            void real_post_pass(wide* a) const noexcept {
+                const std::size_t m = m_n / 2;
+                const coeff*      c = m_post.data();
+                for (std::size_t j = 2; j < m; j += 2) {
+                    const std::size_t l   = m_n - j;
+                    const coeff       wkr = c[j];
+                    const coeff       wki = c[j + 1];
+                    const wide        xr  = work::sub(a[j], a[l]);
+                    const wide        xi  = work::add(a[j + 1], a[l + 1]);
+                    wide              yr;
+                    wide              yi;
+                    if constexpr (Inverse) {
+                        yr = work::add(work::mul_coeff(xr, wkr), work::mul_coeff(xi, wki));
+                        yi = work::sub(work::mul_coeff(xi, wkr), work::mul_coeff(xr, wki));
+                    }
+                    else {
+                        yr = work::sub(work::mul_coeff(xr, wkr), work::mul_coeff(xi, wki));
+                        yi = work::add(work::mul_coeff(xi, wkr), work::mul_coeff(xr, wki));
+                    }
+                    a[j]     = work::sub(a[j], yr);
+                    a[j + 1] = work::sub(a[j + 1], yi);
+                    a[l]     = work::add(a[l], yr);
+                    a[l + 1] = work::sub(a[l + 1], yi);
+                }
+                const wide a0 = a[0];
+                const wide a1 = a[1];
+                if constexpr (Inverse) {
+                    a[0] = work::shr_round(work::add(a0, a1), 1);
+                    a[1] = work::shr_round(work::sub(a0, a1), 1);
+                }
+                else {
+                    a[0] = work::add(a0, a1);
+                    a[1] = work::sub(a0, a1);
+                }
+            }
+
             static constexpr int log2_of(std::size_t n) noexcept { return std::bit_width(n) - 1; }
 
             std::size_t                m_n;
