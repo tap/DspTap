@@ -1124,12 +1124,14 @@ namespace {
     }
 
     // ========================================================================
-    // The twiddle table (fft/tables.h).
+    // The tables (fft/tables.h).
     // ========================================================================
 
-    /// FNV-1a 64 over the table as little-endian int32 bytes: the fold is
-    /// over bit patterns, host-endianness independent, and one differing
-    /// last bit anywhere changes it (Part 13: an integer fold, never a float).
+    /// FNV-1a 64 over a table as little-endian int32 bytes, written here
+    /// independently of detail::table_checksum so that helper is itself
+    /// pinned: the fold is over bit patterns, host-endianness independent,
+    /// and one differing last bit anywhere changes it (Part 13: an integer
+    /// fold, never a float).
     std::uint64_t fnv1a64(const std::vector<std::int32_t>& table) {
         std::uint64_t h = 0xcbf29ce484222325ull;
         for (const std::int32_t v : table) {
@@ -1142,47 +1144,61 @@ namespace {
         return h;
     }
 
-    /// The kernel's Q1.30 table for a transform of size n, as tables.h lays
-    /// it out: entry 2k is cos(2 pi k / n), entry 2k + 1 is sin(2 pi k / n).
-    std::vector<std::int32_t> twiddle_table(std::size_t n) {
-        return tap::dsp::detail::make_twiddle_table_q30(n);
-    }
-
-    // |w_q - w| <= 0.5 LSB of Q1.30 on every host: the table is cos/sin from
-    // libm rounded once (make_coeff, half away from zero), never a recurrence.
-    // The reference is libm too, evaluated on the exact turn fraction; two
-    // double evaluations of the same angle differ by ~1e-16, far inside the
-    // 2^-20 LSB slack, so a last-bit libm difference passes here (the
-    // checksum below is where it is detected) while a recurrence-drifted or
-    // Q1.14-derived table fails.
+    // |w_q - w| <= 0.5 LSB of Q1.30 on every host, for the kernel twiddles
+    // (W_M^k, M = N/2, interleaved cos/sin) and the real post-pass pairs
+    // (0.5 - 0.5 sin, 0.5 cos over N): each is cos/sin from libm rounded
+    // once by make_coeff (half away from zero), never a recurrence. The
+    // reference is libm too, on the exact turn fraction; two double
+    // evaluations of the same angle differ by ~1e-16, far inside the 2^-20
+    // LSB slack, so a last-bit libm difference passes here (the checksum
+    // below is where it is detected) while a recurrence-drifted or
+    // Q1.14-derived table fails. The exact entries (1, 0, i) and the
+    // k <-> M-k symmetry are checked bit-exactly.
     TEST(fft_fixed_tables, TwiddleTableIsWithinHalfLsb) {
-        constexpr double one = 0x1p30;
+        constexpr double one   = 0x1p30;
+        constexpr double slack = 0.5 + 0x1p-20;
         for (std::size_t n = 4; n <= k_max_n; n *= 2) {
-            const auto table = twiddle_table(n);
-            ASSERT_EQ(table.size(), 2 * n) << "n=" << n;
+            const std::size_t m     = n / 2;
+            const auto        table = tap::dsp::detail::make_twiddle_table(m);
+            ASSERT_EQ(table.size(), 2 * m) << "n=" << n;
             double worst = 0.0;
-            for (std::size_t k = 0; k < n; ++k) {
-                const double turns = static_cast<double>(k) / static_cast<double>(n); // exact
+            for (std::size_t k = 0; k < m; ++k) {
+                const double turns = static_cast<double>(k) / static_cast<double>(m); // exact
                 const double c     = std::cos(2.0 * std::numbers::pi * turns) * one;
                 const double s     = std::sin(2.0 * std::numbers::pi * turns) * one;
                 const double ec    = std::fabs(static_cast<double>(table[2 * k]) - c);
                 const double es    = std::fabs(static_cast<double>(table[2 * k + 1]) - s);
                 worst              = std::max({worst, ec, es});
-                ASSERT_LE(ec, 0.5 + 0x1p-20) << "cos n=" << n << " k=" << k;
-                ASSERT_LE(es, 0.5 + 0x1p-20) << "sin n=" << n << " k=" << k;
+                ASSERT_LE(ec, slack) << "cos m=" << m << " k=" << k;
+                ASSERT_LE(es, slack) << "sin m=" << m << " k=" << k;
             }
-            // 1.0 and 0 are exact; the table is exactly symmetric where the
-            // angles are (k and n - k: same cos, opposite sin; n/4: (0, 1)).
-            EXPECT_EQ(table[0], std::int32_t{1} << 30);
-            EXPECT_EQ(table[1], 0);
-            EXPECT_EQ(table[2 * (n / 4)], 0);
-            EXPECT_EQ(table[2 * (n / 4) + 1], std::int32_t{1} << 30);
-            for (std::size_t k = 1; k < n / 2; ++k) {
-                ASSERT_EQ(table[2 * k], table[2 * (n - k)]) << "cos symmetry n=" << n << " k=" << k;
-                ASSERT_EQ(table[2 * k + 1], -table[2 * (n - k) + 1]) << "sin symmetry n=" << n << " k=" << k;
+            EXPECT_EQ(table[0], std::int32_t{1} << 30) << "m=" << m;
+            EXPECT_EQ(table[1], 0) << "m=" << m;
+            if (m >= 4) {
+                EXPECT_EQ(table[2 * (m / 4)], 0) << "m=" << m;
+                EXPECT_EQ(table[2 * (m / 4) + 1], std::int32_t{1} << 30) << "m=" << m;
+            }
+            for (std::size_t k = 1; k < m / 2; ++k) {
+                ASSERT_EQ(table[2 * k], table[2 * (m - k)]) << "cos symmetry m=" << m << " k=" << k;
+                ASSERT_EQ(table[2 * k + 1], -table[2 * (m - k) + 1]) << "sin symmetry m=" << m << " k=" << k;
+            }
+
+            const auto post = tap::dsp::detail::make_real_post_pass_table(n);
+            ASSERT_EQ(post.size(), 2 * (n / 4)) << "n=" << n;
+            EXPECT_EQ(post[0], std::int32_t{1} << 29) << "n=" << n; // 0.5 - 0.5 sin 0
+            EXPECT_EQ(post[1], std::int32_t{1} << 29) << "n=" << n; // 0.5 cos 0
+            for (std::size_t k = 0; k < n / 4; ++k) {
+                const double turns = static_cast<double>(k) / static_cast<double>(n);
+                const double wkr   = (0.5 - 0.5 * std::sin(2.0 * std::numbers::pi * turns)) * one;
+                const double wki   = 0.5 * std::cos(2.0 * std::numbers::pi * turns) * one;
+                const double er    = std::fabs(static_cast<double>(post[2 * k]) - wkr);
+                const double ei    = std::fabs(static_cast<double>(post[2 * k + 1]) - wki);
+                worst              = std::max({worst, er, ei});
+                ASSERT_LE(er, slack) << "wkr n=" << n << " k=" << k;
+                ASSERT_LE(ei, slack) << "wki n=" << n << " k=" << k;
             }
             if (n <= 2048) {
-                std::printf("[ measured ] twiddle table n=%zu: max |w_q - w| = %.6f LSB\n", n, worst);
+                std::printf("[ measured ] tables n=%zu: max |w_q - w| = %.6f LSB\n", n, worst);
             }
         }
     }
@@ -1192,20 +1208,33 @@ namespace {
     // and then fixed-point outputs differ between hosts by design. The
     // checksum makes that visible instead of absorbed: a disagreement between
     // the CI hosts is a finding to record (which host, which N), not a skip.
+    // Both tables a transform of N builds are pinned, for the three
+    // certified geometries.
     TEST(fft_fixed_tables, TwiddleTableChecksumIsPinned) {
         struct pinned {
             std::size_t   n;
-            std::uint64_t fnv1a64;
+            std::uint64_t twiddles;  ///< make_twiddle_table(n / 2)
+            std::uint64_t post_pass; ///< make_real_post_pass_table(n)
         };
         // Not yet measured: filled from the real kernel branch; the host that
         // produced each value is recorded here.
-        constexpr std::array<pinned, 3> expected{{{256, 0}, {512, 0}, {2048, 0}}};
+        constexpr std::array<pinned, 3> expected{{{256, 0, 0}, {512, 0, 0}, {2048, 0, 0}}};
         for (const auto& p : expected) {
-            const auto got = fnv1a64(twiddle_table(p.n));
-            std::printf("[ checksum ] twiddle table n=%zu fnv1a64=%016llx\n", p.n,
-                        static_cast<unsigned long long>(got));
-            ASSERT_NE(p.fnv1a64, 0u) << "unmeasured checksum n=" << p.n;
-            EXPECT_EQ(got, p.fnv1a64) << "n=" << p.n << ": this host's libm produced a different Q1.30 table";
+            const auto twiddles = tap::dsp::detail::make_twiddle_table(p.n / 2);
+            const auto post     = tap::dsp::detail::make_real_post_pass_table(p.n);
+            const auto tw_sum   = fnv1a64(twiddles);
+            const auto post_sum = fnv1a64(post);
+            // Printed before any assertion so a -V log carries every host's
+            // values whether or not they match.
+            std::printf("[ checksum ] n=%zu twiddles fnv1a64=%016llx post-pass fnv1a64=%016llx\n", p.n,
+                        static_cast<unsigned long long>(tw_sum), static_cast<unsigned long long>(post_sum));
+            // The kernel's own checksum helper is the same fold.
+            EXPECT_EQ(tap::dsp::detail::table_checksum(twiddles.data(), twiddles.size()), tw_sum);
+            EXPECT_EQ(tap::dsp::detail::table_checksum(post.data(), post.size()), post_sum);
+            EXPECT_NE(p.twiddles, 0u) << "unmeasured checksum n=" << p.n;
+            EXPECT_EQ(tw_sum, p.twiddles) << "n=" << p.n << ": this host's libm produced a different twiddle table";
+            EXPECT_EQ(post_sum, p.post_pass)
+                << "n=" << p.n << ": this host's libm produced a different post-pass table";
         }
     }
 

@@ -4,19 +4,33 @@
 // Locks down the tap::dsp::basic_real_fft contract: round-trip identity, the
 // packed-spectrum layout (DC / Nyquist in slots 0 and 1), the documented
 // W = exp(+2*pi*i/N) sign convention, Parseval energy conservation, and
-// float/double cross-precision agreement. FDAF correctness later depends on
-// every one of these staying exactly as documented in fft.h.
+// cross-precision agreement against the double golden model. FDAF
+// correctness later depends on every one of these staying exactly as
+// documented in fft.h.
+//
+// The typed suite runs on all four profiles (Part 9 of
+// docs/audit-fft-and-code-smells.md): float and double, and the Q15 / Q31
+// fixed-point profiles (Stage 3b) through the per-profile trait `profile`
+// below, which supplies the input conversion, the forward scale read from
+// the returned exponent, and the tolerance. The float and double checks are
+// numerically what they were before the widening — same signals, same
+// tolerances, same comparisons; the trait is the identity for them.
 
 #include <cmath>
+#include <cstdint>
 #include <numbers>
 #include <random>
+#include <type_traits>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "support/signals.h"
 #include "tap/dsp/fft.h"
 
 namespace {
+
+    using tap::dsp::test::sample_scale;
 
     template <typename Sample>
     std::vector<Sample> random_signal(size_t n, unsigned seed) {
@@ -24,23 +38,149 @@ namespace {
         std::uniform_real_distribution<double> dist(-1.0, 1.0);
         std::vector<Sample>                    x(n);
         for (auto& v : x) {
-            v = static_cast<Sample>(dist(gen));
+            v = sample_scale<Sample>::from_double(dist(gen));
         }
         return x;
     }
 
+    // Absolute tolerance in the sample's own units (fractions of full scale
+    // for the fixed profiles). Float and double: the golden battery's
+    // numbers, unchanged. Q15 / Q31: measured against the closed forms below
+    // and pinned at 2x; see profile<> for the exponent handling.
+    // MEASURED: not yet (the kernel branch has not landed); 0.0 fails on purpose.
     template <typename Sample>
     constexpr double k_tolerance = 0.0;
     template <>
     constexpr double k_tolerance<double> = 1e-12;
     template <>
     constexpr double k_tolerance<float> = 2e-5;
+    template <>
+    constexpr double k_tolerance<std::int16_t> = 0.0;
+    template <>
+    constexpr double k_tolerance<std::int32_t> = 0.0;
+
+    // ------------------------------------------------------------------------
+    // Per-profile trait. A forward transform's result is read as
+    // to_double(data[i]) * 2^e, with e the exponent the fixed-point profiles
+    // return (0 for float and double, whose transforms return void); the
+    // inverse used here is the UNNORMALISED one in every profile, so a round
+    // trip is x == back * 2^(e_fwd + e_inv + 1 - log2 n) in all four (for the
+    // floating profiles that is the 2/n their inverse() applies).
+    // ------------------------------------------------------------------------
+    template <typename Sample>
+    struct profile {
+        using fft = tap::dsp::basic_real_fft<Sample>;
+
+        static constexpr bool k_fixed_point = std::is_integral_v<Sample>;
+
+        static double to_double(Sample v) { return sample_scale<Sample>::to_double(v); }
+        static Sample from_double(double v) { return sample_scale<Sample>::from_double(v); }
+
+        static int forward(fft& f, Sample* data) {
+            if constexpr (k_fixed_point) {
+                return f.forward_inplace(data);
+            }
+            else {
+                f.forward_inplace(data);
+                return 0;
+            }
+        }
+        static int inverse_unnormalised(fft& f, Sample* data) {
+            if constexpr (k_fixed_point) {
+                return f.inverse_inplace(data);
+            }
+            else {
+                f.inverse_inplace(data);
+                return 0;
+            }
+        }
+        /// Tolerance on a value the golden battery compared at k_tolerance * n:
+        /// a spectrum value of magnitude ~n in the floating profiles, which the
+        /// fixed profiles hold scaled by 2^-e, so their tolerance does not grow.
+        static double tolerance_at_n(size_t n) {
+            if constexpr (k_fixed_point) {
+                return k_tolerance<Sample>;
+            }
+            else {
+                return k_tolerance<Sample> * static_cast<double>(n);
+            }
+        }
+    };
 
     template <typename Sample>
     class real_fft_test : public ::testing::Test {};
 
-    using sample_types = ::testing::Types<float, double>;
+    using sample_types = ::testing::Types<float, double, std::int16_t, std::int32_t>;
     TYPED_TEST_SUITE(real_fft_test, sample_types);
+
+    constexpr int log2_of(size_t n) {
+        int l = 0;
+        while ((size_t{1} << l) < n) {
+            ++l;
+        }
+        return l;
+    }
+
+    /// forward() then the unnormalised inverse, reconstructed to the input's
+    /// scale: back[i] * 2^(e_fwd + e_inv + 1 - log2 n), as doubles.
+    template <typename Sample>
+    std::vector<double> round_trip(size_t n, const std::vector<Sample>& x, bool in_place_aliased) {
+        using p = profile<Sample>;
+        typename p::fft     fft(n);
+        std::vector<Sample> buf   = x;
+        int                 e_fwd = 0;
+        int                 e_inv = 0;
+        if (in_place_aliased) {
+            // forward()/inverse() explicitly permit output aliasing input.
+            if constexpr (p::k_fixed_point) {
+                e_fwd = fft.forward(buf.data(), buf.data());
+                e_inv = fft.inverse(buf.data(), buf.data());
+            }
+            else {
+                fft.forward(buf.data(), buf.data());
+                fft.inverse(buf.data(), buf.data()); // the 2/n-normalised inverse, as before
+            }
+        }
+        else {
+            std::vector<Sample> spectrum(n);
+            if constexpr (p::k_fixed_point) {
+                e_fwd = fft.forward(x.data(), spectrum.data());
+                e_inv = fft.inverse(spectrum.data(), buf.data());
+            }
+            else {
+                fft.forward(x.data(), spectrum.data());
+                std::vector<Sample> back(n);
+                fft.inverse(spectrum.data(), back.data()); // the 2/n-normalised inverse, as before
+                buf = back;
+            }
+        }
+        std::vector<double> out(n);
+        const double        scale = p::k_fixed_point ? std::ldexp(1.0, e_fwd + e_inv + 1 - log2_of(n)) : 1.0;
+        for (size_t i = 0; i < n; ++i) {
+            out[i] = p::to_double(buf[i]) * scale;
+        }
+        return out;
+    }
+
+    /// The round-trip tolerance: the profile's k_tolerance for float and
+    /// double (as before); for the fixed profiles the reconstruction unit is
+    /// the output LSB times the same power of two (under fixed scaling the
+    /// trip discards log2 n bits twice: Q15 at n = 1024 reconstructs in
+    /// steps of 2^-4, the honest number fft.h states), times the pinned
+    /// number of those units. MEASURED: not yet; 0.0 fails on purpose.
+    template <typename Sample>
+    constexpr double k_round_trip_units = 0.0;
+
+    template <typename Sample>
+    double round_trip_tolerance(size_t n) {
+        if constexpr (profile<Sample>::k_fixed_point) {
+            const int e = profile<Sample>::fft::fixed_scaling_exponent(n);
+            return k_round_trip_units<Sample> * sample_scale<Sample>::k_lsb * std::ldexp(1.0, 2 * e + 1 - log2_of(n));
+        }
+        else {
+            return k_tolerance<Sample>;
+        }
+    }
 
     TYPED_TEST(real_fft_test, SizeAndBinCount) {
         tap::dsp::basic_real_fft<TypeParam> fft(1024);
@@ -51,71 +191,72 @@ namespace {
     TYPED_TEST(real_fft_test, RoundTripReproducesInput) {
         constexpr size_t n = 1024;
 
-        tap::dsp::basic_real_fft<TypeParam> fft(n);
-        const auto                          x = random_signal<TypeParam>(n, 42);
-
-        std::vector<TypeParam> spectrum(n);
-        std::vector<TypeParam> back(n);
-        fft.forward(x.data(), spectrum.data());
-        fft.inverse(spectrum.data(), back.data());
+        const auto x    = random_signal<TypeParam>(n, 42);
+        const auto back = round_trip<TypeParam>(n, x, false);
+        const auto tol  = round_trip_tolerance<TypeParam>(n);
+        ASSERT_GT(tol, 0.0) << "unmeasured pin";
 
         for (size_t i = 0; i < n; ++i) {
-            EXPECT_NEAR(back[i], x[i], k_tolerance<TypeParam>) << "sample " << i;
+            EXPECT_NEAR(back[i], profile<TypeParam>::to_double(x[i]), tol) << "sample " << i;
         }
     }
 
     TYPED_TEST(real_fft_test, RoundTripInPlaceAndAliased) {
         constexpr size_t n = 256;
 
-        tap::dsp::basic_real_fft<TypeParam> fft(n);
-        const auto                          x = random_signal<TypeParam>(n, 7);
-
-        // forward()/inverse() explicitly permit output aliasing input.
-        auto buf = x;
-        fft.forward(buf.data(), buf.data());
-        fft.inverse(buf.data(), buf.data());
+        const auto x    = random_signal<TypeParam>(n, 7);
+        const auto back = round_trip<TypeParam>(n, x, true);
+        const auto tol  = round_trip_tolerance<TypeParam>(n);
+        ASSERT_GT(tol, 0.0) << "unmeasured pin";
 
         for (size_t i = 0; i < n; ++i) {
-            EXPECT_NEAR(buf[i], x[i], k_tolerance<TypeParam>) << "sample " << i;
+            EXPECT_NEAR(back[i], profile<TypeParam>::to_double(x[i]), tol) << "sample " << i;
         }
     }
 
     TYPED_TEST(real_fft_test, ImpulseHasFlatSpectrum) {
+        using p            = profile<TypeParam>;
         constexpr size_t n = 64;
 
-        tap::dsp::basic_real_fft<TypeParam> fft(n);
-        std::vector<TypeParam>              x(n, TypeParam(0));
-        x[0] = TypeParam(1);
+        typename p::fft        fft(n);
+        std::vector<TypeParam> x(n, TypeParam(0));
+        x[0] = p::from_double(1.0);
 
-        fft.forward_inplace(x.data());
+        const int    e     = p::forward(fft, x.data());
+        const double scale = std::ldexp(1.0, -e);
+        const double tol   = k_tolerance<TypeParam>;
+        ASSERT_GT(tol, 0.0) << "unmeasured pin";
 
-        EXPECT_NEAR(x[0], 1.0, k_tolerance<TypeParam>); // DC
-        EXPECT_NEAR(x[1], 1.0, k_tolerance<TypeParam>); // Nyquist
+        EXPECT_NEAR(p::to_double(x[0]), 1.0 * scale, tol); // DC
+        EXPECT_NEAR(p::to_double(x[1]), 1.0 * scale, tol); // Nyquist
         for (size_t k = 1; k < n / 2; ++k) {
-            EXPECT_NEAR(x[2 * k], 1.0, k_tolerance<TypeParam>) << "bin " << k << " real";
-            EXPECT_NEAR(x[2 * k + 1], 0.0, k_tolerance<TypeParam>) << "bin " << k << " imag";
+            EXPECT_NEAR(p::to_double(x[2 * k]), 1.0 * scale, tol) << "bin " << k << " real";
+            EXPECT_NEAR(p::to_double(x[2 * k + 1]), 0.0, tol) << "bin " << k << " imag";
         }
     }
 
     TYPED_TEST(real_fft_test, DcAndNyquistPacking) {
+        using p            = profile<TypeParam>;
         constexpr size_t n = 64;
 
-        tap::dsp::basic_real_fft<TypeParam> fft(n);
+        typename p::fft fft(n);
+        const double    tol = p::tolerance_at_n(n);
+        ASSERT_GT(tol, 0.0) << "unmeasured pin";
 
         // Constant input: all energy in DC = data[0].
-        std::vector<TypeParam> dc(n, TypeParam(1));
-        fft.forward_inplace(dc.data());
-        EXPECT_NEAR(dc[0], static_cast<double>(n), k_tolerance<TypeParam> * n);
-        EXPECT_NEAR(dc[1], 0.0, k_tolerance<TypeParam> * n);
+        std::vector<TypeParam> dc(n, p::from_double(1.0));
+        const int              e_dc = p::forward(fft, dc.data());
+        EXPECT_NEAR(p::to_double(dc[0]), static_cast<double>(n) * std::ldexp(1.0, -e_dc), tol);
+        EXPECT_NEAR(p::to_double(dc[1]), 0.0, tol);
 
         // Alternating +1/-1: all energy in Nyquist = data[1].
         std::vector<TypeParam> nyq(n);
         for (size_t i = 0; i < n; ++i) {
-            nyq[i] = (i % 2 == 0) ? TypeParam(1) : TypeParam(-1);
+            nyq[i] = (i % 2 == 0) ? p::from_double(1.0) : p::from_double(-1.0);
         }
-        fft.forward_inplace(nyq.data());
-        EXPECT_NEAR(nyq[0], 0.0, k_tolerance<TypeParam> * n);
-        EXPECT_NEAR(nyq[1], static_cast<double>(n), k_tolerance<TypeParam> * n);
+        const int e_nyq = p::forward(fft, nyq.data());
+        EXPECT_NEAR(p::to_double(nyq[0]), 0.0, tol);
+        EXPECT_NEAR(p::to_double(nyq[1]), static_cast<double>(n) * std::ldexp(1.0, -e_nyq), tol);
     }
 
     // The documented sign convention (W = exp(+2*pi*i/N)): a pure cosine at
@@ -123,61 +264,115 @@ namespace {
     // in the bin's IMAG part with a PLUS sign (+N/2) — the conjugate of the
     // engineering-convention DFT, where it would be -N/2.
     TYPED_TEST(real_fft_test, SignConventionIsPlusI) {
+        using p            = profile<TypeParam>;
         constexpr size_t n = 128;
         constexpr size_t k = 5;
 
-        tap::dsp::basic_real_fft<TypeParam> fft(n);
-        const double w = 2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(n);
+        typename p::fft fft(n);
+        const double    w = 2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(n);
 
         std::vector<TypeParam> cosine(n);
         std::vector<TypeParam> sine(n);
         for (size_t j = 0; j < n; ++j) {
-            cosine[j] = static_cast<TypeParam>(std::cos(w * static_cast<double>(j)));
-            sine[j]   = static_cast<TypeParam>(std::sin(w * static_cast<double>(j)));
+            cosine[j] = p::from_double(std::cos(w * static_cast<double>(j)));
+            sine[j]   = p::from_double(std::sin(w * static_cast<double>(j)));
         }
-        fft.forward_inplace(cosine.data());
-        fft.forward_inplace(sine.data());
+        const int e_cos = p::forward(fft, cosine.data());
+        const int e_sin = p::forward(fft, sine.data());
 
-        const double half = static_cast<double>(n) / 2.0;
-        const double tol  = k_tolerance<TypeParam> * static_cast<double>(n);
-        EXPECT_NEAR(cosine[2 * k], half, tol);
-        EXPECT_NEAR(cosine[2 * k + 1], 0.0, tol);
-        EXPECT_NEAR(sine[2 * k], 0.0, tol);
-        EXPECT_NEAR(sine[2 * k + 1], half, tol); // +N/2, not -N/2
+        const double half_cos = static_cast<double>(n) / 2.0 * std::ldexp(1.0, -e_cos);
+        const double half_sin = static_cast<double>(n) / 2.0 * std::ldexp(1.0, -e_sin);
+        const double tol      = p::tolerance_at_n(n);
+        ASSERT_GT(tol, 0.0) << "unmeasured pin";
+        EXPECT_NEAR(p::to_double(cosine[2 * k]), half_cos, tol);
+        EXPECT_NEAR(p::to_double(cosine[2 * k + 1]), 0.0, tol);
+        EXPECT_NEAR(p::to_double(sine[2 * k]), 0.0, tol);
+        EXPECT_NEAR(p::to_double(sine[2 * k + 1]), half_sin, tol); // +N/2, not -N/2
 
         // And nothing leaks into any other bin.
         for (size_t bin = 1; bin < n / 2; ++bin) {
             if (bin == k) {
                 continue;
             }
-            EXPECT_NEAR(cosine[2 * bin], 0.0, tol) << "cos leak, bin " << bin;
-            EXPECT_NEAR(sine[2 * bin], 0.0, tol) << "sin leak, bin " << bin;
+            EXPECT_NEAR(p::to_double(cosine[2 * bin]), 0.0, tol) << "cos leak, bin " << bin;
+            EXPECT_NEAR(p::to_double(sine[2 * bin]), 0.0, tol) << "sin leak, bin " << bin;
         }
     }
 
+    // Parseval's relative tolerance for the fixed profiles: the rounding
+    // noise adds power, so the relative error is of the order of the per-bin
+    // noise-to-signal ratio; measured and pinned at 2x.
+    // MEASURED: not yet; 0.0 fails on purpose.
+    template <typename Sample>
+    constexpr double k_parseval_relative = 0.0;
+
     TYPED_TEST(real_fft_test, ParsevalEnergyConservation) {
+        using p            = profile<TypeParam>;
         constexpr size_t n = 512;
 
-        tap::dsp::basic_real_fft<TypeParam> fft(n);
-        const auto                          x = random_signal<TypeParam>(n, 1234);
+        typename p::fft fft(n);
+        const auto      x = random_signal<TypeParam>(n, 1234);
 
         double time_energy = 0.0;
         for (size_t i = 0; i < n; ++i) {
-            time_energy += static_cast<double>(x[i]) * static_cast<double>(x[i]);
+            time_energy += p::to_double(x[i]) * p::to_double(x[i]);
         }
 
-        auto spectrum = x;
-        fft.forward_inplace(spectrum.data());
-        double freq_energy = static_cast<double>(spectrum[0]) * static_cast<double>(spectrum[0])
-                             + static_cast<double>(spectrum[1]) * static_cast<double>(spectrum[1]);
+        auto         spectrum    = x;
+        const int    e           = p::forward(fft, spectrum.data());
+        const double scale       = std::ldexp(1.0, e); // spectrum values are X * 2^-e
+        double       freq_energy = p::to_double(spectrum[0]) * scale * (p::to_double(spectrum[0]) * scale)
+                             + p::to_double(spectrum[1]) * scale * (p::to_double(spectrum[1]) * scale);
         for (size_t k = 1; k < n / 2; ++k) {
-            const double re = static_cast<double>(spectrum[2 * k]);
-            const double im = static_cast<double>(spectrum[2 * k + 1]);
+            const double re = p::to_double(spectrum[2 * k]) * scale;
+            const double im = p::to_double(spectrum[2 * k + 1]) * scale;
             freq_energy += 2.0 * (re * re + im * im);
         }
         freq_energy /= static_cast<double>(n);
 
-        EXPECT_NEAR(freq_energy, time_energy, k_tolerance<TypeParam> * time_energy * static_cast<double>(n));
+        if constexpr (p::k_fixed_point) {
+            ASSERT_GT(k_parseval_relative<TypeParam>, 0.0) << "unmeasured pin";
+            EXPECT_NEAR(freq_energy, time_energy, k_parseval_relative<TypeParam> * time_energy);
+        }
+        else {
+            EXPECT_NEAR(freq_energy, time_energy, k_tolerance<TypeParam> * time_energy * static_cast<double>(n));
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Cross-precision: every profile against the double golden model.
+    // ------------------------------------------------------------------------
+
+    /// The relative 2-norm error of a profile's forward transform against the
+    /// double golden model on the same signal: sqrt(sum |s - g * 2^-e|^2 /
+    /// sum |g * 2^-e|^2) over the packed spectrum, with g the double result
+    /// on the profile's own quantised input.
+    template <typename Sample>
+    double relative_error_vs_double(size_t n, unsigned seed) {
+        using p               = profile<Sample>;
+        const auto          x = random_signal<Sample>(n, seed);
+        std::vector<double> xd(n);
+        for (size_t i = 0; i < n; ++i) {
+            xd[i] = p::to_double(x[i]);
+        }
+
+        tap::dsp::real_fft fft64(n);
+        typename p::fft    fftp(n);
+        auto               sd = xd;
+        auto               sp = x;
+        fft64.forward_inplace(sd.data());
+        const int    e     = p::forward(fftp, sp.data());
+        const double scale = std::ldexp(1.0, -e);
+
+        double err = 0.0;
+        double ref = 0.0;
+        for (size_t i = 0; i < n; ++i) {
+            const double g = sd[i] * scale;
+            const double d = p::to_double(sp[i]) - g;
+            err += d * d;
+            ref += g * g;
+        }
+        return std::sqrt(err / ref);
     }
 
     // The two precisions are the same algorithm on the same data: float must
@@ -207,6 +402,28 @@ namespace {
             ref += sd[i] * sd[i];
         }
         EXPECT_LT(std::sqrt(err / ref), 1e-6);
+    }
+
+    // The fixed-point profiles against the same golden model: the relative
+    // 2-norm error of the fixed-scaling forward at n = 1024 on full-scale
+    // uniform noise, a measured number pinned at 2x (the log_mel pattern).
+    // Q15's error is the output narrowing (2^-15 / sqrt(12) per value on a
+    // spectrum whose per-component RMS is sqrt(1/3 / 2n)); Q31's is the
+    // int32 kernel's rounding noise, orders of magnitude lower.
+    // MEASURED: not yet; 0.0 fails on purpose.
+    constexpr double k_q15_tracks_double = 0.0;
+    constexpr double k_q31_tracks_double = 0.0;
+
+    TEST(RealFftCrossPrecision, Q15TracksDouble) {
+        ASSERT_GT(k_q15_tracks_double, 0.0) << "unmeasured pin";
+        const double err = relative_error_vs_double<std::int16_t>(1024, 99);
+        EXPECT_LT(err, k_q15_tracks_double) << "measured " << err;
+    }
+
+    TEST(RealFftCrossPrecision, Q31TracksDouble) {
+        ASSERT_GT(k_q31_tracks_double, 0.0) << "unmeasured pin";
+        const double err = relative_error_vs_double<std::int32_t>(1024, 99);
+        EXPECT_LT(err, k_q31_tracks_double) << "measured " << err;
     }
 
     // The double-engine float-I/O convenience overloads (used by AmbiTap's HRTF

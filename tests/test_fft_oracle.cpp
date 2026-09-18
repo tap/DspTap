@@ -34,11 +34,14 @@
 // reference; the test names are distinct so the ctest listing carries each
 // promise once.
 //
-// The suite is typed over float and double now. The fixed-point stage
-// (Stage 3, Part 7) extends `profile<Sample>` below with int16_t and int32_t;
-// the tests are written against that trait (scale as a function of N, the
-// profile's own tolerance, a full-scale amplitude below saturation), so the
-// change is confined to the trait and the type list.
+// The suite is typed over all four profiles: float and double (the Ooura
+// engines) and, since Stage 3b (Part 7), int16_t and int32_t, the Q15 and
+// Q31 fixed-point profiles under scaling::fixed, through `profile<Sample>`
+// below (scale as a function of N from the fixed exponent, the profile's own
+// tolerance derived from the arithmetic's rounding count, a full-scale
+// amplitude below saturation). Block floating point is not an oracle
+// question (its exponent is data-dependent); test_fft_fixed.cpp pins it
+// against the fixed result.
 
 #include <algorithm>
 #include <cmath>
@@ -46,12 +49,14 @@
 #include <cstdint>
 #include <limits>
 #include <numbers>
+#include <type_traits>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "support/signals.h"
 #include "tap/dsp/fft.h"
+#include "tap/dsp/fft/fft_arith.h"
 
 #ifndef TAP_DSP_PARITY_MAX_N
 #define TAP_DSP_PARITY_MAX_N (1 << 20)
@@ -107,20 +112,19 @@ namespace {
     }
 
     // ------------------------------------------------------------------------
-    // Per-profile traits — THE EXTENSION POINT FOR THE FIXED-POINT STAGE.
+    // Per-profile traits.
     //
     // A profile says how a sample crosses into the double domain, the amplitude
     // the closed forms are driven at, what scale the engine's forward and
     // unnormalized inverse carry relative to the mathematical DFT as a function
     // of N, and its own tolerance. For the float profiles: full scale 1.0, both
-    // scales 1, and the Higham bound above. Stage 3 (Part 7) adds
-    //     template <> struct profile<std::int16_t> { ... };
-    //     template <> struct profile<std::int32_t> { ... };
-    // with k_full_scale below 1 - 2^-15 (a full-scale 1.0 input whose X/N
-    // expectation is exactly 1.0 saturates in Q15), forward_scale(n) = 1/n
-    // under `fixed` scaling (BFP reports its exponent alongside), the profile's
-    // inverse scale, and a tolerance built from Part 7's quantization-noise
-    // numbers rather than from epsilon. Then append the types to oracle_types.
+    // scales 1, and the Higham bound above. For the fixed-point profiles
+    // (Stage 3b): k_full_scale is the largest representable value 1 - 2^-15 /
+    // 1 - 2^-31 (a 1.0 whose X/N expectation is exactly 1.0 does not exist in
+    // Q15), both scales are 2^-e with e = fixed_scaling_exponent(n) (Q15:
+    // 1/n; Q31: 1/2n, the input pre-shift), and the tolerance is the
+    // worst-case rounding bound below, built from fft_arith.h's rounding
+    // count rather than from an epsilon.
     // ------------------------------------------------------------------------
     template <typename Sample>
     struct profile;
@@ -172,7 +176,68 @@ namespace {
         static double tolerance(std::size_t n, double norm2) { return higham_tolerance(k_epsilon, n, norm2); }
     };
 
-    using oracle_types = ::testing::Types<float, double>;
+    // ------------------------------------------------------------------------
+    // Fixed-point tolerance: a worst-case (max-abs) bound, derived.
+    //
+    // fft_arith.h fixes the arithmetic: shift-before-butterfly with
+    // round-half-up, the two-rounding complex multiply, Q1.30 twiddles rounded
+    // once. Each rounding is off by at most half an internal LSB q (2^-29 for
+    // the widened Q15 data, 2^-31 for Q31, as fractions of full scale) and
+    // each twiddle by at most 2^-31 relative. Per kernel stage, per output
+    // component, with every error aligned (the worst case, not the RMS):
+    //   - the shift roundings of the stage's four inputs, each <= q/2, reach
+    //     the output through the butterfly with unit weight: <= 2 q;
+    //   - the two product roundings: <= q;
+    //   - the twiddle quantisation on a value of magnitude <= 2^30.5 q
+    //     (the fixed-scaling bound): <= sqrt(2) * 2^30.5 * 2^-31 q < 1 q;
+    // so <= 4 q per stage. Under shift-before-butterfly a stage attenuates
+    // the noise it receives by the same factor the sum can amplify it, so the
+    // worst-case bound simply adds across the ceil(log2(N/2) / 2) kernel
+    // stages, plus 4 q for the real post-pass (one shift, one complex
+    // product) and q/2 for the Q31 input pre-shift. On top: the input
+    // quantisation (<= half an input LSB per sample, summed over N terms and
+    // scaled by 2^-e: <= q_io / 2), and the output narrowing (Q15: half an
+    // output LSB). The bound is doubled for margin -- derived with slack, not
+    // fitted -- and the pins in test_fft.cpp / test_fft_fixed.cpp carry the
+    // measured numbers.
+    // ------------------------------------------------------------------------
+    template <typename I>
+    struct fixed_profile {
+        using fft                                    = tap::dsp::basic_real_fft<I>;
+        static constexpr int         k_io_bits       = std::numeric_limits<I>::digits; // 15 or 31
+        static constexpr int         k_internal_bits = std::is_same_v<I, std::int16_t> ? 29 : 31;
+        static constexpr double      k_q_io          = tap::dsp::test::sample_scale<I>::k_lsb;
+        static constexpr double      k_q_int         = 1.0 / static_cast<double>(std::int64_t{1} << k_internal_bits);
+        static constexpr double      k_full_scale    = tap::dsp::test::sample_scale<I>::k_full_scale;
+        static constexpr std::size_t k_min_n         = 4;
+        static constexpr std::size_t k_max_n         = 65536;
+        static constexpr double      k_roundings_per_stage = 4.0;
+        static constexpr double      k_post_pass           = 4.0;
+        static constexpr double      k_margin              = 2.0;
+
+        static double to_double(I v) { return tap::dsp::test::sample_scale<I>::to_double(v); }
+        static I      from_double(double v) { return tap::dsp::test::sample_scale<I>::from_double(v); }
+        static double forward_scale(std::size_t n) { return std::ldexp(1.0, -fft::fixed_scaling_exponent(n)); }
+        static double inverse_scale(std::size_t n) { return std::ldexp(1.0, -fft::fixed_scaling_exponent(n)); }
+
+        static int kernel_stages(std::size_t n) {
+            const int log2_m = static_cast<int>(std::lround(std::log2(static_cast<double>(n / 2))));
+            return (log2_m + 1) / 2; // ceil(log2 M / 2): radix-4 stages plus the odd radix-2
+        }
+        static double tolerance(std::size_t n, double /*norm2*/) {
+            const double pre_shift = tap::dsp::fft_arith<I>::k_fixed_scaling_input_pre_shift * 0.5;
+            const double internal  = (k_roundings_per_stage * kernel_stages(n) + k_post_pass + pre_shift) * k_q_int;
+            const double io        = 0.5 * k_q_io + (k_internal_bits == k_io_bits ? 0.0 : 0.5 * k_q_io);
+            return k_margin * (internal + io);
+        }
+    };
+
+    template <>
+    struct profile<std::int16_t> : fixed_profile<std::int16_t> {};
+    template <>
+    struct profile<std::int32_t> : fixed_profile<std::int32_t> {};
+
+    using oracle_types = ::testing::Types<float, double, std::int16_t, std::int32_t>;
 
     /// ||y||_2 of the full complex spectrum of x, from Parseval: sqrt(N) * ||x||_2.
     double spectrum_norm2(const std::vector<double>& x) {
