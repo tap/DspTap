@@ -10,12 +10,15 @@
 //   ooura_ref<Sample>      the raw rdft / rdft_f of Takuya Ooura's fftsg.c,
 //                          from the REFERENCE copy of the C that this target's
 //                          CMake block compiles (tests/CMakeLists.txt).
-//   engine_under_test      whatever the library routes the real FFT to. Today
-//                          that is basic_real_fft, i.e. the same C, so this
-//                          suite is Ooura-vs-Ooura and trivially green. That
-//                          is the point: the port agent re-points this alias
-//                          at detail::split_radix_rdft, watches the suite go
-//                          red, and works it green statement by statement.
+//   engine_under_test      the C++20 port, detail::split_radix_rdft
+//                          (include/tap/dsp/fft/split_radix.h), since Stage 2a.
+//                          Before the port existed this alias named
+//                          basic_real_fft, i.e. the same C, and the suite was
+//                          Ooura-vs-Ooura and trivially green; the port was
+//                          worked from that red re-point to green statement
+//                          by statement. At Stage 2b (routing flipped) the
+//                          alias goes back to basic_real_fft, which then IS
+//                          the port, and the suite guards the flip.
 //
 // The comparison is memcmp over the raw output bytes: not EXPECT_EQ (which
 // calls +0.0 and -0.0 equal and any NaN unequal to itself), not a tolerance.
@@ -90,6 +93,7 @@
 
 #include "support/signals.h"
 #include "tap/dsp/fft.h"
+#include "tap/dsp/fft/split_radix.h"
 
 #ifndef TAP_DSP_PARITY_MAX_N
 #define TAP_DSP_PARITY_MAX_N (1 << 20)
@@ -145,7 +149,7 @@ namespace {
     // surface Part 4 fixes, so nothing else in this file changes.
     // ------------------------------------------------------------------------
     template <typename Sample>
-    using engine_under_test = tap::dsp::basic_real_fft<Sample>;
+    using engine_under_test = tap::dsp::detail::split_radix_rdft<Sample>;
 
     // ------------------------------------------------------------------------
     // Materials.

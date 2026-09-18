@@ -150,6 +150,51 @@ namespace tap::dsp::detail {
         /// @return the transform size N.
         [[nodiscard]] std::size_t size() const noexcept { return static_cast<std::size_t>(m_size); }
 
+        /// In-place forward transform of N real samples into the packed
+        /// spectrum (rdft with isgn = 1, minus the table build).
+        /// @param a N samples in, N packed spectrum values out.
+        void forward_inplace(Sample* a) const noexcept {
+            const int     n  = m_size;
+            const int     nw = m_nw;
+            const int     nc = m_nc;
+            const int*    ip = m_ip.data();
+            const Sample* w  = m_w.data();
+            Sample        xi;
+
+            if (n > 4) {
+                cftfsub(n, a, ip, nw, w);
+                rftfsub(n, a, nc, w + nw);
+            }
+            else if (n == 4) {
+                cftfsub(n, a, ip, nw, w);
+            }
+            xi = a[0] - a[1];
+            a[0] += a[1];
+            a[1] = xi;
+        }
+
+        /// In-place inverse transform of a packed spectrum into N real
+        /// samples, UNNORMALIZED (rdft with isgn = -1, minus the table
+        /// build): multiply by 2/N for a round trip.
+        /// @param a N packed spectrum values in, N samples out.
+        void inverse_inplace(Sample* a) const noexcept {
+            const int     n  = m_size;
+            const int     nw = m_nw;
+            const int     nc = m_nc;
+            const int*    ip = m_ip.data();
+            const Sample* w  = m_w.data();
+
+            a[1] = static_cast<Sample>(0.5 * (a[0] - a[1]));
+            a[0] -= a[1];
+            if (n > 4) {
+                rftbsub(n, a, nc, w + nw);
+                cftbsub(n, a, ip, nw, w);
+            }
+            else if (n == 4) {
+                cftbsub(n, a, ip, nw, w);
+            }
+        }
+
       private:
         // -------- initializing routines (rule 2 applies to every line) --------
 
@@ -2471,6 +2516,52 @@ namespace tap::dsp::detail {
             a[1] += a[3];
             a[2] = x0r;
             a[3] = x0i;
+        }
+
+        static void rftfsub(int n, Sample* a, int nc, const Sample* c) noexcept {
+            int    j, k, kk, ks, m;
+            Sample wkr, wki, xr, xi, yr, yi;
+
+            m  = n >> 1;
+            ks = 2 * nc / m;
+            kk = 0;
+            for (j = 2; j < m; j += 2) {
+                k = n - j;
+                kk += ks;
+                wkr = static_cast<Sample>(0.5 - c[nc - kk]);
+                wki = c[kk];
+                xr  = a[j] - a[k];
+                xi  = a[j + 1] + a[k + 1];
+                yr  = wkr * xr - wki * xi;
+                yi  = wkr * xi + wki * xr;
+                a[j] -= yr;
+                a[j + 1] -= yi;
+                a[k] += yr;
+                a[k + 1] -= yi;
+            }
+        }
+
+        static void rftbsub(int n, Sample* a, int nc, const Sample* c) noexcept {
+            int    j, k, kk, ks, m;
+            Sample wkr, wki, xr, xi, yr, yi;
+
+            m  = n >> 1;
+            ks = 2 * nc / m;
+            kk = 0;
+            for (j = 2; j < m; j += 2) {
+                k = n - j;
+                kk += ks;
+                wkr = static_cast<Sample>(0.5 - c[nc - kk]);
+                wki = c[kk];
+                xr  = a[j] - a[k];
+                xi  = a[j + 1] + a[k + 1];
+                yr  = wkr * xr + wki * xi;
+                yi  = wkr * xi - wki * xr;
+                a[j] -= yr;
+                a[j + 1] -= yi;
+                a[k] += yr;
+                a[k + 1] -= yi;
+            }
         }
 
         int              m_size; ///< N, the transform size
