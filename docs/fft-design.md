@@ -169,7 +169,7 @@ VFMA, any x86 built with `-march`). Therefore:
    | `cortex-m55` (105446230931) | same toolchain, MVE (VFMA); CMSIS on for `tap::dsp` but the parity binaries do not link it | 4 … 4096 | 0 | 0 |
    | local, this port's development host | g++ 13.3.0 and clang++ 18.1.3, x86-64 without `-march` | 4 … 65536, 2^20 | 0 | 0 |
 
-   Zero everywhere, including the three FMA-capable legs (macOS arm64, M4F,
+   Zero everywhere, including the four FMA-capable legs (macOS arm64, M4F,
    M33, M55): because every statement is textually identical on the two
    sides, each compiler makes the same fusion choices for both. The bench
    binaries, built Release at default flags, say the same thing: the C and
@@ -307,7 +307,8 @@ the same run (35295262684, 2026-09-18, arm-none-eabi-gcc 13.2.1, QEMU 8.2.2),
 informational: nothing is routed at the port until 2b. "ratio" is
 port / C on that key; "checksums" says whether the two binaries' FNV-1a
 output fingerprints agree, i.e. whether the port is bit-identical to the C
-at the bench's default flags (Release `-O2`, VFMA on the M4F / M33 / M55).
+at the bench's default flags (Release, i.e. CMake's GNU default `-O3 -DNDEBUG` —
+no toolchain file overrides it — with VFMA on the M4F / M33 / M55).
 
 | Scenario | `m4-softfp` | `m4f` | `m33` | `m55` (C = CMSIS) | `m55-ooura` | Source |
 |---|---|---|---|---|---|---|
