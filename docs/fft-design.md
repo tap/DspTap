@@ -45,7 +45,7 @@ which stage pins them. Floating-point rows are the shipping `fft.h` at
 | Inverse scale | `inverse_inplace` unnormalized (caller applies `2/N`); `inverse()` applies `2/N` | same | own per-stage halving; round-trip factor a fixed power of two — `TODO(stage 3b)` | same — `TODO(stage 3b)` |
 | Round-trip identity | `x` reproduced to `1e-12` abs at N = 1024 (`RoundTripReproducesInput`) | `2e-5` abs at N = 1024 (`RoundTripReproducesInput`) | `TODO(stage 3b)` per scaling policy | `TODO(stage 3b)` per scaling policy |
 | Saturation-free input | n/a (floating point) | n/a | full scale ±1: input placed with 2 guard bits (`<< 14`, not 16) — `TODO(stage 3b)` measured worst case | `fixed`: one input pre-shift (−6 dB); `block_floating`: full scale — `TODO(stage 3b)` |
-| Noise floor | `TODO(stage 2a)` against the compensated-DFT oracle | rms relative error vs double `< 1e-6` at N = 1024 (`FloatTracksDouble`); 1.105e-7 at N = 512 is the audit's Part 6 N2 reviewer-probe value, not reproduced by any committed test — re-measured and pinned at Stage 2a | `TODO(stage 3b)` per-bin floor vs level at N = 256 / 512 / 2048, vs the Welch model | `TODO(stage 3b)` |
+| Noise floor | `TODO(stage 2b)` against the compensated-DFT oracle | rms relative error vs double `< 1e-6` at N = 1024 (`FloatTracksDouble`); 1.105e-7 at N = 512 is the audit's Part 6 N2 reviewer-probe value, not reproduced by any committed test — `TODO(stage 2b)`: re-measured and pinned when the battery is re-pointed at the port (Stage 2a's scope was the port and its parity gate; `tests/test_fft.cpp` was not touched) | `TODO(stage 3b)` per-bin floor vs level at N = 256 / 512 / 2048, vs the Welch model | `TODO(stage 3b)` |
 | Latency | 0 (block transform, no internal delay) | 0 | 0 | 0 |
 | Alignment | none required on `Sample*` | none (vDSP's internal split buffers are placed by the wrapper, not the caller) | none | none |
 | Shareability across threads | not today through `basic_real_fft` (Ooura tables are built lazily on the first transform, audit F6); the port (`detail::split_radix_rdft`, Stage 2a, tap/DspTap#28) builds its tables in the constructor and its transforms are `const noexcept`, so one engine object is shareable once constructed — `basic_real_fft` inherits this at 2b; the `is_shareable` engine trait is `TODO(stage 4)` | not today: the vDSP / CMSIS engines carry scratch; false for those engines — `TODO(stage 4)` | `TODO(stage 3b)` (design: true) | `TODO(stage 3b)` (design: true) |
@@ -63,10 +63,10 @@ reproduces the C's table semantics for both precisions so that `float` stays
 error 1.19e-7 either way; transform rms relative error at N = 512 is 1.105e-7
 with the C's tables and 1.114e-7 with double-computed ones — the audit's Part 6
 N2 reviewer-probe values, not reproduced by any committed test; re-measured and
-pinned at Stage 2a), so it was dropped. The `#define double float` build of the
-C is replaced by a `template <std::floating_point Sample>` class whose helpers
-are private static members, which removes the 76 global symbols and the lazy
-table build.
+pinned at Stage 2b with the battery, `TODO(stage 2b)` in the table above), so it
+was dropped. The `#define double float` build of the C is replaced by a
+`template <std::floating_point Sample>` class whose helpers are private static
+members, which removes the 76 global symbols and the lazy table build.
 
 **Fixed point does not reuse Ooura's code, only its contract** (D2). Audit
 Part 6 established that the split-radix graph survives only as a data-flow
