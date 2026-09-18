@@ -9,7 +9,8 @@
 // makes both halves of that promise checkable:
 //
 //   - noexcept is a static_assert on the four transform entry points, on
-//     both instantiations (the pattern test_nn.cpp uses);
+//     all six instantiations -- float, double, and the Q15 / Q31 fixed-point
+//     profiles under both scaling policies (the pattern test_nn.cpp uses);
 //   - "allocation-free" is checked by REPLACING THE GLOBAL operator new /
 //     operator delete in this translation unit with counting versions and
 //     asserting the count does not move across a transform. The replacement
@@ -46,7 +47,9 @@
 // removing. They are also not noexcept, consistently with that.
 //
 // Copy and copy-assignment are pinned to produce bit-identical output to the
-// source in both directions and both precisions. test_fft_backend.cpp's
+// source in both directions and all six instantiations (for the fixed-point
+// profiles that includes the returned exponent, and the Q15 profile's int32
+// work buffer travelling with the copy). test_fft_backend.cpp's
 // CopiesAgreeWithTheirSource covers the float FORWARD at the certified
 // geometries while walking the heap (its purpose is vDSP's alignment
 // dispatch); this one is the general value-semantics check that the engine's
@@ -62,6 +65,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -209,25 +213,41 @@ void operator delete[](void* p, std::align_val_t, const std::nothrow_t&) noexcep
 
 namespace {
 
-    template <typename Sample>
-    using fft_t = tap::dsp::basic_real_fft<Sample>;
+    // The suite is typed over the FFT class itself, so the two scaling
+    // policies of each fixed-point profile are distinct rows.
+    template <typename Fft>
+    struct sample_of;
+    template <typename Sample, typename Scaling>
+    struct sample_of<tap::dsp::basic_real_fft<Sample, Scaling>> {
+        using type = Sample;
+    };
+    template <typename Fft>
+    using sample_of_t = typename sample_of<Fft>::type;
 
     // ------------------------------------------------------------------------
-    // noexcept, as a compile-time fact on both instantiations.
+    // noexcept, as a compile-time fact on every instantiation.
     // ------------------------------------------------------------------------
-    template <typename Sample>
+    template <typename Fft>
     constexpr bool transforms_are_noexcept() {
-        using fft = fft_t<Sample>;
-        static_assert(noexcept(std::declval<fft&>().forward_inplace(std::declval<Sample*>())));
-        static_assert(noexcept(std::declval<fft&>().inverse_inplace(std::declval<Sample*>())));
-        static_assert(noexcept(std::declval<fft&>().forward(std::declval<const Sample*>(), std::declval<Sample*>())));
-        static_assert(noexcept(std::declval<fft&>().inverse(std::declval<const Sample*>(), std::declval<Sample*>())));
+        using fft    = Fft;
+        using sample = sample_of_t<Fft>;
+        static_assert(noexcept(std::declval<fft&>().forward_inplace(std::declval<sample*>())));
+        static_assert(noexcept(std::declval<fft&>().inverse_inplace(std::declval<sample*>())));
+        static_assert(noexcept(std::declval<fft&>().forward(std::declval<const sample*>(), std::declval<sample*>())));
+        static_assert(noexcept(std::declval<fft&>().inverse(std::declval<const sample*>(), std::declval<sample*>())));
         static_assert(noexcept(std::declval<const fft&>().size()));
         static_assert(noexcept(std::declval<const fft&>().num_bins()));
         return true;
     }
-    static_assert(transforms_are_noexcept<float>());
-    static_assert(transforms_are_noexcept<double>());
+    static_assert(transforms_are_noexcept<tap::dsp::real_fft32>());
+    static_assert(transforms_are_noexcept<tap::dsp::real_fft>());
+    static_assert(transforms_are_noexcept<tap::dsp::real_fft_q15>());
+    static_assert(transforms_are_noexcept<tap::dsp::real_fft_q31>());
+    static_assert(transforms_are_noexcept<tap::dsp::real_fft_q15_bfp>());
+    static_assert(transforms_are_noexcept<tap::dsp::real_fft_q31_bfp>());
+    // The fixed-point profiles' constant exponent is a noexcept constexpr too.
+    static_assert(noexcept(tap::dsp::real_fft_q15::fixed_scaling_exponent(4)));
+    static_assert(noexcept(tap::dsp::real_fft_q31_bfp::fixed_scaling_exponent(4)));
 
     // ------------------------------------------------------------------------
     // The allocation guard.
@@ -246,11 +266,12 @@ namespace {
 
     constexpr std::size_t k_guarded_sizes[] = {512, 4096};
 
-    template <typename Sample>
+    template <typename Fft>
     class fft_rt_test : public ::testing::Test {};
 
-    using sample_types = ::testing::Types<float, double>;
-    TYPED_TEST_SUITE(fft_rt_test, sample_types);
+    using fft_types = ::testing::Types<tap::dsp::real_fft32, tap::dsp::real_fft, tap::dsp::real_fft_q15,
+                                       tap::dsp::real_fft_q31, tap::dsp::real_fft_q15_bfp, tap::dsp::real_fft_q31_bfp>;
+    TYPED_TEST_SUITE(fft_rt_test, fft_types);
 
     // Already proved by the namespace-scope static_asserts above; this exists
     // so the promise has a row in the test listing per profile.
@@ -269,11 +290,12 @@ namespace {
         EXPECT_GE(guard.allocations_since(), 1u);
     }
 
-    template <typename Sample, typename Call>
+    template <typename Fft, typename Call>
     void expect_no_allocation(std::size_t n, const char* what, Call&& call) {
-        fft_t<Sample>       fft(n);
-        std::vector<Sample> in  = tap::dsp::test::random_signal<Sample>(n, 0x9E3779B9u);
-        std::vector<Sample> out = in;
+        using sample = sample_of_t<Fft>;
+        Fft                 fft(n);
+        std::vector<sample> in  = tap::dsp::test::random_signal<sample>(n, 0x9E3779B9u);
+        std::vector<sample> out = in;
 
         // First call after construction (lazy table init today, F6).
         {
@@ -293,32 +315,34 @@ namespace {
     }
 
     TYPED_TEST(fft_rt_test, ForwardInplaceAllocatesNothing) {
+        using sample = sample_of_t<TypeParam>;
         for (const std::size_t n : k_guarded_sizes) {
             expect_no_allocation<TypeParam>(
-                n, "forward_inplace",
-                [](fft_t<TypeParam>& fft, TypeParam*, TypeParam* out) { fft.forward_inplace(out); });
+                n, "forward_inplace", [](TypeParam& fft, sample*, sample* out) { (void)fft.forward_inplace(out); });
         }
     }
 
     TYPED_TEST(fft_rt_test, InverseInplaceAllocatesNothing) {
+        using sample = sample_of_t<TypeParam>;
         for (const std::size_t n : k_guarded_sizes) {
             expect_no_allocation<TypeParam>(
-                n, "inverse_inplace",
-                [](fft_t<TypeParam>& fft, TypeParam*, TypeParam* out) { fft.inverse_inplace(out); });
+                n, "inverse_inplace", [](TypeParam& fft, sample*, sample* out) { (void)fft.inverse_inplace(out); });
         }
     }
 
     TYPED_TEST(fft_rt_test, ForwardOutOfPlaceAllocatesNothing) {
+        using sample = sample_of_t<TypeParam>;
         for (const std::size_t n : k_guarded_sizes) {
             expect_no_allocation<TypeParam>(
-                n, "forward", [](fft_t<TypeParam>& fft, const TypeParam* in, TypeParam* out) { fft.forward(in, out); });
+                n, "forward", [](TypeParam& fft, const sample* in, sample* out) { (void)fft.forward(in, out); });
         }
     }
 
     TYPED_TEST(fft_rt_test, InverseOutOfPlaceAllocatesNothing) {
+        using sample = sample_of_t<TypeParam>;
         for (const std::size_t n : k_guarded_sizes) {
             expect_no_allocation<TypeParam>(
-                n, "inverse", [](fft_t<TypeParam>& fft, const TypeParam* in, TypeParam* out) { fft.inverse(in, out); });
+                n, "inverse", [](TypeParam& fft, const sample* in, sample* out) { (void)fft.inverse(in, out); });
         }
     }
 
@@ -339,67 +363,89 @@ namespace {
     struct both_directions {
         std::vector<Sample> spectrum;
         std::vector<Sample> time;
+        int                 forward_exponent = 0; ///< fixed-point profiles; 0 for float/double
+        int                 inverse_exponent = 0;
     };
 
-    template <typename Sample>
-    both_directions<Sample> run_both(fft_t<Sample>& fft, const std::vector<Sample>& x) {
-        both_directions<Sample> r;
-        r.spectrum = x;
-        fft.forward_inplace(r.spectrum.data());
-        r.time = r.spectrum;
-        fft.inverse_inplace(r.time.data());
+    /// The returned exponent, or 0 where the transform returns void.
+    template <typename Call>
+    int exponent_of(Call&& call) {
+        if constexpr (std::is_void_v<decltype(call())>) {
+            call();
+            return 0;
+        }
+        else {
+            return call();
+        }
+    }
+
+    template <typename Fft>
+    both_directions<sample_of_t<Fft>> run_both(Fft& fft, const std::vector<sample_of_t<Fft>>& x) {
+        both_directions<sample_of_t<Fft>> r;
+        r.spectrum         = x;
+        r.forward_exponent = exponent_of([&] { return fft.forward_inplace(r.spectrum.data()); });
+        r.time             = r.spectrum;
+        r.inverse_exponent = exponent_of([&] { return fft.inverse_inplace(r.time.data()); });
         return r;
     }
 
-    TYPED_TEST(fft_rt_test, CopyProducesBitIdenticalOutput) {
-        constexpr std::size_t n = 512;
-        const auto            x = tap::dsp::test::random_signal<TypeParam>(n, 0x2545F491u);
+    template <typename Sample>
+    void expect_same_result(const both_directions<Sample>& a, const both_directions<Sample>& b, const char* what) {
+        expect_bit_identical(a.spectrum, b.spectrum, what);
+        expect_bit_identical(a.time, b.time, what);
+        EXPECT_EQ(a.forward_exponent, b.forward_exponent) << what << ": forward exponent differs";
+        EXPECT_EQ(a.inverse_exponent, b.inverse_exponent) << what << ": inverse exponent differs";
+    }
 
-        fft_t<TypeParam> original(n);
+    TYPED_TEST(fft_rt_test, CopyProducesBitIdenticalOutput) {
+        using sample            = sample_of_t<TypeParam>;
+        constexpr std::size_t n = 512;
+        const auto            x = tap::dsp::test::random_signal<sample>(n, 0x2545F491u);
+
+        TypeParam original(n);
         // Source already warmed (tables built) so the copy carries built tables.
         const auto from_original = run_both(original, x);
 
-        fft_t<TypeParam> copy(original);
-        const auto       from_copy = run_both(copy, x);
-        expect_bit_identical(from_copy.spectrum, from_original.spectrum, "copy forward");
-        expect_bit_identical(from_copy.time, from_original.time, "copy inverse");
+        TypeParam  copy(original);
+        const auto from_copy = run_both(copy, x);
+        expect_same_result(from_copy, from_original, "copy");
 
         // And the source is unaffected by having been copied.
         const auto again = run_both(original, x);
-        expect_bit_identical(again.spectrum, from_original.spectrum, "source forward after copy");
-        expect_bit_identical(again.time, from_original.time, "source inverse after copy");
+        expect_same_result(again, from_original, "source after copy");
     }
 
     TYPED_TEST(fft_rt_test, CopyOfUnwarmedSourceProducesBitIdenticalOutput) {
+        using sample            = sample_of_t<TypeParam>;
         constexpr std::size_t n = 512;
-        const auto            x = tap::dsp::test::random_signal<TypeParam>(n, 0x2545F491u);
+        const auto            x = tap::dsp::test::random_signal<sample>(n, 0x2545F491u);
 
         // Copied BEFORE any transform: with lazy tables (F6) both objects
         // build their own; with constructor-built tables both carry the same.
-        fft_t<TypeParam> original(n);
-        fft_t<TypeParam> copy(original);
-        const auto       from_copy     = run_both(copy, x);
-        const auto       from_original = run_both(original, x);
-        expect_bit_identical(from_copy.spectrum, from_original.spectrum, "unwarmed copy forward");
-        expect_bit_identical(from_copy.time, from_original.time, "unwarmed copy inverse");
+        TypeParam  original(n);
+        TypeParam  copy(original);
+        const auto from_copy     = run_both(copy, x);
+        const auto from_original = run_both(original, x);
+        expect_same_result(from_copy, from_original, "unwarmed copy");
     }
 
     TYPED_TEST(fft_rt_test, CopyAssignmentProducesBitIdenticalOutput) {
+        using sample            = sample_of_t<TypeParam>;
         constexpr std::size_t n = 512;
-        const auto            x = tap::dsp::test::random_signal<TypeParam>(n, 0x2545F491u);
+        const auto            x = tap::dsp::test::random_signal<sample>(n, 0x2545F491u);
 
-        fft_t<TypeParam> original(n);
-        const auto       from_original = run_both(original, x);
+        TypeParam  original(n);
+        const auto from_original = run_both(original, x);
 
         // Assigned over an engine of a DIFFERENT geometry, so the assignment
-        // has to replace every table, not just refresh one of the same size.
-        fft_t<TypeParam> target(4096);
+        // has to replace every table (and the Q15 work buffer), not just
+        // refresh one of the same size.
+        TypeParam target(4096);
         target = original;
         EXPECT_EQ(target.size(), n);
         EXPECT_EQ(target.num_bins(), n / 2 + 1);
         const auto from_target = run_both(target, x);
-        expect_bit_identical(from_target.spectrum, from_original.spectrum, "assigned forward");
-        expect_bit_identical(from_target.time, from_original.time, "assigned inverse");
+        expect_same_result(from_target, from_original, "assigned");
     }
 
 } // namespace

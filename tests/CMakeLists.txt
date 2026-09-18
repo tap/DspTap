@@ -127,6 +127,7 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_fft.cpp
         test_fft_arith.cpp
         test_fft_backend.cpp
+        test_fft_fixed.cpp
         test_fir_kernels.cpp
         test_kaiser.cpp
         test_log_mel.cpp
