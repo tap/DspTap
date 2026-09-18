@@ -187,7 +187,6 @@ namespace tap::dsp {
             /// @pre n is a power of two in [k_min_size, k_max_size].
             explicit fixed_point_rdft(std::size_t n)
                 : m_n(n)
-                , m_log2_n(log2_of(n))
                 , m_twiddles(make_twiddle_table(n / 2))
                 , m_post(make_real_post_pass_table(n))
                 , m_bitrev(make_bit_reversal_table(n / 2))
@@ -511,7 +510,6 @@ namespace tap::dsp {
             static constexpr int log2_of(std::size_t n) noexcept { return std::bit_width(n) - 1; }
 
             std::size_t                m_n;
-            int                        m_log2_n;
             std::vector<coeff>         m_twiddles; ///< W_M^k, M = N/2, interleaved (tables.h)
             std::vector<coeff>         m_post;     ///< real post-pass (wkr, wki) per bin
             std::vector<std::uint32_t> m_bitrev;   ///< permutation of the M complex outputs
