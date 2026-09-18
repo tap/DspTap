@@ -48,7 +48,7 @@ which stage pins them. Floating-point rows are the shipping `fft.h` at
 | Noise floor | `TODO(stage 2a)` against the compensated-DFT oracle | rms relative error vs double `< 1e-6` at N = 1024 (`FloatTracksDouble`); 1.105e-7 at N = 512 is the audit's Part 6 N2 reviewer-probe value, not reproduced by any committed test — re-measured and pinned at Stage 2a | `TODO(stage 3b)` per-bin floor vs level at N = 256 / 512 / 2048, vs the Welch model | `TODO(stage 3b)` |
 | Latency | 0 (block transform, no internal delay) | 0 | 0 | 0 |
 | Alignment | none required on `Sample*` | none (vDSP's internal split buffers are placed by the wrapper, not the caller) | none | none |
-| Shareability across threads | not today: Ooura tables are built lazily on the first transform (audit F6); `is_shareable` engine trait true for the port — `TODO(stage 2a, 4)` | not today: the vDSP / CMSIS engines carry scratch; false for those engines — `TODO(stage 4)` | `TODO(stage 3b)` (design: true) | `TODO(stage 3b)` (design: true) |
+| Shareability across threads | not today through `basic_real_fft` (Ooura tables are built lazily on the first transform, audit F6); the port (`detail::split_radix_rdft`, Stage 2a, tap/DspTap#28) builds its tables in the constructor and its transforms are `const noexcept`, so one engine object is shareable once constructed — `basic_real_fft` inherits this at 2b; the `is_shareable` engine trait is `TODO(stage 4)` | not today: the vDSP / CMSIS engines carry scratch; false for those engines — `TODO(stage 4)` | `TODO(stage 3b)` (design: true) | `TODO(stage 3b)` (design: true) |
 | Real-time safety | transforms `noexcept`, allocation-free (the float-I/O-on-double overloads are the exception and are slated for removal, D5) | same | `TODO(stage 3b)` | `TODO(stage 3b)` |
 | NaN / denormals | NaN propagates to every bin; denormal input is slow on x86 without FTZ, and FTZ differs between the Ooura, vDSP and CMSIS builds | same | not applicable / none | not applicable / none |
 
@@ -152,9 +152,35 @@ VFMA, any x86 built with `-march`). Therefore:
    run at 2^20, same binary and same libm on each host.
 2. The default-flags run is informational and pinned at a *measured* bound —
    a different fusion choice per stage accumulates over `log2 N` stages, and
-   "1 ulp" is an assumption, not a number.
-   `TODO(stage 2a)`: the measured max-ulp deviation at default flags, per host
-   (linux / windows / macos) and per QEMU leg, with compiler versions.
+   "1 ulp" is an assumption, not a number. Measured at Stage 2a on the head
+   of tap/DspTap#28 (`8afe6cf`), 2026-09-18, the informational target at
+   default flags on both sides, every material, forward and inverse
+   (`fft_parity_ooura_default_flags.ReportsMaxUlpVersusOoura`, run with
+   `-V` as its own CI step; CI run 35295206578, job ids in the table):
+
+   | Platform (job) | Toolchain | Sizes | max ulp, `double` | max ulp, `float` |
+   |---|---|---|---|---|
+   | `linux-ooura` (105446230919) | ubuntu-24.04, GNU 13.3.0, x86-64 without `-march` (no FMA) | 4 … 65536, 2^20 | 0 | 0 |
+   | `windows-ooura` (105446230835) | windows-2025-vs2026, MSVC 19.51.36256.0 (`/fp:precise`, no contraction) | 4 … 65536, 2^20 | 0 | 0 |
+   | `macos-vdsp` (105446230934) | macos-26-arm64, AppleClang 21.0.0.21000101, arm64 (FMA ISA, clang contracts per statement) | 4 … 65536, 2^20 | 0 | 0 |
+   | `cortex-m4-softfp` (105446230884) | arm-none-eabi-gcc 13.2.1 (15:13.2.rel1-2), QEMU 8.2.2, soft-float | 4 … 4096 | 0 | 0 |
+   | `cortex-m4f` (105446230771) | same toolchain, fpv4-sp-d16 (VFMA) | 4 … 4096 | 0 | 0 |
+   | `cortex-m33` (105446230920) | same toolchain, single-precision FPU (VFMA) | 4 … 4096 | 0 | 0 |
+   | `cortex-m55` (105446230931) | same toolchain, MVE (VFMA); CMSIS on for `tap::dsp` but the parity binaries do not link it | 4 … 4096 | 0 | 0 |
+   | local, this port's development host | g++ 13.3.0 and clang++ 18.1.3, x86-64 without `-march` | 4 … 65536, 2^20 | 0 | 0 |
+
+   Zero everywhere, including the three FMA-capable legs (macOS arm64, M4F,
+   M33, M55): because every statement is textually identical on the two
+   sides, each compiler makes the same fusion choices for both. The bench
+   binaries, built Release at default flags, say the same thing: the C and
+   the port print identical output checksums on every Ooura key (see the
+   instruction-count table). That is a property of these compilers on these
+   statements, not a guarantee, which is why the gate stays at
+   `-ffp-contract=off`. Not measured, and not claimed: x86-64 built with
+   `-march` (FMA), where the objdump probe shows g++ fusing the two sides
+   differently after inlining (588 fused instructions in a TU instantiating
+   the port vs 372 in the two C files, `-O3 -march=haswell`; clang 221 vs
+   333; both 0 / 0 with the flag).
 3. `fft.h` states whether `tap::dsp` exports `-ffp-contract=off` as an
    INTERFACE compile option (bit reproducibility across compilers) or leaves it
    to the consumer (VFMA speed on the M55). Today it is silently "whatever the
@@ -195,6 +221,48 @@ the parity gate depends on.
   scaffolding. Nothing in the reachable set self-recurses (`cftrec4` is a
   `while` plus a `for`).
 
+### What the Stage 2a port did with these rules (tap/DspTap#28, `8afe6cf`)
+
+- **Index types were not widened.** Part 4 permits `std::size_t`; the port
+  keeps the C's `int` throughout the helpers so the statements stay textually
+  identical, and the single `std::size_t` → `int` narrowing is the
+  constructor's. The tables are addressed through raw pointers loaded into
+  locals once per transform (`m_ip.data()`, `m_w.data()`), so `a`, `ip` and
+  `w` reach the helpers by parameter exactly as in the C. `-Wconversion`,
+  `-Wshadow`, `-Wpedantic` and `-Werror` were on for every build.
+- **The only textual changes to a kernel statement** are `double` →
+  `Sample` in declarations, `const` on the table pointers, the dropped local
+  prototypes and `USE_CDFT_THREADS` blocks, and one explicit cast in each of
+  `rftfsub` / `rftbsub` (`wkr = static_cast<Sample>(0.5 - c[nc - kk])`, the
+  narrowing the C's assignment performs). This was checked mechanically, not
+  by eye: a normalizer that strips whitespace, maps `Sample` → `double` and
+  undoes only those documented differences finds all 26 mechanically ported
+  functions token-identical to `fftsg.c` (`DIFFERENCES: 0`). `makewt` and
+  `makect` are the two hand-written functions, per the table-semantics rule.
+- **The table-semantics rule is load-bearing, shown by mutation.** With the
+  parity alias re-pointed at the port and one `makewt` line changed to
+  `std::cos(delta * static_cast<Sample>(j))` (i.e. `cosf` in the float
+  instantiation), the three float gates
+  (`ForwardIsBitIdenticalToOouraFloat`, `InverseIsBitIdenticalToOouraFloat`,
+  `LargeTransformIsBitIdenticalToOouraFloat`) fail and the three double gates
+  pass; restored, 7 / 7.
+- **The fp-contraction flag is load-bearing, shown by objdump.** The probe
+  from the parity file's comment at `-O3 -march=haswell`, counting
+  `vfmadd|vfmsub|vfnmadd|vfnmsub`, on the reference C (`fftsg.c` +
+  `fftsg_float.c`) and on a TU instantiating the port for both precisions:
+
+  | Compiler | default: C | default: port | `-ffp-contract=off`: C | `-ffp-contract=off`: port |
+  |---|---|---|---|---|
+  | gcc / g++ 13.3.0 | 372 | 588 | 0 | 0 |
+  | clang / clang++ 18.1.3 | 333 | 221 | 0 | 0 |
+
+- **The gate at `8afe6cf`**: memcmp identity, `double` and `float`, forward
+  and inverse, N = 4 … 65536 plus 2^20, five materials, on linux (g++ 13.3),
+  windows (MSVC 19.51), macos (AppleClang 21, arm64) and, at N ≤ 4096
+  against newlib's libm, on the four QEMU legs (arm-none-eabi-gcc 13.2.1);
+  locally also on clang++ 18.1. Every leg green on the first CI run of the
+  PR.
+
 ## Size and instruction counts, per target
 
 Seeded by the Stage 1b ratchet from the vendored C, then re-measured at 2b
@@ -202,30 +270,71 @@ Seeded by the Stage 1b ratchet from the vendored C, then re-measured at 2b
 SHA, toolchain and QEMU versions; the gate itself lives in
 `bench/baselines.json` and the CI job, never in this file.
 
-### `.text` per profile at N = 512 (`TODO(stage 1b, 2b, 3b)`)
+### `.text` per profile at N = 512 (`TODO(stage 2b, 3b)` for the ceilings and the fixed-point columns)
 
-| Target | float, C | float, port | Q15 | Q31 | double (host only) | SHA / toolchain |
-|---|---|---|---|---|---|---|
-| `m4-softfp` | | | | | n/a | |
-| `m4f` | | | | | n/a | |
-| `m33` | | | | | n/a | |
-| `m55` (CMSIS on) | | | | | n/a | |
-| `m55-ooura` | | | | | n/a | |
+Bytes in the `.text` row of `arm-none-eabi-size -A` on the MinSizeRel size
+probe (`bench/size_probe.cpp`: startup + one transform + what it pulls in;
+no stdio). The port column is informational at Stage 2a (not a ceiling until
+2b routes the port). Measured on the head of tap/DspTap#28 (`8afe6cf`), bench
+run 35295262684, 2026-09-18, arm-none-eabi-gcc 13.2.1 (15:13.2.rel1-2),
+QEMU 8.2.2 (1:8.2.2+ds-0ubuntu1.18), ubuntu-24.04.
+
+| Target | float, C | float, port | port / C | Q15 | Q31 | double (host only) | SHA / toolchain |
+|---|---|---|---|---|---|---|---|
+| `m4-softfp` | 51,729 | 53,289 | 1.0302 | | | n/a | `8afe6cf`, gcc 13.2.1, run 35295262684 job 105446394297 |
+| `m4f` | 43,153 | 44,601 | 1.0336 | | | n/a | same, job 105446394232 |
+| `m33` | 42,601 | 44,009 | 1.0331 | | | n/a | same, job 105446394276 |
+| `m55` (CMSIS on) | 107,681 (CMSIS-DSP Helium, not Ooura) | 39,281 | 0.3648 (vs CMSIS) | | | n/a | same, job 105446393983 |
+| `m55-ooura` | 38,505 | 39,281 | 1.0202 | | | n/a | same, job 105446394192 |
+
+The port costs 0.8 – 1.6 KB more `.text` than the C on the Ooura keys
+(+2.0 % to +3.4 %); the two `m55` rows carry the same port probe, so the
+39,281 is one number measured twice.
 
 Pre-ratchet reference points from the audit (thumbv8.1m, hard float,
 rdft-reachable text, `--gc-sections`): float 15.7 KB at `-Os`, 19.9 KB at
 `-O2`; double (soft-float) 39.9 KB at `-O2`.
 
-### Instructions per forward + inverse, per scenario (`TODO(stage 1b, 2b, 3b)`)
+### Instructions per scenario (`TODO(stage 2b, 3b)` for the flip and the fixed-point rows)
 
-| Scenario | `m4-softfp` | `m4f` | `m33` | `m55` | `m55-ooura` | Baseline SHA |
+Executed guest instructions for the whole scenario binary (2^20 samples per
+direction through `forward()` + `inverse()`, the out-of-place surface with
+its copy loop and 2/N scaling, plus construction and the checksum fold;
+`bench/README.md`). The C rows are the seeded baselines (`bench/baselines.json`,
+seeded at `df482d1`, run 35281280300) and were reproduced at +0.00 % on the
+head of tap/DspTap#28. The `_port` rows are the Stage 2a port measured in
+the same run (35295262684, 2026-09-18, arm-none-eabi-gcc 13.2.1, QEMU 8.2.2),
+informational: nothing is routed at the port until 2b. "ratio" is
+port / C on that key; "checksums" says whether the two binaries' FNV-1a
+output fingerprints agree, i.e. whether the port is bit-identical to the C
+at the bench's default flags (Release `-O2`, VFMA on the M4F / M33 / M55).
+
+| Scenario | `m4-softfp` | `m4f` | `m33` | `m55` (C = CMSIS) | `m55-ooura` | Source |
 |---|---|---|---|---|---|---|
-| `rfft_f32_512` | | | | | | |
-| `rfft_f32_2048` | | | | | | |
+| `rfft_f32_512` (C) | 1,868,441,244 | 98,090,666 | 102,248,169 | 52,382,331 | 94,561,954 | seeded `df482d1`; +0.00 % at `8afe6cf` |
+| `rfft_f32_512_port` | 1,864,904,581 | 97,126,274 | 100,833,265 | 89,407,453 | 89,047,005 | `8afe6cf`, run 35295262684 |
+| ratio port / C | 0.9981 | 0.9902 | 0.9862 | 1.7068 (vs CMSIS) | 0.9417 | |
+| checksums | identical | identical | identical | differ (CMSIS ≠ Ooura, expected) | identical | |
+| `rfft_f32_2048` (C) | 2,296,984,479 | 111,859,257 | 116,385,409 | 54,858,120 | 107,806,480 | seeded `df482d1`; +0.00 % at `8afe6cf` |
+| `rfft_f32_2048_port` | 2,294,343,851 | 111,270,714 | 115,396,527 | 102,870,129 | 102,644,849 | `8afe6cf`, run 35295262684 |
+| ratio port / C | 0.9989 | 0.9947 | 0.9915 | 1.8752 (vs CMSIS) | 0.9521 | |
+| checksums | identical | identical | identical | differ (CMSIS ≠ Ooura, expected) | identical | |
 | `rfft_f64_512` (host-class only) | n/a | n/a | n/a | n/a | n/a | |
-| `rfft_q15_512` | | | | | | |
-| `rfft_q31_512` | | | | | | |
-| `rfft_q31_2048` | | | | | | |
+| `rfft_q15_512` | | | | | | `TODO(stage 3b)` |
+| `rfft_q31_512` | | | | | | `TODO(stage 3b)` |
+| `rfft_q31_2048` | | | | | | `TODO(stage 3b)` |
+
+Read against the ±3 % ratchet 2b will apply: the port executes 0.1 % to
+5.8 % *fewer* instructions than the C on every Ooura key, well inside the
+band on the low side (the two-sided gate would flag an improvement beyond
+3 % on `m55-ooura`, 0.9417 / 0.9521, so 2b re-records rather than absorbs
+it; `m33` at 0.9862 / 0.9915 and the M4 keys are inside). Against CMSIS-DSP
+Helium on the deployed `m55` profile the port is 1.7 – 1.9× the count, the
+same order as the "~3× fewer instructions" the CMSIS wrapper quotes for the
+C; `m55` stays on CMSIS and the port is its fallback, as today. The port's
+count on the `m55` key (89,407,453) differs from the same port binary's
+count on `m55-ooura` (89,047,005) by 0.4 %: the two builds differ only in
+what `tap::dsp` links, so this is startup and layout, not the transform.
 
 ### Host microbenchmark (`bench/bench_fft.cpp`, informational)
 
@@ -241,7 +350,9 @@ are re-measured here, not carried forward on trust.
 
 The vendored `fftsg.c` was textually identical between MuTap and AmbiTap
 before DspTap consolidated the wrappers; the FFT's Tap lineage is the
-AmbiTap/MuTap one. What is vendored is one source file of Ooura's package plus
+AmbiTap/MuTap one. The C++20 port landed at Stage 2a (tap/DspTap#28) as
+`include/tap/dsp/fft/split_radix.h`, beside the C and routed nowhere, with
+the banner below in place; the C stays the parity reference. What is vendored is one source file of Ooura's package plus
 its `readme.txt` — see `NOTICE.md` for exactly how the vendored file differs
 from upstream. Provenance stays visible after the port through four things:
 the port header's attribution banner, `NOTICE.md`, the parity test against
@@ -317,9 +428,11 @@ words the earlier notice used — overstated the grant and are not used.
 
 This is a maintainer judgement call, not legal advice.
 
-### The port header's banner, ready to paste
+### The port header's banner
 
-The four house lines come first (STYLE.md §3: `@file`, `@brief`, SPDX,
+Landed verbatim in `include/tap/dsp/fft/split_radix.h` at Stage 2a
+(tap/DspTap#28), plus one line naming the modifications and their date. The
+four house lines come first (STYLE.md §3: `@file`, `@brief`, SPDX,
 copyright), with both copyright holders as lines 4–5, then a `//` prose block
 carrying the notice verbatim and the derivative statement. The prose block is
 a **documented exception** to the three-line house banner; the wave-2 port PR
