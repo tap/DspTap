@@ -28,12 +28,17 @@ which is how the seeding commit is assembled from the job's artifacts.
 Informational scenarios. A scenario whose key ends in INFORMATIONAL_SUFFIX
 ("_port": the Stage 2a C++20 port built beside the vendored C, until Stage 2c
 retires the C) is counted and printed with its ratio to the sibling scenario
-(the key without the suffix) but is never a gate entry: it cannot fail the
-run, --update never writes it to the baselines, a baseline that names it is
+(the key without the suffix) but is never a gate entry: it never enters the
+verdict (a `_port` binary that times out, faults or does not print ok=1 is
+reported as "informational binary failed: <reason>" and the run continues to
+the gated scenarios' verdict, where only a gated binary's failure aborts the
+run), --update never writes it to the baselines, a baseline that names it is
 reported and ignored, and --record files it under a separate top-level
-"informational" key that --merge skips. This is what lets a pull request
-show the port/C ratio in the job log without seeding anything (nothing is
-ratcheted at the port until Stage 2b routes it and the bare key measures it).
+"informational" key that --merge skips (--merge also drops a `_port` key
+found under a real target, so a hand-edited record file cannot seed one).
+This is what lets a pull request show the port/C ratio in the job log without
+seeding anything (nothing is ratcheted at the port until Stage 2b routes it
+and the bare key measures it).
 
 The QEMU machine per target, the binary prefix and the output markers are
 DspTap's; the gate logic is MuTap's.
@@ -76,22 +81,30 @@ def qemu_cmd(target: str, plugin: str, binary: str) -> list[str]:
             "-d", "plugin", "-plugin", plugin, "-kernel", binary]
 
 
+class MeasurementError(Exception):
+    """A binary that did not yield a count: QEMU timed out, the workload did
+    not print the DONE marker (fault, hang caught by the timeout, ok=0), or
+    the plugin's count line is missing. Fatal for a gated scenario; reported
+    and skipped for an informational one (see the module docstring)."""
+
+
 def measure(target: str, plugin: str, binary: str) -> tuple[int, dict[str, str]]:
     """Returns the instruction count and the DONE line's key=value fields
-    (engine, backend, scenario, checksum)."""
+    (engine, backend, scenario, checksum). Raises MeasurementError when the
+    binary produced no count; the QEMU output is echoed to stderr first."""
     try:
         proc = subprocess.run(qemu_cmd(target, plugin, binary), timeout=1200,
                               capture_output=True, text=True)
     except subprocess.TimeoutExpired:
-        raise SystemExit(f"{binary}: timed out after 1200 s under QEMU")
+        raise MeasurementError(f"{binary}: timed out after 1200 s under QEMU")
     out = proc.stdout + proc.stderr
     if DONE_MARKER not in out:
         print(out, file=sys.stderr)
-        raise SystemExit(f"{binary}: workload did not complete cleanly")
+        raise MeasurementError(f"{binary}: workload did not complete cleanly")
     m = COUNT_RE.search(out)
     if not m:
         print(out, file=sys.stderr)
-        raise SystemExit(f"{binary}: no TAP_DSP_INSN_COUNT (plugin not loaded?)")
+        raise MeasurementError(f"{binary}: no TAP_DSP_INSN_COUNT (plugin not loaded?)")
     done = DONE_RE.search(out)
     fields = dict(kv.split("=", 1) for kv in done.group(1).split() if "=" in kv) if done else {}
     return int(m.group(1)), fields
@@ -107,9 +120,15 @@ def merge(path: pathlib.Path, files: list[str]) -> int:
         for target, scenarios in json.loads(pathlib.Path(f).read_text()).items():
             if target == INFORMATIONAL_KEY:
                 continue  # never a gate entry (see the module docstring)
-            if scenarios:
-                baselines[target] = scenarios
-                print(f"{target}: {len(scenarios)} scenario(s) from {f}")
+            # Nor is a `_port` key nested under a real target: --update and
+            # --record never write one there, so it can only come from a
+            # hand-edited file, and it is dropped rather than seeded.
+            gated = {k: v for k, v in scenarios.items() if not k.endswith(INFORMATIONAL_SUFFIX)}
+            for dropped in sorted(set(scenarios) - set(gated)):
+                print(f"{target}: {dropped} from {f} DROPPED (informational scenario; never a gate entry)")
+            if gated:
+                baselines[target] = gated
+                print(f"{target}: {len(gated)} scenario(s) from {f}")
     write(path, baselines)
     print(f"merged into {path}")
     return 0
@@ -119,11 +138,13 @@ def describe(fields: dict[str, str]) -> str:
     return f"[engine={fields.get('engine', '?')} backend={fields.get('backend', '?')}]"
 
 
-def report_informational(informational: dict, measured: dict, fields: dict) -> None:
-    if not informational:
+def report_informational(informational: dict, failed: dict, measured: dict, fields: dict) -> None:
+    if not informational and not failed:
         return
     print(f"--- informational: '{INFORMATIONAL_SUFFIX}' scenarios (counted, never gated, "
           "never baselined; Stage 2a until 2c) ---")
+    for scenario, reason in sorted(failed.items()):
+        print(f"{scenario}: informational binary failed: {reason}")
     for scenario, count in sorted(informational.items()):
         sibling = scenario[: -len(INFORMATIONAL_SUFFIX)]
         line = f"{scenario}: {count} insns {describe(fields[scenario])}"
@@ -169,10 +190,20 @@ def main() -> int:
     failures = []
     measured = {}
     informational = {}
+    informational_failed = {}
     fields = {}
     for binary in binaries:
         scenario = os.path.basename(binary).removeprefix(PREFIX)
-        count, fields[scenario] = measure(args.target, args.plugin, binary)
+        try:
+            count, fields[scenario] = measure(args.target, args.plugin, binary)
+        except MeasurementError as e:
+            if not scenario.endswith(INFORMATIONAL_SUFFIX):
+                raise SystemExit(str(e))  # a gated binary that yields no count aborts the run
+            # An informational binary that yields no count is reported (in
+            # the informational block below, so it lands in the job log and
+            # the step summary) and never touches the verdict.
+            informational_failed[scenario] = str(e)
+            continue
         if scenario.endswith(INFORMATIONAL_SUFFIX):
             informational[scenario] = count
             if scenario in base:
@@ -215,7 +246,7 @@ def main() -> int:
         if not args.update:
             failures.append(scenario)
 
-    report_informational(informational, measured, fields)
+    report_informational(informational, informational_failed, measured, fields)
 
     if args.record:
         record = {args.target: measured}

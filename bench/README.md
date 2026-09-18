@@ -55,11 +55,15 @@ float scenario builds twice (`bench/icount/CMakeLists.txt`), and
 `scripts/icount.py` treats the `_port` suffix (`INFORMATIONAL_SUFFIX`) as
 informational — the binary is counted and printed after the gated
 scenarios, beside its C sibling, with the ratio port/C and whether the two
-`DONE` checksums agree — but it can never fail the run, `--update` never
-writes it to `baselines.json`, a baseline that names it is reported and
-ignored, and `--record` files it under a separate top-level `informational`
-key that `--merge` skips. That is what lets a pull request show the ratio in
-the job log without seeding anything: nothing is ratcheted at the port until
+`DONE` checksums agree — but it never enters the verdict: a `_port` binary
+that times out, faults or does not print `ok=1` is reported as
+`informational binary failed: <reason>` and the run continues to the gated
+scenarios' verdict; `--update` never writes it to `baselines.json`; a
+baseline that names it is reported and ignored; and `--record` files it
+under a separate top-level `informational` key that `--merge` skips
+(`--merge` also drops a `_port` key found under a real target, so a
+hand-edited file cannot seed one). That is what lets a pull request show the
+ratio in the job log without seeding anything: nothing is ratcheted at the port until
 Stage 2b routes `basic_real_fft` at it, at which point the bare key measures
 the port against these C baselines and the `_port` binaries become
 redundant. On the `m55` key the C sibling is the CMSIS-DSP Helium backend,
@@ -111,10 +115,14 @@ default) — the class as built, which is the vendored Ooura C, or on the `m55`
 key the CMSIS-DSP Helium backend behind the same class — or `split_radix`,
 the Stage 2a port (`include/tap/dsp/fft/split_radix.h`), printed as
 `engine=split_radix backend=split_radix` since the port has no backend
-behind it. Whatever the variable says, the `_port` binaries above are always
-built against the port, so every bench run from Stage 2a until 2c reports
-both counts and their ratio. That ratio is what Stage 2b's flip is judged
-on: the port within ±3 % of the C on every QEMU leg (audit Part 3).
+behind it. At the default the `_port` binaries above (and the `_port` size
+probe) are also built, against the port, so every bench run from Stage 2a
+until 2c reports both counts and their ratio; when the variable is already
+`split_radix` the bare-keyed binaries *are* the port and the `_port` pairs
+are not built (`bench/icount/CMakeLists.txt`, `bench/CMakeLists.txt`: the
+port compared to itself measures nothing). That ratio is what Stage 2b's
+flip is judged on: the port within ±3 % of the C on every QEMU leg (audit
+Part 3).
 
 ## Baselines and targets
 
@@ -238,7 +246,10 @@ python3 scripts/icount.py --merge a.json b.json    # fold per-key files into one
   `tap_dsp_size_probe_rfft_f32_512_port` (the port) and prints its `.text`
   and the port/C ratio beside the C's, informational: the ceiling applies to
   the C probe only until Stage 2b routes the port, and the port's numbers go
-  into `docs/fft-design.md` from the job log.
+  into `docs/fft-design.md` from the job log. The step runs with `pipefail`
+  and fails on a `size` that fails or prints no numeric `.text` row, for
+  either probe: a measurement that cannot be taken is an error, not a
+  `0.0000` ratio.
 - **Wall clock is never a gate.** `bench_fft` is the local tool for the
   desktop and Apple vDSP claims; its numbers go into `docs/fft-design.md`
   with machine and date.

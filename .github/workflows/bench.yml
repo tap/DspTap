@@ -19,9 +19,15 @@ name: Bench
 # the size step prints the port's .text beside the C's — INFORMATIONAL in
 # both cases: never gated, never baselined, never a ceiling, because nothing
 # is routed at the port yet (docs/audit-fft-and-code-smells.md, Part 3 Stage
-# 2a). The `m55` key's sibling is CMSIS-DSP, so the port/C comparison that
-# matters there is against the `m55-ooura` numbers. Stage 2b flips the
-# routing, and the bare keys then ratchet the port against these C baselines.
+# 2a). Precisely: a `_port` count never enters icount.py's verdict, and a
+# `_port` binary that does not complete under QEMU is printed as
+# "informational binary failed" and the gated verdict still runs; the port
+# size probe is built and measured in the size step like the C probe, so a
+# probe that fails to build or to measure fails that step (that is a broken
+# measurement, not a gate on the number). The `m55` key's sibling is
+# CMSIS-DSP, so the port/C comparison that matters there is against the
+# `m55-ooura` numbers. Stage 2b flips the routing, and the bare keys then
+# ratchet the port against these C baselines.
 #
 # Toolchain files come from the Stage 1 CI-legs PR (cmake/arm-cortex-m4-mps2.cmake
 # with TAP_DSP_M4_FPU, cmake/arm-cortex-m33-mps2.cmake, cmake/arm-cortex-m55-mps3.cmake);
@@ -137,8 +143,9 @@ jobs:
           gcc -shared -fPIC $(pkg-config --cflags glib-2.0) -I/tmp \
             -o "$PLUGIN" tools/qemu_insn_plugin/insn_count.c
 
-      # Release (-O2) workloads, matching how baselines are recorded. Tests
-      # off: this job counts instructions; ci.yml runs the suites.
+      # Release workloads (CMake's Release default for GCC, -O3 -DNDEBUG; no
+      # toolchain file overrides it), matching how baselines are recorded.
+      # Tests off: this job counts instructions; ci.yml runs the suites.
       - name: Build workloads (Release)
         run: >
           cmake -S . -B "$BUILD_DIR"
@@ -155,9 +162,13 @@ jobs:
       # NOLOAD sections into "text"). Gates only once text_ceiling is nonzero,
       # and only on the C probe: the port probe (`_port`, the Stage 2a C++20
       # engine) is printed beside it for the record and is not gated until
-      # Stage 2b routes the port.
+      # Stage 2b routes the port. pipefail (Part 13: every step that pipes
+      # through tee sets it) so a failing `size` fails the step, and a size
+      # listing without a numeric .text row fails it too — for either probe —
+      # instead of printing an empty figure and a 0.0000 ratio.
       - name: Size probe (MinSizeRel, .text)
         run: |
+          set -eo pipefail
           cmake -S . -B "$SIZE_DIR" \
             -DCMAKE_BUILD_TYPE=MinSizeRel \
             -DCMAKE_TOOLCHAIN_FILE=${{ matrix.toolchain }} \
@@ -169,6 +180,12 @@ jobs:
           arm-none-eabi-size -A "$probe_port" | tee size-port.txt
           text=$(awk '$1 == ".text" { print $2 }' size.txt)
           text_port=$(awk '$1 == ".text" { print $2 }' size-port.txt)
+          case "$text" in
+            ''|*[!0-9]*) echo "::error::$KEY: C probe .text unavailable (no numeric .text row in size.txt: '$text')"; exit 1 ;;
+          esac
+          case "$text_port" in
+            ''|*[!0-9]*) echo "::error::$KEY: port .text unavailable (no numeric .text row in size-port.txt: '$text_port')"; exit 1 ;;
+          esac
           ceiling=${{ matrix.text_ceiling }}
           echo "$KEY: .text = $text bytes (ceiling: $ceiling; 0 = not yet recorded)"
           echo "$KEY: port .text = $text_port bytes (informational; C probe $text bytes; ratio port/C = $(awk -v p="$text_port" -v c="$text" 'BEGIN { printf "%.4f", p / c }'))"
