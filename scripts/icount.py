@@ -25,6 +25,16 @@ Seeding runs on pushes to main, never from a pull request (bench.yml); --merge
 folds several per-target files (each with one target filled in) into one,
 which is how the seeding commit is assembled from the job's artifacts.
 
+Informational scenarios. A scenario whose key ends in INFORMATIONAL_SUFFIX
+("_port": the Stage 2a C++20 port built beside the vendored C, until Stage 2c
+retires the C) is counted and printed with its ratio to the sibling scenario
+(the key without the suffix) but is never a gate entry: it cannot fail the
+run, --update never writes it to the baselines, a baseline that names it is
+reported and ignored, and --record files it under a separate top-level
+"informational" key that --merge skips. This is what lets a pull request
+show the port/C ratio in the job log without seeding anything (nothing is
+ratcheted at the port until Stage 2b routes it and the bare key measures it).
+
 The QEMU machine per target, the binary prefix and the output markers are
 DspTap's; the gate logic is MuTap's.
 """
@@ -51,6 +61,9 @@ MACHINES = {
 PREFIX = "tap_dsp_icount_"
 DONE_MARKER = "TAP_DSP_ICOUNT_DONE ok=1"
 COUNT_RE = re.compile(r"TAP_DSP_INSN_COUNT (\d+)")
+DONE_RE = re.compile(r"TAP_DSP_ICOUNT_DONE ok=1 (.*)")
+INFORMATIONAL_SUFFIX = "_port"
+INFORMATIONAL_KEY = "informational"
 
 
 def qemu_cmd(target: str, plugin: str, binary: str) -> list[str]:
@@ -63,7 +76,9 @@ def qemu_cmd(target: str, plugin: str, binary: str) -> list[str]:
             "-d", "plugin", "-plugin", plugin, "-kernel", binary]
 
 
-def measure(target: str, plugin: str, binary: str) -> int:
+def measure(target: str, plugin: str, binary: str) -> tuple[int, dict[str, str]]:
+    """Returns the instruction count and the DONE line's key=value fields
+    (engine, backend, scenario, checksum)."""
     try:
         proc = subprocess.run(qemu_cmd(target, plugin, binary), timeout=1200,
                               capture_output=True, text=True)
@@ -77,7 +92,9 @@ def measure(target: str, plugin: str, binary: str) -> int:
     if not m:
         print(out, file=sys.stderr)
         raise SystemExit(f"{binary}: no TAP_DSP_INSN_COUNT (plugin not loaded?)")
-    return int(m.group(1))
+    done = DONE_RE.search(out)
+    fields = dict(kv.split("=", 1) for kv in done.group(1).split() if "=" in kv) if done else {}
+    return int(m.group(1)), fields
 
 
 def write(path: pathlib.Path, baselines: dict) -> None:
@@ -88,12 +105,37 @@ def merge(path: pathlib.Path, files: list[str]) -> int:
     baselines = json.loads(path.read_text()) if path.exists() else {}
     for f in files:
         for target, scenarios in json.loads(pathlib.Path(f).read_text()).items():
+            if target == INFORMATIONAL_KEY:
+                continue  # never a gate entry (see the module docstring)
             if scenarios:
                 baselines[target] = scenarios
                 print(f"{target}: {len(scenarios)} scenario(s) from {f}")
     write(path, baselines)
     print(f"merged into {path}")
     return 0
+
+
+def describe(fields: dict[str, str]) -> str:
+    return f"[engine={fields.get('engine', '?')} backend={fields.get('backend', '?')}]"
+
+
+def report_informational(informational: dict, measured: dict, fields: dict) -> None:
+    if not informational:
+        return
+    print(f"--- informational: '{INFORMATIONAL_SUFFIX}' scenarios (counted, never gated, "
+          "never baselined; Stage 2a until 2c) ---")
+    for scenario, count in sorted(informational.items()):
+        sibling = scenario[: -len(INFORMATIONAL_SUFFIX)]
+        line = f"{scenario}: {count} insns {describe(fields[scenario])}"
+        if sibling in measured:
+            base = measured[sibling]
+            same = fields[scenario].get("checksum") == fields[sibling].get("checksum")
+            line += (f"; {sibling}: {base} insns {describe(fields[sibling])}"
+                     f"; ratio {scenario}/{sibling} = {count / base:.4f}"
+                     f"; output checksums {'identical' if same else 'DIFFER'}")
+        else:
+            line += f"; no sibling {sibling} to compare against"
+        print(line)
 
 
 def main() -> int:
@@ -126,9 +168,17 @@ def main() -> int:
 
     failures = []
     measured = {}
+    informational = {}
+    fields = {}
     for binary in binaries:
         scenario = os.path.basename(binary).removeprefix(PREFIX)
-        count = measure(args.target, args.plugin, binary)
+        count, fields[scenario] = measure(args.target, args.plugin, binary)
+        if scenario.endswith(INFORMATIONAL_SUFFIX):
+            informational[scenario] = count
+            if scenario in base:
+                print(f"{scenario}: baseline {base[scenario]} IGNORED (informational scenario; "
+                      "remove it from bench/baselines.json)")
+            continue
         measured[scenario] = count
         recorded = base.get(scenario)
         if recorded is None:
@@ -155,21 +205,29 @@ def main() -> int:
                   f"({delta:+.2%}) {verdict}")
 
     # A recorded scenario with no binary is a dead gate entry (renamed or
-    # removed workload); compare mode fails on it, --update drops it.
+    # removed workload); compare mode fails on it, --update drops it. An
+    # informational key in the baselines is not a gate entry either way.
     for scenario in sorted(set(base) - set(measured)):
+        if scenario.endswith(INFORMATIONAL_SUFFIX):
+            continue
         print(f"{scenario}: baseline {base[scenario]} but no binary "
               "(STALE BASELINE — run icount.py --update and commit)")
         if not args.update:
             failures.append(scenario)
 
+    report_informational(informational, measured, fields)
+
     if args.record:
-        pathlib.Path(args.record).write_text(
-            json.dumps({args.target: measured}, indent=2, sort_keys=True) + "\n")
+        record = {args.target: measured}
+        if informational:
+            record[INFORMATIONAL_KEY] = {args.target: informational}
+        pathlib.Path(args.record).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
         print(f"recorded {args.record}")
 
     if args.update:
-        # Exactly the measured scenarios: stale keys for renamed/removed
-        # workloads must not linger as dead gate entries.
+        # Exactly the measured (gated) scenarios: stale keys for renamed or
+        # removed workloads must not linger as dead gate entries, and the
+        # informational scenarios never become gate entries.
         baselines[args.target] = measured
         write(path, baselines)
         print(f"updated {path}")

@@ -11,6 +11,18 @@ name: Bench
 #   m55        Cortex-M55, Helium            (mps3-an547)  CMSIS-DSP (deployed profile)
 #   m55-ooura  Cortex-M55, TAP_DSP_FFT_CMSIS=OFF (mps3-an547)  Ooura float32 fallback
 #
+# Stage 2a until 2c: every float scenario is also built against the C++20
+# port (tap_dsp_icount_<scenario>_port, TAP_DSP_BENCH_ENGINE=split_radix) and
+# the float size probe likewise (tap_dsp_size_probe_rfft_f32_512_port).
+# scripts/icount.py counts the `_port` binaries and prints each beside its C
+# sibling with the port/C ratio and whether the output checksums agree, and
+# the size step prints the port's .text beside the C's — INFORMATIONAL in
+# both cases: never gated, never baselined, never a ceiling, because nothing
+# is routed at the port yet (docs/audit-fft-and-code-smells.md, Part 3 Stage
+# 2a). The `m55` key's sibling is CMSIS-DSP, so the port/C comparison that
+# matters there is against the `m55-ooura` numbers. Stage 2b flips the
+# routing, and the bare keys then ratchet the port against these C baselines.
+#
 # Toolchain files come from the Stage 1 CI-legs PR (cmake/arm-cortex-m4-mps2.cmake
 # with TAP_DSP_M4_FPU, cmake/arm-cortex-m33-mps2.cmake, cmake/arm-cortex-m55-mps3.cmake);
 # the float32 test legs themselves live in ci.yml. This workflow owns only the
@@ -140,20 +152,27 @@ jobs:
       # The .text ceilings (docs/audit-fft-and-code-smells.md, Part 10 item 4)
       # are measured on the size probe built MinSizeRel, like the test legs,
       # with `size -A` (the .text row alone; Berkeley format folds .rodata and
-      # NOLOAD sections into "text"). Gates only once text_ceiling is nonzero.
+      # NOLOAD sections into "text"). Gates only once text_ceiling is nonzero,
+      # and only on the C probe: the port probe (`_port`, the Stage 2a C++20
+      # engine) is printed beside it for the record and is not gated until
+      # Stage 2b routes the port.
       - name: Size probe (MinSizeRel, .text)
         run: |
           cmake -S . -B "$SIZE_DIR" \
             -DCMAKE_BUILD_TYPE=MinSizeRel \
             -DCMAKE_TOOLCHAIN_FILE=${{ matrix.toolchain }} \
             -DTAP_DSP_BUILD_TESTS=OFF -DTAP_DSP_BUILD_BENCH=ON ${{ matrix.flags }}
-          cmake --build "$SIZE_DIR" -j 4 --target tap_dsp_size_probe_rfft_f32_512
+          cmake --build "$SIZE_DIR" -j 4 --target tap_dsp_size_probe_rfft_f32_512 tap_dsp_size_probe_rfft_f32_512_port
           probe="$SIZE_DIR/bench/tap_dsp_size_probe_rfft_f32_512"
+          probe_port="$SIZE_DIR/bench/tap_dsp_size_probe_rfft_f32_512_port"
           arm-none-eabi-size -A "$probe" | tee size.txt
+          arm-none-eabi-size -A "$probe_port" | tee size-port.txt
           text=$(awk '$1 == ".text" { print $2 }' size.txt)
+          text_port=$(awk '$1 == ".text" { print $2 }' size-port.txt)
           ceiling=${{ matrix.text_ceiling }}
           echo "$KEY: .text = $text bytes (ceiling: $ceiling; 0 = not yet recorded)"
-          { echo "### size $KEY (MinSizeRel, size -A)"; echo "- tap_dsp_size_probe_rfft_f32_512 .text = $text bytes (ceiling $ceiling)"; } >> "$GITHUB_STEP_SUMMARY"
+          echo "$KEY: port .text = $text_port bytes (informational; C probe $text bytes; ratio port/C = $(awk -v p="$text_port" -v c="$text" 'BEGIN { printf "%.4f", p / c }'))"
+          { echo "### size $KEY (MinSizeRel, size -A)"; echo "- tap_dsp_size_probe_rfft_f32_512 .text = $text bytes (ceiling $ceiling)"; echo "- tap_dsp_size_probe_rfft_f32_512_port .text = $text_port bytes (informational, Stage 2a port; not gated)"; } >> "$GITHUB_STEP_SUMMARY"
           if [ "$ceiling" -gt 0 ] && [ "$text" -gt "$ceiling" ]; then
             echo "::error::$KEY: .text $text bytes exceeds the recorded ceiling $ceiling (bench/README.md, Sizes)"
             exit 1
@@ -190,7 +209,9 @@ jobs:
 
       # One step, three modes. The counts are always measured and always
       # recorded to measured-<key>.json; the per-scenario lines go to the
-      # step summary; then the mode decides the verdict.
+      # step summary; then the mode decides the verdict. The `_port`
+      # scenarios are in the same output, after the gated ones, with their
+      # port/C ratio; icount.py never counts them toward the verdict.
       - name: Count (${{ matrix.key }})
         env:
           MODE: ${{ steps.mode.outputs.mode }}

@@ -40,16 +40,36 @@ comes from QEMU on the legs.
 One binary per scenario, selected by compile definitions (bare metal has no
 argv), all built from `icount/icount_main.cpp`:
 
-| scenario | profile | N | targets |
-|---|---|---|---|
-| `rfft_f32_512` | float | 512 | all legs |
-| `rfft_f32_2048` | float | 2048 | all legs |
-| `rfft_f64_512` | double | 512 | host-class only: soft-float double is not a profile, so the bare-metal legs neither build nor baseline it |
+| scenario | profile | N | engine | targets | gated |
+|---|---|---|---|---|---|
+| `rfft_f32_512` | float | 512 | `TAP_DSP_BENCH_ENGINE` (the vendored C by default; CMSIS behind it on `m55`) | all legs | yes |
+| `rfft_f32_2048` | float | 2048 | as above | all legs | yes |
+| `rfft_f64_512` | double | 512 | as above | host-class only: soft-float double is not a profile, so the bare-metal legs neither build nor baseline it | no key counts it |
+| `rfft_f32_512_port` | float | 512 | `split_radix`, the Stage 2a C++20 port, called directly | all legs | **no** — informational until Stage 2b |
+| `rfft_f32_2048_port` | float | 2048 | `split_radix` | all legs | **no** — informational until Stage 2b |
 
 Stage 3b adds `rfft_q15_512`, `rfft_q31_512` and `rfft_q31_2048` (Part 11).
 
-Each scenario constructs one `tap::dsp::basic_real_fft<Sample>`, then runs a
-forward + inverse loop over a four-block xorshift corpus for 2^20 samples per
+The `_port` scenarios exist from Stage 2a until Stage 2c retires the C: each
+float scenario builds twice (`bench/icount/CMakeLists.txt`), and
+`scripts/icount.py` treats the `_port` suffix (`INFORMATIONAL_SUFFIX`) as
+informational — the binary is counted and printed after the gated
+scenarios, beside its C sibling, with the ratio port/C and whether the two
+`DONE` checksums agree — but it can never fail the run, `--update` never
+writes it to `baselines.json`, a baseline that names it is reported and
+ignored, and `--record` files it under a separate top-level `informational`
+key that `--merge` skips. That is what lets a pull request show the ratio in
+the job log without seeding anything: nothing is ratcheted at the port until
+Stage 2b routes `basic_real_fft` at it, at which point the bare key measures
+the port against these C baselines and the `_port` binaries become
+redundant. On the `m55` key the C sibling is the CMSIS-DSP Helium backend,
+so the port/C ratio there is port-vs-CMSIS; the port-vs-Ooura ratio on the
+M55 is the `m55-ooura` key's.
+
+Each scenario constructs one transform (`tap::dsp::basic_real_fft<Sample>`,
+or for the `_port` scenarios the port behind an adapter presenting the same
+out-of-place surface with the same copy loop and 2/N arithmetic,
+`bench_common.h`), then runs a forward + inverse loop over a four-block xorshift corpus for 2^20 samples per
 direction (2048 iterations at N = 512, 512 at N = 2048). Every output word
 of every iteration — the spectrum and the scaled inverse — goes through an
 integer FNV-1a-64 fold over its bit pattern (`bench_common.h`), printed at
@@ -86,11 +106,15 @@ allocation in the loop, and no double anywhere in the float scenarios (the
 M4 soft-float leg would otherwise measure libgcc).
 
 `TAP_DSP_BENCH_ENGINE` (`bench_common.h`, a CMake cache variable of the same
-name) selects the engine: `reference_c` today — the class as built, which is
-the vendored Ooura C, or on the `m55` key the CMSIS-DSP Helium backend behind
-the same class. `split_radix` is the Stage 2a port; from then until Stage 2c
-each float scenario builds twice, C and port, and the job prints both counts
-and their ratio. That ratio is the Stage 2b gate.
+name) selects the engine the bare-keyed binaries measure: `reference_c` (the
+default) — the class as built, which is the vendored Ooura C, or on the `m55`
+key the CMSIS-DSP Helium backend behind the same class — or `split_radix`,
+the Stage 2a port (`include/tap/dsp/fft/split_radix.h`), printed as
+`engine=split_radix backend=split_radix` since the port has no backend
+behind it. Whatever the variable says, the `_port` binaries above are always
+built against the port, so every bench run from Stage 2a until 2c reports
+both counts and their ratio. That ratio is what Stage 2b's flip is judged
+on: the port within ±3 % of the C on every QEMU leg (audit Part 3).
 
 ## Baselines and targets
 
@@ -210,7 +234,11 @@ python3 scripts/icount.py --merge a.json b.json    # fold per-key files into one
   `0` means not yet recorded and the step only prints. The ceilings are a
   **promised item for wave 2**: the seeding commit sets them from the same
   `main` run that seeds the counts, and they are updated the same way as the
-  counts, in the table above.
+  counts, in the table above. From Stage 2a until 2c the step also builds
+  `tap_dsp_size_probe_rfft_f32_512_port` (the port) and prints its `.text`
+  and the port/C ratio beside the C's, informational: the ceiling applies to
+  the C probe only until Stage 2b routes the port, and the port's numbers go
+  into `docs/fft-design.md` from the job log.
 - **Wall clock is never a gate.** `bench_fft` is the local tool for the
   desktop and Apple vDSP claims; its numbers go into `docs/fft-design.md`
   with machine and date.
@@ -219,6 +247,7 @@ python3 scripts/icount.py --merge a.json b.json    # fold per-key files into one
 
 | stage | what a red ratchet means |
 |---|---|
+| 2a (port beside the C, nothing routed) | nothing: the `_port` scenarios are informational, and the bare keys measure the unchanged C at 0 % |
 | 2b (routing flip to the port) | a port that vectorizes worse than the C; the C-vs-port ratio printed from 2a on is the gate |
 | 3b (fixed point) | nothing yet — it seeds; every later `SMMULR`, Helium or table-layout change to the Q15/Q31 kernel then has a number to beat |
 | 4 (engine as a parameter) | a backend regression on the deployed `m55` profile, or the `m55-ooura` fallback quietly getting slower |
