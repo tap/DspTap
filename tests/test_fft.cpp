@@ -16,8 +16,10 @@
 // numerically what they were before the widening — same signals, same
 // tolerances, same comparisons; the trait is the identity for them.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <numbers>
 #include <random>
 #include <type_traits>
@@ -45,9 +47,13 @@ namespace {
 
     // Absolute tolerance in the sample's own units (fractions of full scale
     // for the fixed profiles). Float and double: the golden battery's
-    // numbers, unchanged. Q15 / Q31: measured against the closed forms below
-    // and pinned at 2x; see profile<> for the exponent handling.
-    // MEASURED: not yet (the kernel branch has not landed); 0.0 fails on purpose.
+    // numbers, unchanged. Q15 / Q31: the largest |got - expected| over the
+    // closed-form tests below (ImpulseHasFlatSpectrum, DcAndNyquistPacking,
+    // SignConventionIsPlusI) measured 2026-09-18 on x86-64 Linux, GCC
+    // 13.3.0 -O3, kernel a55a14f: 1.0 LSB for Q15 (the DC constant is
+    // 1 - 2^-15, compared against an ideal 1.0), 1.0 LSB for Q31 (the
+    // on-bin sine's rounding); pinned at 2 LSB each. See profile<> for the
+    // exponent handling.
     template <typename Sample>
     constexpr double k_tolerance = 0.0;
     template <>
@@ -55,9 +61,9 @@ namespace {
     template <>
     constexpr double k_tolerance<float> = 2e-5;
     template <>
-    constexpr double k_tolerance<std::int16_t> = 0.0;
+    constexpr double k_tolerance<std::int16_t> = 2.0 / 32768.0; // 2 LSB of Q0.15
     template <>
-    constexpr double k_tolerance<std::int32_t> = 0.0;
+    constexpr double k_tolerance<std::int32_t> = 2.0 / 2147483648.0; // 2 LSB of Q0.31
 
     // ------------------------------------------------------------------------
     // Per-profile trait. A forward transform's result is read as
@@ -113,6 +119,30 @@ namespace {
     using sample_types = ::testing::Types<float, double, std::int16_t, std::int32_t>;
     TYPED_TEST_SUITE(real_fft_test, sample_types);
 
+    /// EXPECT_NEAR that also tracks the largest |got - expected| seen, so a
+    /// test can print the measured number its pin was taken from (in the
+    /// sample's units; for the fixed profiles the pin is stated in LSBs).
+    class near_tracker {
+      public:
+        void check(double got, double expected, double tol, const char* what, size_t i) {
+            m_max = std::max(m_max, std::fabs(got - expected));
+            EXPECT_NEAR(got, expected, tol) << what << " " << i;
+        }
+        double max() const { return m_max; }
+
+        template <typename Sample>
+        void report(const char* test) const {
+            if constexpr (profile<Sample>::k_fixed_point) {
+                std::printf("[ measured ] %s %s: max |got - expected| = %.4f LSB (tolerance %.4f LSB)\n",
+                            sizeof(Sample) == 2 ? "Q15" : "Q31", test, m_max / sample_scale<Sample>::k_lsb,
+                            k_tolerance<Sample> / sample_scale<Sample>::k_lsb);
+            }
+        }
+
+      private:
+        double m_max = 0.0;
+    };
+
     constexpr int log2_of(size_t n) {
         int l = 0;
         while ((size_t{1} << l) < n) {
@@ -167,9 +197,17 @@ namespace {
     /// the output LSB times the same power of two (under fixed scaling the
     /// trip discards log2 n bits twice: Q15 at n = 1024 reconstructs in
     /// steps of 2^-4, the honest number fft.h states), times the pinned
-    /// number of those units. MEASURED: not yet; 0.0 fails on purpose.
+    /// number of those units. Measured 2026-09-18 (x86-64 Linux, GCC 13.3.0
+    /// -O3, kernel a55a14f) over RoundTripReproducesInput (n = 1024) and
+    /// RoundTripInPlaceAndAliased (n = 256): Q15 0.5054 / 0.5098 (the
+    /// output narrowing's half LSB), Q31 3.342 / 2.199 (the kernel's rounding
+    /// noise over two transforms); pinned at 2x the larger.
     template <typename Sample>
     constexpr double k_round_trip_units = 0.0;
+    template <>
+    constexpr double k_round_trip_units<std::int16_t> = 1.02;
+    template <>
+    constexpr double k_round_trip_units<std::int32_t> = 6.7;
 
     template <typename Sample>
     double round_trip_tolerance(size_t n) {
@@ -188,17 +226,31 @@ namespace {
         EXPECT_EQ(fft.num_bins(), 513u);
     }
 
+    /// The measured round-trip error in reconstructed LSBs (fixed profiles).
+    template <typename Sample>
+    void report_round_trip(const char* test, size_t n, double max_error) {
+        if constexpr (profile<Sample>::k_fixed_point) {
+            const int    e    = profile<Sample>::fft::fixed_scaling_exponent(n);
+            const double unit = sample_scale<Sample>::k_lsb * std::ldexp(1.0, 2 * e + 1 - log2_of(n));
+            std::printf("[ measured ] %s %s n=%zu: max error %.4f reconstructed LSB (unit %.3g; pin %.3f)\n",
+                        sizeof(Sample) == 2 ? "Q15" : "Q31", test, n, max_error / unit, unit,
+                        k_round_trip_units<Sample>);
+        }
+    }
+
     TYPED_TEST(real_fft_test, RoundTripReproducesInput) {
         constexpr size_t n = 1024;
 
         const auto x    = random_signal<TypeParam>(n, 42);
         const auto back = round_trip<TypeParam>(n, x, false);
         const auto tol  = round_trip_tolerance<TypeParam>(n);
-        ASSERT_GT(tol, 0.0) << "unmeasured pin";
 
+        near_tracker t;
         for (size_t i = 0; i < n; ++i) {
-            EXPECT_NEAR(back[i], profile<TypeParam>::to_double(x[i]), tol) << "sample " << i;
+            t.check(back[i], profile<TypeParam>::to_double(x[i]), tol, "sample", i);
         }
+        report_round_trip<TypeParam>("RoundTripReproducesInput", n, t.max());
+        EXPECT_GT(tol, 0.0) << "unmeasured pin";
     }
 
     TYPED_TEST(real_fft_test, RoundTripInPlaceAndAliased) {
@@ -207,11 +259,13 @@ namespace {
         const auto x    = random_signal<TypeParam>(n, 7);
         const auto back = round_trip<TypeParam>(n, x, true);
         const auto tol  = round_trip_tolerance<TypeParam>(n);
-        ASSERT_GT(tol, 0.0) << "unmeasured pin";
 
+        near_tracker t;
         for (size_t i = 0; i < n; ++i) {
-            EXPECT_NEAR(back[i], profile<TypeParam>::to_double(x[i]), tol) << "sample " << i;
+            t.check(back[i], profile<TypeParam>::to_double(x[i]), tol, "sample", i);
         }
+        report_round_trip<TypeParam>("RoundTripInPlaceAndAliased", n, t.max());
+        EXPECT_GT(tol, 0.0) << "unmeasured pin";
     }
 
     TYPED_TEST(real_fft_test, ImpulseHasFlatSpectrum) {
@@ -225,14 +279,16 @@ namespace {
         const int    e     = p::forward(fft, x.data());
         const double scale = std::ldexp(1.0, -e);
         const double tol   = k_tolerance<TypeParam>;
-        ASSERT_GT(tol, 0.0) << "unmeasured pin";
 
-        EXPECT_NEAR(p::to_double(x[0]), 1.0 * scale, tol); // DC
-        EXPECT_NEAR(p::to_double(x[1]), 1.0 * scale, tol); // Nyquist
+        near_tracker t;
+        t.check(p::to_double(x[0]), 1.0 * scale, tol, "dc", 0);
+        t.check(p::to_double(x[1]), 1.0 * scale, tol, "nyquist", 1);
         for (size_t k = 1; k < n / 2; ++k) {
-            EXPECT_NEAR(p::to_double(x[2 * k]), 1.0 * scale, tol) << "bin " << k << " real";
-            EXPECT_NEAR(p::to_double(x[2 * k + 1]), 0.0, tol) << "bin " << k << " imag";
+            t.check(p::to_double(x[2 * k]), 1.0 * scale, tol, "bin real", k);
+            t.check(p::to_double(x[2 * k + 1]), 0.0, tol, "bin imag", k);
         }
+        t.report<TypeParam>("ImpulseHasFlatSpectrum");
+        EXPECT_GT(tol, 0.0) << "unmeasured pin";
     }
 
     TYPED_TEST(real_fft_test, DcAndNyquistPacking) {
@@ -241,13 +297,13 @@ namespace {
 
         typename p::fft fft(n);
         const double    tol = p::tolerance_at_n(n);
-        ASSERT_GT(tol, 0.0) << "unmeasured pin";
+        near_tracker    t;
 
         // Constant input: all energy in DC = data[0].
         std::vector<TypeParam> dc(n, p::from_double(1.0));
         const int              e_dc = p::forward(fft, dc.data());
-        EXPECT_NEAR(p::to_double(dc[0]), static_cast<double>(n) * std::ldexp(1.0, -e_dc), tol);
-        EXPECT_NEAR(p::to_double(dc[1]), 0.0, tol);
+        t.check(p::to_double(dc[0]), static_cast<double>(n) * std::ldexp(1.0, -e_dc), tol, "dc slot", 0);
+        t.check(p::to_double(dc[1]), 0.0, tol, "dc slot", 1);
 
         // Alternating +1/-1: all energy in Nyquist = data[1].
         std::vector<TypeParam> nyq(n);
@@ -255,8 +311,10 @@ namespace {
             nyq[i] = (i % 2 == 0) ? p::from_double(1.0) : p::from_double(-1.0);
         }
         const int e_nyq = p::forward(fft, nyq.data());
-        EXPECT_NEAR(p::to_double(nyq[0]), 0.0, tol);
-        EXPECT_NEAR(p::to_double(nyq[1]), static_cast<double>(n) * std::ldexp(1.0, -e_nyq), tol);
+        t.check(p::to_double(nyq[0]), 0.0, tol, "nyquist slot", 0);
+        t.check(p::to_double(nyq[1]), static_cast<double>(n) * std::ldexp(1.0, -e_nyq), tol, "nyquist slot", 1);
+        t.report<TypeParam>("DcAndNyquistPacking");
+        EXPECT_GT(tol, 0.0) << "unmeasured pin";
     }
 
     // The documented sign convention (W = exp(+2*pi*i/N)): a pure cosine at
@@ -283,28 +341,35 @@ namespace {
         const double half_cos = static_cast<double>(n) / 2.0 * std::ldexp(1.0, -e_cos);
         const double half_sin = static_cast<double>(n) / 2.0 * std::ldexp(1.0, -e_sin);
         const double tol      = p::tolerance_at_n(n);
-        ASSERT_GT(tol, 0.0) << "unmeasured pin";
-        EXPECT_NEAR(p::to_double(cosine[2 * k]), half_cos, tol);
-        EXPECT_NEAR(p::to_double(cosine[2 * k + 1]), 0.0, tol);
-        EXPECT_NEAR(p::to_double(sine[2 * k]), 0.0, tol);
-        EXPECT_NEAR(p::to_double(sine[2 * k + 1]), half_sin, tol); // +N/2, not -N/2
+        near_tracker t;
+        t.check(p::to_double(cosine[2 * k]), half_cos, tol, "cos re", k);
+        t.check(p::to_double(cosine[2 * k + 1]), 0.0, tol, "cos im", k);
+        t.check(p::to_double(sine[2 * k]), 0.0, tol, "sin re", k);
+        t.check(p::to_double(sine[2 * k + 1]), half_sin, tol, "sin im (+N/2, not -N/2)", k);
 
         // And nothing leaks into any other bin.
         for (size_t bin = 1; bin < n / 2; ++bin) {
             if (bin == k) {
                 continue;
             }
-            EXPECT_NEAR(p::to_double(cosine[2 * bin]), 0.0, tol) << "cos leak, bin " << bin;
-            EXPECT_NEAR(p::to_double(sine[2 * bin]), 0.0, tol) << "sin leak, bin " << bin;
+            t.check(p::to_double(cosine[2 * bin]), 0.0, tol, "cos leak, bin", bin);
+            t.check(p::to_double(sine[2 * bin]), 0.0, tol, "sin leak, bin", bin);
         }
+        t.report<TypeParam>("SignConventionIsPlusI");
+        EXPECT_GT(tol, 0.0) << "unmeasured pin";
     }
 
     // Parseval's relative tolerance for the fixed profiles: the rounding
     // noise adds power, so the relative error is of the order of the per-bin
-    // noise-to-signal ratio; measured and pinned at 2x.
-    // MEASURED: not yet; 0.0 fails on purpose.
+    // noise-to-signal ratio. Measured 2026-09-18 (x86-64 Linux, GCC 13.3.0
+    // -O3, kernel a55a14f) at n = 512 on full-scale uniform noise: Q15
+    // 7.15e-6, Q31 1.83e-9; pinned at 2x.
     template <typename Sample>
     constexpr double k_parseval_relative = 0.0;
+    template <>
+    constexpr double k_parseval_relative<std::int16_t> = 1.43e-5;
+    template <>
+    constexpr double k_parseval_relative<std::int32_t> = 3.7e-9;
 
     TYPED_TEST(real_fft_test, ParsevalEnergyConservation) {
         using p            = profile<TypeParam>;
@@ -331,7 +396,10 @@ namespace {
         freq_energy /= static_cast<double>(n);
 
         if constexpr (p::k_fixed_point) {
-            ASSERT_GT(k_parseval_relative<TypeParam>, 0.0) << "unmeasured pin";
+            std::printf("[ measured ] %s ParsevalEnergyConservation: relative error %.3e (pin %.3e)\n",
+                        sizeof(TypeParam) == 2 ? "Q15" : "Q31", std::fabs(freq_energy - time_energy) / time_energy,
+                        k_parseval_relative<TypeParam>);
+            EXPECT_GT(k_parseval_relative<TypeParam>, 0.0) << "unmeasured pin";
             EXPECT_NEAR(freq_energy, time_energy, k_parseval_relative<TypeParam> * time_energy);
         }
         else {
@@ -408,21 +476,24 @@ namespace {
     // 2-norm error of the fixed-scaling forward at n = 1024 on full-scale
     // uniform noise, a measured number pinned at 2x (the log_mel pattern).
     // Q15's error is the output narrowing (2^-15 / sqrt(12) per value on a
-    // spectrum whose per-component RMS is sqrt(1/3 / 2n)); Q31's is the
-    // int32 kernel's rounding noise, orders of magnitude lower.
-    // MEASURED: not yet; 0.0 fails on purpose.
-    constexpr double k_q15_tracks_double = 0.0;
-    constexpr double k_q31_tracks_double = 0.0;
+    // spectrum whose per-component RMS is sqrt(1/3 / 2n) = 0.0128: predicted
+    // 6.9e-4); Q31's is the int32 kernel's rounding noise, orders of
+    // magnitude lower. Measured 2026-09-18 (x86-64 Linux, GCC 13.3.0 -O3,
+    // kernel a55a14f): Q15 6.949e-4, Q31 5.458e-8.
+    constexpr double k_q15_tracks_double = 1.4e-3;
+    constexpr double k_q31_tracks_double = 1.1e-7;
 
     TEST(RealFftCrossPrecision, Q15TracksDouble) {
-        ASSERT_GT(k_q15_tracks_double, 0.0) << "unmeasured pin";
         const double err = relative_error_vs_double<std::int16_t>(1024, 99);
+        std::printf("[ measured ] Q15TracksDouble: relative 2-norm error %.3e (pin %.3e)\n", err, k_q15_tracks_double);
+        EXPECT_GT(k_q15_tracks_double, 0.0) << "unmeasured pin";
         EXPECT_LT(err, k_q15_tracks_double) << "measured " << err;
     }
 
     TEST(RealFftCrossPrecision, Q31TracksDouble) {
-        ASSERT_GT(k_q31_tracks_double, 0.0) << "unmeasured pin";
         const double err = relative_error_vs_double<std::int32_t>(1024, 99);
+        std::printf("[ measured ] Q31TracksDouble: relative 2-norm error %.3e (pin %.3e)\n", err, k_q31_tracks_double);
+        EXPECT_GT(k_q31_tracks_double, 0.0) << "unmeasured pin";
         EXPECT_LT(err, k_q31_tracks_double) << "measured " << err;
     }
 

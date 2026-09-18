@@ -33,7 +33,8 @@
 // Measured numbers. Every tolerance and ratio here is a number measured on the
 // real kernel and pinned at 2x (the log_mel pattern), never a round number;
 // the table `pins` carries them all in one place with the host, compiler and
-// date they were taken on. Fixed seeds, no wall clock, no filesystem, no
+// date they were taken on, and every pinned test prints what it measured so
+// a -V run records the current value beside the pin. Fixed seeds, no wall clock, no filesystem, no
 // <random>: the battery runs unchanged on the four QEMU legs (Part 10), where
 // N <= 2048 fixed point is cheap and the double golden model is the expensive
 // part, so sizes are kept modest and TAP_DSP_PARITY_MAX_N caps the sweeps.
@@ -114,8 +115,8 @@ namespace {
 
     // ------------------------------------------------------------------------
     // THE PINS. Measured on the real kernel and pinned at 2x; see each test
-    // for what the number bounds. Host, compiler and date beside each block.
-    // A pin of 0.0 means "not yet measured" and fails the test on purpose.
+    // for what the number bounds. A pin of 0.0 on a field a row reads means
+    // "not measured" and fails that test on purpose.
     // ------------------------------------------------------------------------
     struct pin_table {
         double saturation_max_lsb;   ///< SaturationFreeWorstCaseDoesNotWrap: max |out - G/2^e| in output LSB
@@ -128,12 +129,23 @@ namespace {
         double q15_vs_q31_lsb;       ///< Q15AndQ31AgreeToTheQ15Floor: max |v15 - v31| in Q15 output LSB
     };
 
-    // Not yet measured: the kernel branch has not landed. Every pin is 0.0
-    // so the battery is red until the numbers are taken from the real kernel.
-    constexpr pin_table k_pins_q15_fixed{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-    constexpr pin_table k_pins_q31_fixed{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-    constexpr pin_table k_pins_q15_bfp{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-    constexpr pin_table k_pins_q31_bfp{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    // Measured 2026-09-18 on x86-64 Linux (Ubuntu 24.04, glibc 2.39), GCC
+    // 13.3.0 and clang 18.1.3 -O3 (identical: the kernel is integer
+    // arithmetic and the tables are the same libm), kernel at
+    // claude/wave2-stage3b-kernel a55a14f, and pinned at 2x. The measured
+    // values, in the pins' order:
+    //   Q15/fixed  0.500 / 0.562 /  -  / 1.00 / 0.0005 / 1.055 / 0.022 / 0.500
+    //   Q31/fixed  4.250 / 3.382 /  -  / 6.00 / 0.8125 / 1.744 / 0.383 /  -
+    //   Q15/bfp    0.750 / 5.000 / 1.0 / 1.00 / 0.0156 / 1.041 / 0.535 / 0.500
+    //   Q31/bfp   15.988 / 41.50 / 4.0 / 62.0 / 1.0469 / 2.321 / 0.644 /  -
+    // The Q31 block-floating maxima all sit at index 0 or 1: the DC/Nyquist
+    // path, where round-half-up biases add coherently (fixed_point.h,
+    // "Honest limit"). bfp_vs_fixed_lsb is read by the block-floating rows
+    // only and q15_vs_q31_lsb by the Q15 rows only; the others carry 0.0.
+    constexpr pin_table k_pins_q15_fixed{1.0, 1.13, 0.0, 2.0, 0.001, 2.11, 0.044, 1.0};
+    constexpr pin_table k_pins_q31_fixed{8.5, 6.77, 0.0, 12.0, 1.63, 3.49, 0.77, 0.0};
+    constexpr pin_table k_pins_q15_bfp{1.5, 10.0, 2.0, 2.0, 0.032, 2.09, 1.07, 1.0};
+    constexpr pin_table k_pins_q31_bfp{32.0, 83.0, 8.0, 124.0, 2.1, 4.65, 1.29, 0.0};
 
     template <typename Cfg>
     constexpr const pin_table& pins() {
@@ -390,8 +402,8 @@ namespace {
     TYPED_TEST_SUITE(fft_fixed_scaling_test, fixed_configs);
 
     template <typename Cfg>
-    class fft_bfp_test : public ::testing::Test {};
-    TYPED_TEST_SUITE(fft_bfp_test, bfp_configs);
+    class fft_fixed_bfp_test : public ::testing::Test {};
+    TYPED_TEST_SUITE(fft_fixed_bfp_test, bfp_configs);
 
     template <typename Cfg>
     class fft_fixed_point_test : public ::testing::Test {};
@@ -433,7 +445,7 @@ namespace {
     // scaling::block_floating: 0 <= e <= the fixed constant, in both
     // directions, whatever the input; a louder input never needs a smaller
     // exponent than silence does (0 is the floor).
-    TYPED_TEST(fft_bfp_test, BfpExponentIsWithinRange) {
+    TYPED_TEST(fft_fixed_bfp_test, BfpExponentIsWithinRange) {
         using cfg = TypeParam;
         using fft = typename cfg::fft;
         using s   = typename cfg::sample;
@@ -495,8 +507,10 @@ namespace {
                 x[0]         = static_cast<s>(m * unit);
                 const auto r = run_forward<cfg>(x);
                 ASSERT_EQ(r.exponent, e);
+                // Flat: DC, Nyquist and every real part m; every imaginary part 0.
                 for (std::size_t i = 0; i < n; ++i) {
-                    ASSERT_EQ(static_cast<std::int64_t>(r.out[i]), m)
+                    const std::int64_t expected = (i < 2 || i % 2 == 0) ? m : 0;
+                    ASSERT_EQ(static_cast<std::int64_t>(r.out[i]), expected)
                         << "impulse A=" << m * unit << " n=" << n << " index " << i;
                 }
             }
@@ -543,7 +557,7 @@ namespace {
         imp[0] = std::int32_t{1} << 20;
         EXPECT_EQ(f.forward_inplace(imp.data()), 10);
         for (std::size_t i = 0; i < n; ++i) {
-            ASSERT_EQ(imp[i], std::int32_t{1} << 10) << i;
+            ASSERT_EQ(imp[i], (i < 2 || i % 2 == 0) ? std::int32_t{1} << 10 : 0) << i;
         }
         // The Q15 profile, for contrast, is X / N: the same 0.5 constant
         // comes back as 0.5.
@@ -556,7 +570,7 @@ namespace {
     // The inverse under fixed scaling carries the same constant and is
     // exact on the same kind of input: the unnormalised inverse of a
     // DC-only spectrum a[0] = c is c/2 everywhere (fft.h's packing), so the
-    // output is c / 2^(e+1); of a flat spectrum (impulse response) it is
+    // output is c / 2^(e+1); of a flat spectrum (the impulse response) it is
     // N c / 2 at k = 0 and 0 elsewhere, so out_0 = c / 2^(pre + 1).
     TYPED_TEST(fft_fixed_scaling_test, FixedInverseCarriesTheSameExponent) {
         using cfg = TypeParam;
@@ -577,8 +591,13 @@ namespace {
                     ASSERT_EQ(static_cast<std::int64_t>(r.out[i]), m) << "dc spectrum n=" << n << " index " << i;
                 }
             }
-            // The flat spectrum: a[0] = a[1] = a[2k] = c, a[2k+1] = 0.
-            const std::int64_t step = std::int64_t{1} << (cfg::k_pre + 2);
+            // The flat spectrum: a[0] = a[1] = a[2k] = c, a[2k+1] = 0. The
+            // pre-pass takes pre + 1 bits, then the constant c / 2^(pre+1)
+            // rides the unrotated path through every stage's 2-bit shift, so
+            // c must carry pre + 3 zero bits for the trip to be exact (with
+            // fewer, round-half-up doubles a 2-LSB constant at every stage:
+            // that is the kernel's honest bias, not a scale error).
+            const std::int64_t step = std::int64_t{1} << (cfg::k_pre + 3);
             for (const std::int64_t c : {step, -step, (static_cast<std::int64_t>(cfg::k_max) / step) * step}) {
                 std::vector<s> a(n, s{0});
                 a[0] = static_cast<s>(c);
@@ -607,48 +626,60 @@ namespace {
     // the pinned number of LSBs (a wrap is 2^15 / 2^31 LSBs off, a clamp at
     // least the amount clamped), and no output sample sits on a rail unless
     // the golden model puts it within the pin of that rail.
+    struct worst_case {
+        double      value = 0.0;
+        const char* what  = "";
+        const char* name  = "";
+        std::size_t n     = 0;
+        int         e     = 0;
+        std::size_t index = 0;
+        void        note(double v, const char* w, const char* nm, std::size_t size, int exponent, std::size_t i) {
+            if (v > value) {
+                value = v;
+                what  = w;
+                name  = nm;
+                n     = size;
+                e     = exponent;
+                index = i;
+            }
+        }
+    };
+
     TYPED_TEST(fft_fixed_point_test, SaturationFreeWorstCaseDoesNotWrap) {
         using cfg      = TypeParam;
         using s        = typename cfg::sample;
         const auto pin = pins<cfg>().saturation_max_lsb;
-        ASSERT_GT(pin, 0.0) << "unmeasured pin";
-        double worst = 0.0;
+        worst_case worst;
+        worst_case rail; // largest shortfall of the golden model below a rail the output sits on
         for (const std::size_t n : k_sweep_sizes) {
-            for (const auto& p : adversarial_time_patterns<s>(n)) {
-                const auto r      = run_forward<cfg>(p.x);
-                const auto golden = golden_forward(fractions(p.x));
-                const auto d      = deviation_from_golden<cfg>(r.out, golden, r.exponent);
-                worst             = std::max(worst, d.max_lsb);
-                EXPECT_LE(d.max_lsb, pin) << cfg::name() << " forward " << p.name << " n=" << n << " e=" << r.exponent
-                                          << " at index " << d.argmax;
-                for (std::size_t i = 0; i < n; ++i) {
-                    if (r.out[i] == cfg::k_max || r.out[i] == cfg::k_min) {
-                        const double g = std::fabs(golden[i]) * pow2(-r.exponent) / cfg::k_lsb;
-                        EXPECT_GE(g, static_cast<double>(cfg::k_max) - pin)
-                            << cfg::name() << " forward " << p.name << " n=" << n << ": sample " << i
-                            << " sits on a rail the golden model does not reach";
-                    }
-                }
-            }
-            for (const auto& p : adversarial_spectrum_patterns<s>(n)) {
-                const auto r      = run_inverse<cfg>(p.x);
-                const auto golden = golden_inverse(fractions(p.x));
-                const auto d      = deviation_from_golden<cfg>(r.out, golden, r.exponent);
-                worst             = std::max(worst, d.max_lsb);
-                EXPECT_LE(d.max_lsb, pin) << cfg::name() << " inverse " << p.name << " n=" << n << " e=" << r.exponent
-                                          << " at index " << d.argmax;
-                for (std::size_t i = 0; i < n; ++i) {
-                    if (r.out[i] == cfg::k_max || r.out[i] == cfg::k_min) {
-                        const double g = std::fabs(golden[i]) * pow2(-r.exponent) / cfg::k_lsb;
-                        EXPECT_GE(g, static_cast<double>(cfg::k_max) - pin)
-                            << cfg::name() << " inverse " << p.name << " n=" << n << ": sample " << i
-                            << " sits on a rail the golden model does not reach";
+            for (const bool inverse : {false, true}) {
+                const auto patterns = inverse ? adversarial_spectrum_patterns<s>(n) : adversarial_time_patterns<s>(n);
+                for (const auto& p : patterns) {
+                    const auto r      = inverse ? run_inverse<cfg>(p.x) : run_forward<cfg>(p.x);
+                    const auto golden = inverse ? golden_inverse(fractions(p.x)) : golden_forward(fractions(p.x));
+                    const auto d      = deviation_from_golden<cfg>(r.out, golden, r.exponent);
+                    worst.note(d.max_lsb, inverse ? "inverse" : "forward", p.name, n, r.exponent, d.argmax);
+                    for (std::size_t i = 0; i < n; ++i) {
+                        if (r.out[i] == cfg::k_max || r.out[i] == cfg::k_min) {
+                            const double g = std::fabs(golden[i]) * pow2(-r.exponent) / cfg::k_lsb;
+                            rail.note(static_cast<double>(cfg::k_max) - g, inverse ? "inverse" : "forward", p.name, n,
+                                      r.exponent, i);
+                        }
                     }
                 }
             }
         }
-        std::printf("[ measured ] %s saturation sweep: max |out - G/2^e| = %.3f LSB (pin %.3f)\n", cfg::name(), worst,
-                    pin);
+        std::printf("[ measured ] %s saturation sweep: max |out - G/2^e| = %.3f LSB (pin %.3f) at %s %s n=%zu e=%d "
+                    "index %zu; largest rail shortfall %.3f LSB\n",
+                    cfg::name(), worst.value, pin, worst.what, worst.name, worst.n, worst.e, worst.index, rail.value);
+        EXPECT_GT(pin, 0.0) << "unmeasured pin";
+        EXPECT_LE(worst.value, pin) << cfg::name() << " " << worst.what << " " << worst.name << " n=" << worst.n
+                                    << " e=" << worst.e << " index " << worst.index;
+        // No output sits on a rail unless the golden model is within the pin
+        // of that rail: a clamp would show as a shortfall of at least what was
+        // clamped, a wrap as 2^15 / 2^31 LSB of deviation above.
+        EXPECT_LE(rail.value, pin) << cfg::name() << " " << rail.what << " " << rail.name << " n=" << rail.n
+                                   << ": sample " << rail.index << " sits on a rail the golden model does not reach";
     }
 
     // A silent block is silent out, in both directions.
@@ -683,29 +714,31 @@ namespace {
         using cfg      = TypeParam;
         using s        = typename cfg::sample;
         const auto pin = pins<cfg>().round_trip_k;
-        ASSERT_GT(pin, 0.0) << "unmeasured pin";
-        double worst = 0.0;
+        worst_case worst;
         for (const std::size_t n : {std::size_t{16}, std::size_t{64}, std::size_t{256}, std::size_t{1024}}) {
             for (const double amplitude : {1.0, 0.25, 0.01}) {
                 const auto x =
                     tap::dsp::test::random_signal<s>(n, 0xC0FFEE01u ^ static_cast<std::uint32_t>(n), amplitude);
-                const auto   xf      = fractions(x);
-                const auto   fwd     = run_forward<cfg>(x);
-                const auto   inv     = run_inverse<cfg>(fwd.out);
-                const int    shift   = fwd.exponent + inv.exponent + 1 - log2_size(n);
-                const double unit    = cfg::k_lsb * pow2(shift);
-                double       max_err = 0.0;
+                const auto   xf    = fractions(x);
+                const auto   fwd   = run_forward<cfg>(x);
+                const auto   inv   = run_inverse<cfg>(fwd.out);
+                const int    shift = fwd.exponent + inv.exponent + 1 - log2_size(n);
+                const double unit  = cfg::k_lsb * pow2(shift);
                 for (std::size_t i = 0; i < n; ++i) {
                     const double back = sample_scale<s>::to_double(inv.out[i]) * pow2(shift);
-                    max_err           = std::max(max_err, std::fabs(back - xf[i]) / unit);
+                    worst.note(std::fabs(back - xf[i]) / unit,
+                               amplitude == 1.0 ? "0 dBFS" : (amplitude == 0.25 ? "-12 dBFS" : "-40 dBFS"),
+                               "round trip", n, fwd.exponent * 100 + inv.exponent, i);
                 }
-                worst = std::max(worst, max_err);
-                EXPECT_LE(max_err, pin) << cfg::name() << " n=" << n << " amplitude " << amplitude
-                                        << " e_fwd=" << fwd.exponent << " e_inv=" << inv.exponent << " unit=" << unit;
             }
         }
-        std::printf("[ measured ] %s round trip: max error %.3f reconstructed LSB (pin %.3f)\n", cfg::name(), worst,
-                    pin);
+        std::printf("[ measured ] %s round trip: max error %.3f reconstructed LSB (pin %.3f) at %s n=%zu "
+                    "e_fwd=%d e_inv=%d index %zu\n",
+                    cfg::name(), worst.value, pin, worst.what, worst.n, worst.e / 100, worst.e % 100, worst.index);
+        EXPECT_GT(pin, 0.0) << "unmeasured pin";
+        EXPECT_LE(worst.value, pin) << cfg::name() << " " << worst.what << " n=" << worst.n
+                                    << " e_fwd=" << worst.e / 100 << " e_inv=" << worst.e % 100 << " index "
+                                    << worst.index;
     }
 
     // forward()/inverse() are copy-then-in-place: same bits, same exponent,
@@ -752,13 +785,12 @@ namespace {
     // difference is the fixed path's extra rounding noise plus one rounding
     // of the shift); and on an input where BFP reports the full constant it
     // shifted like fixed at every stage, so the two are bit-identical.
-    TYPED_TEST(fft_bfp_test, BfpMatchesFixedAfterShift) {
+    TYPED_TEST(fft_fixed_bfp_test, BfpMatchesFixedAfterShift) {
         using cfg      = TypeParam;
         using s        = typename cfg::sample;
         using fixed    = config<s, scaling::fixed>;
         const auto pin = pins<cfg>().bfp_vs_fixed_lsb;
-        ASSERT_GT(pin, 0.0) << "unmeasured pin";
-        double worst = 0.0;
+        worst_case worst;
         for (const std::size_t n : k_sweep_sizes) {
             std::vector<pattern<s>> inputs;
             inputs.push_back({"noise 0 dBFS", tap::dsp::test::random_signal<s>(n, 0x2545F491u, 1.0)});
@@ -767,25 +799,33 @@ namespace {
             inputs.push_back({"tone -6 dBFS", tap::dsp::test::tone<s>(n, static_cast<double>(n / 8 + 1), 0.5, 0.3)});
             inputs.push_back({"dc +full", std::vector<s>(n, cfg::k_max)});
             for (const auto& p : inputs) {
-                const auto f = run_forward<fixed>(p.x);
-                const auto b = run_forward<cfg>(p.x);
-                ASSERT_LE(b.exponent, f.exponent) << p.name << " n=" << n;
-                const int shift = f.exponent - b.exponent;
-                for (std::size_t i = 0; i < n; ++i) {
-                    const std::int64_t bv = static_cast<std::int64_t>(b.out[i]);
-                    const std::int64_t shifted =
-                        shift == 0 ? bv : ((bv + (std::int64_t{1} << (shift - 1))) >> shift); // round-half-up
-                    const double diff = std::fabs(static_cast<double>(shifted - static_cast<std::int64_t>(f.out[i])));
-                    worst             = std::max(worst, diff);
-                    EXPECT_LE(diff, pin) << cfg::name() << " " << p.name << " n=" << n << " e_fixed=" << f.exponent
-                                         << " e_bfp=" << b.exponent << " index " << i;
+                for (const bool inverse : {false, true}) {
+                    const auto f = inverse ? run_inverse<fixed>(p.x) : run_forward<fixed>(p.x);
+                    const auto b = inverse ? run_inverse<cfg>(p.x) : run_forward<cfg>(p.x);
+                    ASSERT_LE(b.exponent, f.exponent) << p.name << " n=" << n;
+                    const int shift = f.exponent - b.exponent;
+                    for (std::size_t i = 0; i < n; ++i) {
+                        const std::int64_t bv = static_cast<std::int64_t>(b.out[i]);
+                        const std::int64_t shifted =
+                            shift == 0 ? bv : ((bv + (std::int64_t{1} << (shift - 1))) >> shift);
+                        const double diff =
+                            std::fabs(static_cast<double>(shifted - static_cast<std::int64_t>(f.out[i])));
+                        worst.note(diff, inverse ? "inverse" : "forward", p.name, n, f.exponent * 100 + b.exponent, i);
+                    }
                 }
             }
         }
-        std::printf("[ measured ] %s vs fixed after shift: max %.1f LSB (pin %.1f)\n", cfg::name(), worst, pin);
+        std::printf("[ measured ] %s vs fixed after shift: max %.1f LSB (pin %.1f) at %s %s n=%zu e_fixed=%d e_bfp=%d "
+                    "index %zu\n",
+                    cfg::name(), worst.value, pin, worst.what, worst.name, worst.n, worst.e / 100, worst.e % 100,
+                    worst.index);
+        EXPECT_GT(pin, 0.0) << "unmeasured pin";
+        EXPECT_LE(worst.value, pin) << cfg::name() << " " << worst.what << " " << worst.name << " n=" << worst.n
+                                    << " e_fixed=" << worst.e / 100 << " e_bfp=" << worst.e % 100 << " index "
+                                    << worst.index;
     }
 
-    TYPED_TEST(fft_bfp_test, BfpAtTheFullExponentIsBitIdenticalToFixed) {
+    TYPED_TEST(fft_fixed_bfp_test, BfpAtTheFullExponentIsBitIdenticalToFixed) {
         using cfg            = TypeParam;
         using s              = typename cfg::sample;
         using fixed          = config<s, scaling::fixed>;
@@ -826,10 +866,8 @@ namespace {
         using s             = typename cfg::sample;
         const auto max_pin  = pins<cfg>().negation_sum_max_lsb;
         const auto bias_pin = pins<cfg>().negation_bias_lsb;
-        ASSERT_GT(max_pin, 0.0) << "unmeasured pin";
-        ASSERT_GT(bias_pin, 0.0) << "unmeasured pin";
-        double worst_max  = 0.0;
-        double worst_bias = 0.0;
+        worst_case worst_max;
+        worst_case worst_bias;
         for (const std::size_t n : k_sweep_sizes) {
             for (const double amplitude : {0.999, 0.1}) {
                 // 0.999 keeps -x representable (-INT_MIN would saturate).
@@ -843,25 +881,32 @@ namespace {
                     const auto a = inverse ? run_inverse<cfg>(x) : run_forward<cfg>(x);
                     const auto b = inverse ? run_inverse<cfg>(neg) : run_forward<cfg>(neg);
                     ASSERT_EQ(a.exponent, b.exponent) << "negation changed the exponent, n=" << n;
-                    double max_sum = 0.0;
-                    double mean    = 0.0;
+                    double mean = 0.0;
                     for (std::size_t i = 0; i < n; ++i) {
                         const double sum = static_cast<double>(a.out[i]) + static_cast<double>(b.out[i]);
-                        max_sum          = std::max(max_sum, std::fabs(sum));
+                        worst_max.note(std::fabs(sum), inverse ? "inverse" : "forward",
+                                       amplitude > 0.5 ? "-0 dBFS" : "-20 dBFS", n, a.exponent, i);
                         mean += sum;
                     }
-                    mean       = std::fabs(mean / static_cast<double>(n));
-                    worst_max  = std::max(worst_max, max_sum);
-                    worst_bias = std::max(worst_bias, mean);
-                    EXPECT_LE(max_sum, max_pin) << cfg::name() << (inverse ? " inverse" : " forward") << " n=" << n
-                                                << " amplitude " << amplitude;
-                    EXPECT_LE(mean, bias_pin) << cfg::name() << (inverse ? " inverse" : " forward") << " n=" << n
-                                              << " amplitude " << amplitude;
+                    // The bias is a mean over the block: read it where the
+                    // block is large enough for a mean to say something.
+                    if (n >= 64) {
+                        worst_bias.note(std::fabs(mean / static_cast<double>(n)), inverse ? "inverse" : "forward",
+                                        amplitude > 0.5 ? "-0 dBFS" : "-20 dBFS", n, a.exponent, 0);
+                    }
                 }
             }
         }
-        std::printf("[ measured ] %s F(x)+F(-x): max %.2f LSB (pin %.2f), bias %.4f LSB (pin %.4f)\n", cfg::name(),
-                    worst_max, max_pin, worst_bias, bias_pin);
+        std::printf("[ measured ] %s F(x)+F(-x): max %.2f LSB (pin %.2f) at %s %s n=%zu index %zu; bias %.4f LSB "
+                    "(pin %.4f) at %s %s n=%zu\n",
+                    cfg::name(), worst_max.value, max_pin, worst_max.what, worst_max.name, worst_max.n, worst_max.index,
+                    worst_bias.value, bias_pin, worst_bias.what, worst_bias.name, worst_bias.n);
+        EXPECT_GT(max_pin, 0.0) << "unmeasured pin";
+        EXPECT_GT(bias_pin, 0.0) << "unmeasured pin";
+        EXPECT_LE(worst_max.value, max_pin) << cfg::name() << " " << worst_max.what << " " << worst_max.name
+                                            << " n=" << worst_max.n << " index " << worst_max.index;
+        EXPECT_LE(worst_bias.value, bias_pin)
+            << cfg::name() << " " << worst_bias.what << " " << worst_bias.name << " n=" << worst_bias.n;
     }
 
     // ========================================================================
@@ -873,10 +918,10 @@ namespace {
     // spectra differ by the Q15 output quantisation plus the Q15 profile's
     // (coarser) internal noise, pinned in Q15 output LSBs.
     template <typename Scaling>
-    double q15_vs_q31(const char* what, double pin) {
-        using c15    = config<std::int16_t, Scaling>;
-        using c31    = config<std::int32_t, Scaling>;
-        double worst = 0.0;
+    void q15_vs_q31(const char* what, double pin) {
+        using c15 = config<std::int16_t, Scaling>;
+        using c31 = config<std::int32_t, Scaling>;
+        worst_case worst;
         for (const std::size_t n : k_sweep_sizes) {
             for (const double amplitude : {1.0, 0.05}) {
                 const auto x15 = tap::dsp::test::random_signal<std::int16_t>(
@@ -885,27 +930,29 @@ namespace {
                 for (std::size_t i = 0; i < n; ++i) {
                     x31[i] = static_cast<std::int32_t>(x15[i]) << 16; // exact
                 }
-                const auto r15 = run_forward<c15>(x15);
-                const auto r31 = run_forward<c31>(x31);
-                // Compare in the unnormalised frame, in Q15 output LSBs at e15.
-                const double unit = c15::k_lsb * pow2(r15.exponent);
-                for (std::size_t i = 0; i < n; ++i) {
-                    const double v15  = sample_scale<std::int16_t>::to_double(r15.out[i]) * pow2(r15.exponent);
-                    const double v31  = sample_scale<std::int32_t>::to_double(r31.out[i]) * pow2(r31.exponent);
-                    const double diff = std::fabs(v15 - v31) / unit;
-                    worst             = std::max(worst, diff);
-                    EXPECT_LE(diff, pin) << what << " n=" << n << " amplitude " << amplitude << " index " << i
-                                         << " e15=" << r15.exponent << " e31=" << r31.exponent;
+                for (const bool inverse : {false, true}) {
+                    const auto r15 = inverse ? run_inverse<c15>(x15) : run_forward<c15>(x15);
+                    const auto r31 = inverse ? run_inverse<c31>(x31) : run_forward<c31>(x31);
+                    // Compare in the unnormalised frame, in Q15 output LSBs at e15.
+                    const double unit = c15::k_lsb * pow2(r15.exponent);
+                    for (std::size_t i = 0; i < n; ++i) {
+                        const double v15 = sample_scale<std::int16_t>::to_double(r15.out[i]) * pow2(r15.exponent);
+                        const double v31 = sample_scale<std::int32_t>::to_double(r31.out[i]) * pow2(r31.exponent);
+                        worst.note(std::fabs(v15 - v31) / unit, inverse ? "inverse" : "forward",
+                                   amplitude == 1.0 ? "0 dBFS" : "-26 dBFS", n, r15.exponent * 100 + r31.exponent, i);
+                    }
                 }
             }
         }
-        std::printf("[ measured ] Q15 vs Q31 (%s): max %.3f Q15 LSB (pin %.3f)\n", what, worst, pin);
-        return worst;
+        std::printf(
+            "[ measured ] Q15 vs Q31 (%s): max %.3f Q15 LSB (pin %.3f) at %s %s n=%zu e15=%d e31=%d index %zu\n", what,
+            worst.value, pin, worst.what, worst.name, worst.n, worst.e / 100, worst.e % 100, worst.index);
+        EXPECT_GT(pin, 0.0) << "unmeasured pin";
+        EXPECT_LE(worst.value, pin) << what << " " << worst.what << " " << worst.name << " n=" << worst.n
+                                    << " e15=" << worst.e / 100 << " e31=" << worst.e % 100 << " index " << worst.index;
     }
 
     TEST(fft_fixed_profiles, Q15AndQ31AgreeToTheQ15Floor) {
-        ASSERT_GT(k_pins_q15_fixed.q15_vs_q31_lsb, 0.0) << "unmeasured pin";
-        ASSERT_GT(k_pins_q15_bfp.q15_vs_q31_lsb, 0.0) << "unmeasured pin";
         q15_vs_q31<scaling::fixed>("fixed", k_pins_q15_fixed.q15_vs_q31_lsb);
         q15_vs_q31<scaling::block_floating>("bfp", k_pins_q15_bfp.q15_vs_q31_lsb);
     }
@@ -916,72 +963,96 @@ namespace {
     //
     // THE MODEL (Welch 1969, "A fixed-point fast Fourier transform error
     // analysis"; Oppenheim & Weinstein 1972), specialised to this kernel's
-    // arithmetic as fft_arith.h states it:
+    // arithmetic as fft_arith.h states it and to the structure fixed_point.h
+    // documents (the model is written here, independently, from those two
+    // headers; the kernel's design note carries its own derivation):
     //
     //   - Internal LSB q: 2^-31 for Q31, 2^-29 for the widened Q15 (Q2.29),
-    //     both as fractions of full scale. Every rounding (shr_round,
-    //     mul_coeff) is additive noise uniform in (-q/2, q/2], variance
-    //     q^2/12, independent of every other rounding.
-    //   - Structure (Part 7): a radix-4 DIF complex FFT of length M = N/2
-    //     (floor(log2 M / 2) radix-4 stages, one radix-2 stage when log2 M is
-    //     odd), then Ooura's real post-pass, which pairs bins k and M-k and
-    //     applies one complex product per pair. Under fixed scaling the Q31
-    //     profile pre-shifts its input by one bit (one rounding, no sum).
+    //     both as fractions of full scale. Every rounding is additive noise,
+    //     independent of every other: a mul_coeff rounding is uniform on a
+    //     continuous interval, variance q^2/12; an s-bit shr_round of an
+    //     integer takes one of 2^s equally likely residues, variance
+    //     (1 - 4^-s) q^2/12 (3/4 of q^2/12 for one bit, 15/16 for two).
+    //   - Structure: a radix-4 DIF complex FFT of length M = N/2 (one stage
+    //     per factor of 4, spans M, M/4, ..., down to 4; a radix-2 stage when
+    //     log2 M is odd), then Ooura's real post-pass pairing bins k and
+    //     M - k with one complex product per pair (bins 1 .. N/4 - 1 and
+    //     their mirrors: every interior bin but N/4). Under fixed scaling the
+    //     Q31 profile folds its one-bit input pre-shift into the first
+    //     stage's shift (a single 3-bit rounding).
     //   - Per stage, per output component. Shift-before-butterfly: each of
-    //     the stage's sum_gain inputs (4, 2, 2 for radix-4, radix-2, the
-    //     post-pass) is rounded once per component and reaches every output
-    //     component through the butterfly with unit weight, so the shift
-    //     injects sum_gain * q^2/12 -- when the stage shifts at all (a BFP
-    //     stage shifting by 0 rounds nothing: shr_round(x, 0) is exact). The
-    //     twiddle product is the two-rounding complex multiply: 2 q^2/12 per
-    //     component. The twiddle's own quantisation, |dw| <= 2^-31 per
-    //     component (0.5 LSB of Q1.30), uniform, contributes 2 * P * 2^-62 / 3
-    //     where P is the signal variance per component entering the product.
-    //   - Propagation. Noise present after stage t reaches the output through
-    //     each later stage u with gain sum_gain_u * 4^-shift_u: a sum of
+    //     the stage's sum_gain inputs (4 for radix-4, 2 for radix-2) is
+    //     rounded once per component and reaches every output component with
+    //     unit weight, so the shift injects sum_gain * v(s) -- when the stage
+    //     shifts at all (shr_round(x, 0) is exact, so a BFP stage shifting by
+    //     0 injects nothing). The twiddle rotation is the two-rounding
+    //     complex multiply, 2 q^2/12 per component, on 3 of the 4 outputs of
+    //     every butterfly whose index q is not 0: averaged over a stage of
+    //     span L that is 2 * (3/4) * (1 - 4/L) q^2/12 per component, zero for
+    //     the last radix-4 stage (L = 4) and for the radix-2 stage. The
+    //     twiddle's own quantisation, |dw| <= 2^-31 per component (half an
+    //     LSB of Q1.30), uniform, adds 2 * P * 2^-62 / 3 on the rotated
+    //     outputs, P being the signal variance per component entering the
+    //     rotation.
+    //   - Post-pass: its one-bit shift injects v(1) (the two paired values'
+    //     roundings reach the output with weights |1 - w|^2 + |w|^2 = 1),
+    //     its rotation 2 q^2/12; it carries earlier noise and the signal with
+    //     gain 1 * 4^-shift.
+    //   - Propagation: noise present after a stage reaches the output through
+    //     each later stage u with power gain sum_gain_u * 4^-shift_u (a sum of
     //     sum_gain_u uncorrelated terms through unit-magnitude twiddles, then
-    //     the shift. Signal: a white input of variance s^2 per sample enters
-    //     as M complex values of variance s^2 per component and follows the
-    //     same gain, without the injections.
-    //   - The Q15 narrowing adds (2^-15)^2 / 12 per output value.
+    //     the shift). Signal: a white input of variance sigma^2 per sample
+    //     enters as M complex values of variance sigma^2 per component and
+    //     follows the same gains without the injections; through the
+    //     post-pass it lands at sigma^2 / (2N) * 4^(log2 N - e), the DFT's
+    //     N sigma^2 / 2 per component at exponent e.
+    //   - The Q15 narrowing adds (2^-15)^2 / 12 per output value; under block
+    //     floating point one more shift (growth 1) precedes it.
     //   - Shift schedule. scaling::fixed: every stage shifts its full amount
-    //     (2, 1, 1; plus the Q31 pre-shift) and the sum is the fixed exponent.
-    //     scaling::block_floating: the kernel returns only the total e, and
-    //     the schedule is not observable, so the model takes the EARLY
-    //     schedule (e assigned to the first stages, each up to its fixed
-    //     amount), which is the worst case for noise: a bit shifted early
-    //     attenuates nothing injected after it. The late schedule (what an
-    //     on-demand scaler does for a quiet input) is the best case, and the
-    //     table prints both so the measured floor can be read against them.
+    //     and the sum is fixed_scaling_exponent(N). scaling::block_floating:
+    //     the kernel returns the total e and the per-stage schedule is not
+    //     observable, so the model brackets it: the EARLY schedule (e
+    //     assigned to the first stages, each up to its fixed amount) is the
+    //     worst case for noise, since a bit shifted early attenuates nothing
+    //     injected after it, and is what the pin is measured against; the
+    //     LATE schedule is the best case and the table prints it beside.
     //
     // The model's number is the noise variance per output component in the
     // output's own units (fractions of full scale at exponent e). The
     // measurement is the mean over the interior bins (indices 2 .. N-1; DC
-    // and Nyquist take a different post-pass path) of |out - G(x)/2^e|^2 per
-    // component, with G the double golden model on the SAME quantised input,
-    // so only the kernel's roundings and its twiddle quantisation are in it.
-    // The pin is the largest measured/model ratio over the sizes and levels,
-    // per configuration and material, at 2x; the table below is printed for
-    // a -V run to record (Part 13).
+    // and Nyquist take the glue path) of |out - G(x)/2^e|^2 per component,
+    // with G the double golden model on the SAME quantised input, so only
+    // the kernel's roundings and its twiddle quantisation are in it. What
+    // the variance model leaves out is the round-half-up bias: an s-bit
+    // shr_round has mean +2^-(s+1) LSB, which the final shifts put on every
+    // bin and the earlier ones spread with rotated phases; it shows as a
+    // measured/model ratio above one and is pinned as such. The pin is the
+    // largest measured/model ratio over the sizes and levels, per
+    // configuration and material, at 2x; the table is printed for a -V run
+    // to record (Part 13).
     struct stage_spec {
-        int sum_gain;          ///< inputs summed into each output component
-        int max_shift;         ///< the fixed-scaling shift, and the BFP maximum
-        int product_roundings; ///< roundings per output component in the twiddle product
+        int    sum_gain;          ///< inputs summed into each output component
+        int    max_shift;         ///< the fixed-scaling shift, and the BFP maximum
+        double rotation_fraction; ///< fraction of output components that see a twiddle rotation
     };
 
-    std::vector<stage_spec> kernel_stages(std::size_t n, bool with_pre_shift) {
+    std::vector<stage_spec> kernel_stages(std::size_t n, bool fold_pre_shift, bool q15_final_shift) {
         std::vector<stage_spec> stages;
-        if (with_pre_shift) {
-            stages.push_back({1, 1, 0});
+        const std::size_t       m = n / 2;
+        for (std::size_t span = m; span >= 4; span /= 4) {
+            const double rotated = 0.75 * (1.0 - 4.0 / static_cast<double>(span)); // 3 of 4 outputs, q != 0
+            stages.push_back({4, 2, rotated});
         }
-        const int log2_m = log2_size(n / 2);
-        for (int s = 0; s < log2_m / 2; ++s) {
-            stages.push_back({4, 2, 2});
+        if (stages.empty() || (m >> (2 * stages.size())) == 2) {
+            stages.push_back({2, 1, 0.0}); // the radix-2 final stage (log2 M odd)
         }
-        if (log2_m % 2 == 1) {
-            stages.push_back({2, 1, 2});
+        if (fold_pre_shift) {
+            stages.front().max_shift += 1; // Q31 fixed: pre-shift and first stage, one rounding
         }
-        stages.push_back({2, 1, 2}); // the real post-pass
+        stages.push_back({1, 1, 1.0}); // the real post-pass
+        if (q15_final_shift) {
+            stages.push_back({1, 31, 0.0}); // Q15 BFP: the shift before the narrow, unbounded
+        }
         return stages;
     }
 
@@ -1018,7 +1089,7 @@ namespace {
 
     welch_prediction welch_model(const std::vector<stage_spec>& stages, const std::vector<int>& shifts, double q_int,
                                  double q_out_extra, double input_variance) {
-        constexpr double twiddle_lsb = 0x1p-31; // 0.5 LSB of Q1.30
+        constexpr double twiddle_lsb = 0x1p-31; // half an LSB of Q1.30
         const double     rounding    = q_int * q_int / 12.0;
         double           noise       = 0.0;
         double           signal      = input_variance;
@@ -1029,11 +1100,10 @@ namespace {
             noise                        = noise * stage_gain;
             signal                       = signal * stage_gain;
             if (shifts[t] > 0) {
-                noise += static_cast<double>(st.sum_gain) * rounding;
+                noise += static_cast<double>(st.sum_gain) * (1.0 - pow2(-2 * shifts[t])) * rounding;
             }
-            if (st.product_roundings > 0) {
-                noise += static_cast<double>(st.product_roundings) * rounding;
-                noise += 2.0 * signal * twiddle_lsb * twiddle_lsb / 3.0;
+            if (st.rotation_fraction > 0.0) {
+                noise += st.rotation_fraction * (2.0 * rounding + 2.0 * signal * twiddle_lsb * twiddle_lsb / 3.0);
             }
         }
         noise += q_out_extra * q_out_extra / 12.0;
@@ -1073,7 +1143,7 @@ namespace {
 
         const double q_int        = pow2(-Cfg::k_int_frac);
         const double q_out_extra  = Cfg::k_is_q15 ? Cfg::k_lsb : 0.0;
-        const auto   stages       = kernel_stages(n, !Cfg::k_is_bfp && Cfg::k_pre > 0);
+        const auto   stages       = kernel_stages(n, !Cfg::k_is_bfp && Cfg::k_pre > 0, Cfg::k_is_bfp && Cfg::k_is_q15);
         const auto   model_shifts = shifts_for(stages, r.exponent, Cfg::k_is_bfp ? schedule::early : schedule::fixed);
         const auto   late_shifts  = shifts_for(stages, r.exponent, Cfg::k_is_bfp ? schedule::late : schedule::fixed);
         const auto   model        = welch_model(stages, model_shifts, q_int, q_out_extra, input_variance);
@@ -1082,7 +1152,7 @@ namespace {
         noise_row row{material,           n,         level_db,        r.exponent,
                       db(signal),         db(noise), db(model.noise), db(late.noise),
                       noise / model.noise};
-        std::printf("[ floor ] %s %-6s N=%5zu %4.0f dBFS e=%2d  signal %7.2f  floor %7.2f  model %7.2f (late %7.2f) "
+        std::printf("[ floor ] %s %-5s N=%5zu %4.0f dBFS e=%2d  signal %7.2f  floor %7.2f  model %7.2f (late %7.2f) "
                     "dBFS/component  ratio %.3f  snr %6.2f dB\n",
                     Cfg::name(), material, n, level_db, r.exponent, row.signal_db, row.floor_db, row.model_db,
                     row.model_late_db, row.ratio, row.signal_db - row.floor_db);
@@ -1090,14 +1160,12 @@ namespace {
     }
 
     TYPED_TEST(fft_fixed_point_test, NoiseFloorTracksWelchModel) {
-        using cfg            = TypeParam;
-        using s              = typename cfg::sample;
-        const auto noise_pin = pins<cfg>().noise_ratio_noise;
-        const auto tone_pin  = pins<cfg>().noise_ratio_tone;
-        ASSERT_GT(noise_pin, 0.0) << "unmeasured pin";
-        ASSERT_GT(tone_pin, 0.0) << "unmeasured pin";
-        double worst_noise = 0.0;
-        double worst_tone  = 0.0;
+        using cfg              = TypeParam;
+        using s                = typename cfg::sample;
+        const auto noise_pin   = pins<cfg>().noise_ratio_noise;
+        const auto tone_pin    = pins<cfg>().noise_ratio_tone;
+        double     worst_noise = 0.0;
+        double     worst_tone  = 0.0;
         for (const std::size_t n : {std::size_t{256}, std::size_t{512}, std::size_t{2048}}) {
             for (const double level_db : {0.0, -20.0, -40.0, -60.0}) {
                 const double amplitude = std::pow(10.0, level_db / 20.0);
@@ -1113,14 +1181,16 @@ namespace {
                 worst_tone        = std::max(worst_tone, trow.ratio);
             }
         }
+        std::printf("[ measured ] %s noise/model ratio: noise %.3f (pin %.3f), tone %.3f (pin %.3f)\n", cfg::name(),
+                    worst_noise, noise_pin, worst_tone, tone_pin);
+        EXPECT_GT(noise_pin, 0.0) << "unmeasured pin";
+        EXPECT_GT(tone_pin, 0.0) << "unmeasured pin";
         EXPECT_LE(worst_noise, noise_pin) << cfg::name() << " white-noise floor above the pinned ratio to the model";
         EXPECT_LE(worst_tone, tone_pin) << cfg::name() << " on-bin tone floor above the pinned ratio to the model";
         // A floor far BELOW the model would mean a different arithmetic (a
         // fused complex multiply, an exact shift) or a broken measurement,
         // not a better kernel: the two-rounding form is the contract.
         EXPECT_GE(worst_noise, noise_pin / 8.0) << cfg::name() << " white-noise floor implausibly far below the model";
-        std::printf("[ measured ] %s noise/model ratio: noise %.3f (pin %.3f), tone %.3f (pin %.3f)\n", cfg::name(),
-                    worst_noise, noise_pin, worst_tone, tone_pin);
     }
 
     // ========================================================================
@@ -1216,9 +1286,13 @@ namespace {
             std::uint64_t twiddles;  ///< make_twiddle_table(n / 2)
             std::uint64_t post_pass; ///< make_real_post_pass_table(n)
         };
-        // Not yet measured: filled from the real kernel branch; the host that
-        // produced each value is recorded here.
-        constexpr std::array<pinned, 3> expected{{{256, 0, 0}, {512, 0, 0}, {2048, 0, 0}}};
+        // Taken 2026-09-18 on x86-64 Linux, glibc 2.39 (GCC 13.3.0 and clang
+        // 18.1.3 agree), kernel a55a14f. The other CI hosts (macOS arm64,
+        // Windows UCRT, the newlib QEMU legs) either reproduce these or the
+        // difference is a recorded finding per host and N.
+        constexpr std::array<pinned, 3> expected{{{256, 0x95f5c68afe494835ull, 0x66c84a75861eafb6ull},
+                                                  {512, 0x6df6ff99a3ed3c85ull, 0x4b1374200abed27cull},
+                                                  {2048, 0xe42c528f3ae88b45ull, 0xa0f40e80bbf4efb9ull}}};
         for (const auto& p : expected) {
             const auto twiddles = tap::dsp::detail::make_twiddle_table(p.n / 2);
             const auto post     = tap::dsp::detail::make_real_post_pass_table(p.n);
