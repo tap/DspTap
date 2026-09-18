@@ -475,21 +475,25 @@ namespace tap::dsp {
     ///    UNNORMALIZED inverse result == data * 2^e. The fixed-point inverse()
     ///    applies NO 2/N (unlike the floating profiles); a round trip
     ///    reconstructs x == out * 2^(e_fwd + e_inv + 1 - log2 N) under both
-    ///    policies. `RoundTripReproducesInput`, `ForwardScaleIsExactlyXOverN`.
+    ///    policies. `RoundTripReproducesInput`, `RoundTripReconstructsInputPerPolicy`,
+    ///    `FixedForwardScaleIsExactlyXOverN`, `FixedForwardScaleIsExactlyXOverTwoN`.
     ///  - scaling::fixed (default): e == fixed_scaling_exponent(N)
     ///    == log2 N + fft_arith<Sample>::k_fixed_scaling_input_pre_shift in
     ///    both directions: log2 N for Q15 (output exactly X / N), log2 N + 1
     ///    for Q31 (X / 2N; the one-bit input pre-shift is the price of no
-    ///    guard bits, fft_arith.h). `FixedExponentIsTheConstant`.
+    ///    guard bits, fft_arith.h). `FixedExponentIsTheStatedConstant`,
+    ///    `FixedInverseCarriesTheSameExponent`.
     ///  - scaling::block_floating: 0 <= e <= fixed_scaling_exponent(N),
     ///    data-dependent; the kernel never shifts more than the stage's
     ///    growth requires beyond the headroom present, and never consumes
-    ///    the last bit. `BlockFloatingExponentIsBounded`.
+    ///    the last bit; at the full exponent the result is the fixed schedule's,
+    ///    bit for bit. `BfpExponentIsWithinRange`, `BfpMatchesFixedAfterShift`,
+    ///    `BfpAtTheFullExponentIsBitIdenticalToFixed`, `SilenceIsSilence`.
     ///  - Saturation-free for every input under both policies: Q15 through
     ///    the two guard bits of the widened Q2.29 data, Q31 through the
     ///    pre-shift (fixed) or the headroom rule (block floating); the
     ///    worst case is the packed pair at full scale under a 45-degree
-    ///    twiddle. `WorstCaseGrowthDoesNotSaturate`.
+    ///    twiddle. `SaturationFreeWorstCaseDoesNotWrap`.
     ///  - Noise floor (output-referred, against the double golden model on
     ///    the same quantized input; N = 256 / 512 / 2048, 0 to -60 dBFS):
     ///    Q15 fixed 0.28 - 0.30 LSB rms (the narrow's rounding; per-bin SNR
@@ -500,8 +504,9 @@ namespace tap::dsp {
     ///    lose the low-level signal (77 - 87 dB Q15 at -40 dBFS). Welch's
     ///    variance model predicts 0.55 LSB32 for the kernel; the rest is the
     ///    round-half-up bias, largest at DC under block floating point
-    ///    (fft/fixed_point.h, "Honest limit"). `NoiseFloorTracksWelch`,
-    ///    `Q15TracksDouble`, `Q31TracksDouble`.
+    ///    (fft/fixed_point.h, "Honest limit"). `NoiseFloorTracksWelchModel`,
+    ///    `RoundingBiasOnNegatedInputIsBounded`, `Q15TracksDouble`, `Q31TracksDouble`,
+    ///    `Q15AndQ31AgreeToTheQ15Floor`.
     ///  - CMSIS-DSP compatibility (Decision D3): CMSIS documents its q15 /
     ///    q31 real FFTs as "downscaled by 2 for every stage", i.e. a forward
     ///    output of X / N with log2 N bits to upscale. The Q15 fixed forward
@@ -517,8 +522,9 @@ namespace tap::dsp {
     ///    preserved at the caller's int16 buffer); Q31 transforms in place.
     ///    Transforms are noexcept and allocation-free, the object is copyable,
     ///    there is no alignment requirement, one transform at a time per
-    ///    object. `TransformsAreNoexcept`, `TransformsDoNotAllocate`,
-    ///    `CopiesAreBitIdentical`.
+    ///    object. `TransformsAreNoexcept`, `ForwardInplaceAllocatesNothing` (and the
+    ///    inverse and out-of-place forms), `CopyProducesBitIdenticalOutput`,
+    ///    `OutOfPlaceIsCopyThenInPlace`.
     ///  - Latency 0; no NaN or denormal behaviour to state (integer data).
     ///
     /// Per-profile noise floors and the Welch-model derivation are in

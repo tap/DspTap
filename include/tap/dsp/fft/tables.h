@@ -15,7 +15,7 @@
 // Every coefficient is generated in double through std::cos / std::sin and
 // rounded ONCE by fft_arith<std::int32_t>::make_coeff (round half away from
 // zero, saturating), so |w_q - w| <= 0.5 LSB of Q1.30 on every host
-// (`TwiddleQuantizationIsHalfAnLsb` in the battery). Host libm last-bit
+// (`TwiddleTableIsWithinHalfLsb` in the battery). Host libm last-bit
 // differences can move a double that lies within 2^-31 of a rounding
 // boundary onto the other side, so fixed-point transform outputs are
 // host-identical only if the table is; the battery pins each certified N's
