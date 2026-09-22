@@ -49,11 +49,12 @@ namespace {
     // for the fixed profiles). Float and double: the golden battery's
     // numbers, unchanged. Q15 / Q31: the largest |got - expected| over the
     // closed-form tests below (ImpulseHasFlatSpectrum, DcAndNyquistPacking,
-    // SignConventionIsPlusI) measured 2026-09-18 on x86-64 Linux, GCC
-    // 13.3.0 -O3, kernel a55a14f: 1.0 LSB for Q15 (the DC constant is
-    // 1 - 2^-15, compared against an ideal 1.0), 1.0 LSB for Q31 (the
-    // on-bin sine's rounding); pinned at 2 LSB each. See profile<> for the
-    // exponent handling.
+    // SignConventionIsPlusI) measured 2026-09-22 on x86-64 Linux, GCC
+    // 13.3.0 -O3, on the Stage 3b kernel as merged in tap/DspTap#27: 0.5 LSB
+    // for Q15 (the full-scale Nyquist alternation's exact 32767.5 LSB,
+    // clamped at the rail: the battery's pinned rail case), 1.0 LSB for Q31
+    // (the on-bin sine's rounding); pinned at 2 LSB each. See profile<> for
+    // the exponent handling.
     template <typename Sample>
     constexpr double k_tolerance = 0.0;
     template <>
@@ -198,7 +199,8 @@ namespace {
     /// trip discards log2 n bits twice: Q15 at n = 1024 reconstructs in
     /// steps of 2^-4, the honest number fft.h states), times the pinned
     /// number of those units. Measured 2026-09-18 (x86-64 Linux, GCC 13.3.0
-    /// -O3, kernel a55a14f) over RoundTripReproducesInput (n = 1024) and
+    /// -O3, the Stage 3b kernel as merged in tap/DspTap#27) over
+    /// RoundTripReproducesInput (n = 1024) and
     /// RoundTripInPlaceAndAliased (n = 256): Q15 0.5054 / 0.5098 (the
     /// output narrowing's half LSB), Q31 3.342 / 2.199 (the kernel's rounding
     /// noise over two transforms); pinned at 2x the larger.
@@ -300,20 +302,29 @@ namespace {
         const double    tol = p::tolerance_at_n(n);
         near_tracker    t;
 
-        // Constant input: all energy in DC = data[0].
-        std::vector<TypeParam> dc(n, p::from_double(1.0));
+        // Constant input: all energy in DC = data[0]. The expectation is built
+        // from the constant as quantised (1 - 2^-15 for Q15, 1 - 2^-31 for
+        // Q31), so the fixed profiles' tolerance is spent on the kernel, not
+        // on the test's own input rounding.
+        const TypeParam        one = p::from_double(1.0);
+        std::vector<TypeParam> dc(n, one);
         const int              e_dc = p::forward(fft, dc.data());
-        t.check(p::to_double(dc[0]), static_cast<double>(n) * std::ldexp(1.0, -e_dc), tol, "dc slot", 0);
+        t.check(p::to_double(dc[0]), static_cast<double>(n) * p::to_double(one) * std::ldexp(1.0, -e_dc), tol,
+                "dc slot", 0);
         t.check(p::to_double(dc[1]), 0.0, tol, "dc slot", 1);
 
-        // Alternating +1/-1: all energy in Nyquist = data[1].
+        // Alternating +1/-1: all energy in Nyquist = data[1]; X_{N/2} is
+        // (N/2) (x_even - x_odd) on the quantised values.
+        const TypeParam        minus_one = p::from_double(-1.0);
         std::vector<TypeParam> nyq(n);
         for (size_t i = 0; i < n; ++i) {
-            nyq[i] = (i % 2 == 0) ? p::from_double(1.0) : p::from_double(-1.0);
+            nyq[i] = (i % 2 == 0) ? one : minus_one;
         }
         const int e_nyq = p::forward(fft, nyq.data());
         t.check(p::to_double(nyq[0]), 0.0, tol, "nyquist slot", 0);
-        t.check(p::to_double(nyq[1]), static_cast<double>(n) * std::ldexp(1.0, -e_nyq), tol, "nyquist slot", 1);
+        t.check(p::to_double(nyq[1]),
+                static_cast<double>(n / 2) * (p::to_double(one) - p::to_double(minus_one)) * std::ldexp(1.0, -e_nyq),
+                tol, "nyquist slot", 1);
         t.report<TypeParam>("DcAndNyquistPacking");
         EXPECT_GT(tol, 0.0) << "unmeasured pin";
     }
@@ -363,7 +374,8 @@ namespace {
     // Parseval's relative tolerance for the fixed profiles: the rounding
     // noise adds power, so the relative error is of the order of the per-bin
     // noise-to-signal ratio. Measured 2026-09-18 (x86-64 Linux, GCC 13.3.0
-    // -O3, kernel a55a14f) at n = 512 on full-scale uniform noise: Q15
+    // -O3, the Stage 3b kernel as merged in tap/DspTap#27) at n = 512 on
+    // full-scale uniform noise: Q15
     // 7.15e-6, Q31 1.83e-9; pinned at 2x.
     template <typename Sample>
     constexpr double k_parseval_relative = 0.0;
@@ -480,7 +492,8 @@ namespace {
     // spectrum whose per-component RMS is sqrt(1/3 / 2n) = 0.0128: predicted
     // 6.9e-4); Q31's is the int32 kernel's rounding noise, orders of
     // magnitude lower. Measured 2026-09-18 (x86-64 Linux, GCC 13.3.0 -O3,
-    // kernel a55a14f): Q15 6.949e-4, Q31 5.458e-8.
+    // the Stage 3b kernel as merged in tap/DspTap#27): Q15 6.949e-4, Q31
+    // 5.458e-8.
     constexpr double k_q15_tracks_double = 1.4e-3;
     constexpr double k_q31_tracks_double = 1.1e-7;
 
