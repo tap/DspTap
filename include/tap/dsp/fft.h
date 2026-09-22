@@ -550,16 +550,17 @@ namespace tap::dsp {
         [[nodiscard]] std::size_t num_bins() const noexcept { return m_engine.size() / 2 + 1; }
 
         /// In-place forward FFT: Sample[size] -> packed spectrum Sample[size],
-        /// scaled by 2^-e. @return e.
-        int forward_inplace(Sample* data) noexcept { return m_engine.forward_inplace(data); }
+        /// scaled by 2^-e. @return e, the output's scale: under block floating
+        /// point a discarded exponent is a silent scale error, hence nodiscard.
+        [[nodiscard]] int forward_inplace(Sample* data) noexcept { return m_engine.forward_inplace(data); }
 
         /// In-place inverse FFT: packed spectrum -> Sample[size], the
         /// UNNORMALIZED inverse scaled by 2^-e. @return e.
-        int inverse_inplace(Sample* data) noexcept { return m_engine.inverse_inplace(data); }
+        [[nodiscard]] int inverse_inplace(Sample* data) noexcept { return m_engine.inverse_inplace(data); }
 
         /// Out-of-place forward FFT: copy, then forward_inplace. Output may
         /// alias input. @return e.
-        int forward(const Sample* input, Sample* output) noexcept {
+        [[nodiscard]] int forward(const Sample* input, Sample* output) noexcept {
             copy(input, output);
             return forward_inplace(output);
         }
@@ -567,7 +568,7 @@ namespace tap::dsp {
         /// Out-of-place inverse FFT: copy, then inverse_inplace. NO 2/N is
         /// applied (the exponent carries the scale, unlike the floating
         /// profiles' inverse()). Output may alias input. @return e.
-        int inverse(const Sample* input, Sample* output) noexcept {
+        [[nodiscard]] int inverse(const Sample* input, Sample* output) noexcept {
             copy(input, output);
             return inverse_inplace(output);
         }

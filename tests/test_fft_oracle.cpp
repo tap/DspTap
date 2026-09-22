@@ -533,7 +533,9 @@ namespace {
         const std::size_t                n = x.size();
         tap::dsp::basic_real_fft<Sample> fft(n);
         std::vector<Sample>              buf = from_doubles<Sample>(x);
-        fft.forward_inplace(buf.data());
+        // The fixed profiles' exponent is the fixed policy's constant here,
+        // read through forward_scale(n) rather than from the return value.
+        (void)fft.forward_inplace(buf.data());
         const std::vector<double> scaled = scale_by(expected, profile<Sample>::forward_scale(n));
         expect_close(buf, scaled, profile<Sample>::tolerance(n, spectrum_norm2(x)), what, n);
     }
@@ -546,7 +548,7 @@ namespace {
         const std::size_t                n = a.size();
         tap::dsp::basic_real_fft<Sample> fft(n);
         std::vector<Sample>              buf = from_doubles<Sample>(a);
-        fft.inverse_inplace(buf.data());
+        (void)fft.inverse_inplace(buf.data()); // as in check_forward: inverse_scale(n) carries the exponent
         const std::vector<double> scaled = scale_by(expected, profile<Sample>::inverse_scale(n));
         // ||expected||_2 plays the role of ||y||_2 for the inverse direction;
         // the packed spectrum's 2-norm is within sqrt(2) of the true one, and

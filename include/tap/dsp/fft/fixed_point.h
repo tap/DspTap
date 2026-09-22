@@ -197,8 +197,9 @@ namespace tap::dsp {
             [[nodiscard]] std::size_t size() const noexcept { return m_n; }
 
             /// In-place forward transform: N samples -> packed spectrum, scaled
-            /// by 2^-e. @return e (see the class docstring).
-            int forward_inplace(Sample* data) noexcept {
+            /// by 2^-e. @return e (see the class docstring); nodiscard because
+            /// under block floating point it is the output's scale.
+            [[nodiscard]] int forward_inplace(Sample* data) noexcept {
                 wide* const a = enter(data);
                 // The fixed policy's cumulative shift is tracked beside the
                 // exponent actually applied; the two coincide under
@@ -216,7 +217,7 @@ namespace tap::dsp {
 
             /// In-place inverse transform: packed spectrum -> N samples, the
             /// unnormalized inverse scaled by 2^-e. @return e.
-            int inverse_inplace(Sample* data) noexcept {
+            [[nodiscard]] int inverse_inplace(Sample* data) noexcept {
                 wide* const a   = enter(data);
                 int         e   = 0;
                 int         cum = arith::k_fixed_scaling_input_pre_shift + 1; // pre-shift and the pre-pass bit
