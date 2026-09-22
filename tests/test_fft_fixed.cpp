@@ -27,8 +27,13 @@
 //     kernel shifts only when growth requires it.
 //   - round trip, both policies: x == out * 2^(e_fwd + e_inv + 1 - log2 n)
 //     up to rounding noise (Ooura's unnormalised inverse has gain N/2).
-//   - saturation-free for every input under both policies; no alignment
+//   - the int32 kernel performs no saturating operation for any input under
+//     either policy; the Q15 output narrowing clamps at the rail exactly when
+//     the true value is the rail (a full-scale Nyquist alternation lands on
+//     32767.5 LSB, pinned as the 0.5 LSB rail shortfall); no alignment
 //     requirement; allocation at construction only (test_fft_rt.cpp).
+//   - the fixed-point output is a pure function of the input, the tables and
+//     the two-rounding arithmetic: host-identical, fingerprinted per profile.
 //
 // Measured numbers. Every tolerance and ratio here is a number measured on the
 // real kernel and pinned at 2x (the log_mel pattern), never a round number;
@@ -131,9 +136,9 @@ namespace {
 
     // Measured 2026-09-18 on x86-64 Linux (Ubuntu 24.04, glibc 2.39), GCC
     // 13.3.0 and clang 18.1.3 -O3 (identical: the kernel is integer
-    // arithmetic and the tables are the same libm), kernel at
-    // claude/wave2-stage3b-kernel a55a14f, and pinned at 2x. The measured
-    // values, in the pins' order:
+    // arithmetic and the tables are the same libm), on the Stage 3b kernel
+    // as merged in tap/DspTap#27, and pinned at 2x. The measured values, in
+    // the pins' order:
     //   Q15/fixed  0.500 / 0.562 /  -  / 1.00 / 0.0005 / 1.055 / 0.022 / 0.500
     //   Q31/fixed  4.250 / 3.382 /  -  / 6.00 / 0.8125 / 1.744 / 0.383 /  -
     //   Q15/bfp    0.750 / 5.000 / 1.0 / 1.00 / 0.0156 / 1.041 / 0.535 / 0.500
@@ -277,6 +282,21 @@ namespace {
         std::vector<Sample> x;
     };
 
+    /// The square-wave complex exponential z_j = a sgn cos(theta_j + pi/8) +
+    /// i a sgn sin(theta_j + pi/8), theta_j = 2 pi j k / M, packed as pairs;
+    /// amplitude a as a fraction of full scale (1.0 puts every component at
+    /// a rail: from_double(+-1.0) is INT_MAX / INT_MIN exactly).
+    template <typename Sample>
+    std::vector<Sample> square_exponential(std::size_t n, double k_over_m, double amplitude) {
+        std::vector<Sample> x(n);
+        for (std::size_t j = 0; j < n / 2; ++j) {
+            const double theta = 2.0 * std::numbers::pi * k_over_m * static_cast<double>(j) + std::numbers::pi / 8.0;
+            x[2 * j]           = sample_scale<Sample>::from_double(std::cos(theta) >= 0.0 ? amplitude : -amplitude);
+            x[2 * j + 1]       = sample_scale<Sample>::from_double(std::sin(theta) >= 0.0 ? amplitude : -amplitude);
+        }
+        return x;
+    }
+
     /// Full-scale adversarial time-domain patterns (fft_arith.h, "Scaling"):
     /// every one has |x| at a rail in every sample, so it drives the
     /// magnitude bound; the rotated packed pairs and the square-wave
@@ -338,14 +358,7 @@ namespace {
         // twiddles are 45 degrees (k = M/8), 22.5 degrees (M/16) and 135
         // degrees (3M/8). phi keeps the samples off the zero crossings.
         for (const double k_over_m : {1.0 / 8.0, 1.0 / 16.0, 3.0 / 8.0}) {
-            std::vector<Sample> x(n);
-            for (std::size_t j = 0; j < n / 2; ++j) {
-                const double theta =
-                    2.0 * std::numbers::pi * k_over_m * static_cast<double>(j) + std::numbers::pi / 8.0;
-                x[2 * j]     = std::cos(theta) >= 0.0 ? hi : lo;
-                x[2 * j + 1] = std::sin(theta) >= 0.0 ? hi : lo;
-            }
-            p.push_back({"square exponential", x});
+            p.push_back({"square exponential", square_exponential<Sample>(n, k_over_m, 1.0)});
         }
         // Real square waves at bins N/8 and N/4 + 1.
         for (const double k_over_n : {1.0 / 8.0, 1.0 / 4.0 + 1.0 / static_cast<double>(n)}) {
@@ -792,8 +805,9 @@ namespace {
     // The BFP output, shifted right (round-half-up) by e_fixed - e_bfp,
     // agrees with the fixed output to within the pinned number of LSBs (the
     // difference is the fixed path's extra rounding noise plus one rounding
-    // of the shift); and on an input where BFP reports the full constant it
-    // shifted like fixed at every stage, so the two are bit-identical.
+    // of the shift). The two tests after this one pin what happens when BFP
+    // reports the full constant: bit identity on the full-scale patterns,
+    // and a bound (not identity) in general.
     TYPED_TEST(fft_fixed_bfp_test, BfpMatchesFixedAfterShift) {
         using cfg      = TypeParam;
         using s        = typename cfg::sample;
@@ -834,6 +848,15 @@ namespace {
                                     << worst.index;
     }
 
+    // On the battery's FULL-SCALE patterns, a BFP transform that reports the
+    // fixed constant is bit-identical to the fixed transform. What this
+    // proves is the full-scale case only: a Q31 block enters with no
+    // headroom, so the first shift is the fixed schedule's 3 bits, and the
+    // patterns keep the block at full scale stage after stage; a Q15 block
+    // enters with h >= 2 (the widen's guard bits), so BFP is a bit behind
+    // fixed after the first stage and catches up later, but these patterns'
+    // outputs are exact enough that the narrow returns the same int16. It is
+    // NOT the general case; the next test pins that one.
     TYPED_TEST(fft_fixed_bfp_test, BfpAtTheFullExponentIsBitIdenticalToFixed) {
         using cfg            = TypeParam;
         using s              = typename cfg::sample;
@@ -860,6 +883,104 @@ namespace {
                                 << " reached the fixed exponent";
         std::printf("[ measured ] %s: %lu of %lu full-scale patterns reach the fixed exponent\n", cfg::name(),
                     ul(attained), ul(tried));
+    }
+
+    // In general BFP reaches the fixed constant through a DIFFERENT rounding
+    // history, and the two outputs are then not bit-identical. Q31: an input
+    // with one bit of headroom (below -6.02 dBFS) is shifted 2 at the first
+    // stage where fixed shifts 3, and the block catches up at a later stage
+    // where the headroom scan reads h = 0 (shift 3 against fixed's 2): same
+    // e, different roundings, a few LSB apart. Q15: the widened block always
+    // enters with h >= 2, so every attained case is such a catch-up; the
+    // int32 histories differ by the same few LSB32, which is 2^-14 of a Q15
+    // LSB and survives the narrow only where the exact value sits on a
+    // rounding tie, as 1 LSB. This test pins the bound, and pins that the
+    // sweep CONTAINS such cases, so the honest statement is what the battery
+    // enforces (the previous statement, "bit for bit at the full exponent",
+    // was false and is withdrawn).
+    //
+    // Sweep: the sizes above, levels 0 to -8 dBFS in 0.2 dB steps, a
+    // constant, an on-bin tone, the square exponentials at M/8 and M/16 and
+    // white noise, both directions, plus the two Q15 tie cases a dense
+    // amplitude sweep (every Q15 amplitude 8192 .. 32767 on these patterns,
+    // 2026-09-22) found first: the M/16 exponential at 26686 LSB (N = 512,
+    // inverse) and the M/8 exponential at 27160 LSB (N = 2048, inverse).
+    // Measured 2026-09-22 on x86-64 Linux (glibc 2.39, GCC 13.3.0 and clang
+    // 18.1.3 -O3 agree; integer arithmetic over the pinned tables), on the
+    // Stage 3b kernel as merged in tap/DspTap#27, and pinned at 2x:
+    //   Q15/bfp   max 1 LSB  (the narrow's tie; 2 of 2 tie cases differ)
+    //   Q31/bfp   max 4 LSB  at index 0, the DC path where the round-half-up
+    //             biases add coherently; 2 LSB away from it
+    template <typename Cfg>
+    constexpr double k_bfp_full_exponent_max_lsb = 0.0;
+    template <>
+    constexpr double k_bfp_full_exponent_max_lsb<q15_bfp> = 2.0;
+    template <>
+    constexpr double k_bfp_full_exponent_max_lsb<q31_bfp> = 8.0;
+
+    TYPED_TEST(fft_fixed_bfp_test, BfpAtTheFullExponentAgreesWithFixedWithinPin) {
+        using cfg       = TypeParam;
+        using s         = typename cfg::sample;
+        using fixed     = config<s, scaling::fixed>;
+        const auto  pin = k_bfp_full_exponent_max_lsb<cfg>;
+        worst_case  worst;
+        std::size_t attained   = 0;
+        std::size_t mismatched = 0;
+        std::size_t tried      = 0;
+        for (const std::size_t n : k_sweep_sizes) {
+            std::vector<pattern<s>> inputs;
+            for (int tenths = 0; tenths <= 80; tenths += 2) {
+                const double amplitude = std::pow(10.0, -static_cast<double>(tenths) / 200.0);
+                inputs.push_back({"constant", std::vector<s>(n, sample_scale<s>::from_double(amplitude))});
+                inputs.push_back({"tone", tap::dsp::test::tone<s>(n, static_cast<double>(n / 8 + 1), amplitude, 0.3)});
+                inputs.push_back({"square exponential M/8", square_exponential<s>(n, 1.0 / 8.0, amplitude)});
+                inputs.push_back({"square exponential M/16", square_exponential<s>(n, 1.0 / 16.0, amplitude)});
+                inputs.push_back({"noise", tap::dsp::test::random_signal<s>(
+                                               n, 0x2545F491u ^ static_cast<std::uint32_t>(n), amplitude)});
+            }
+            if constexpr (cfg::k_is_q15) {
+                if (n == 512) {
+                    inputs.push_back({"tie: square exponential M/16 at 26686 LSB",
+                                      square_exponential<s>(n, 1.0 / 16.0, 26686.0 / 32768.0)});
+                }
+                if (n == 2048) {
+                    inputs.push_back({"tie: square exponential M/8 at 27160 LSB",
+                                      square_exponential<s>(n, 1.0 / 8.0, 27160.0 / 32768.0)});
+                }
+            }
+            for (const auto& p : inputs) {
+                for (const bool inverse : {false, true}) {
+                    ++tried;
+                    const auto f = inverse ? run_inverse<fixed>(p.x) : run_forward<fixed>(p.x);
+                    const auto b = inverse ? run_inverse<cfg>(p.x) : run_forward<cfg>(p.x);
+                    ASSERT_LE(b.exponent, f.exponent) << p.name << " n=" << n;
+                    if (b.exponent != f.exponent) {
+                        continue;
+                    }
+                    ++attained;
+                    bool differs = false;
+                    for (std::size_t i = 0; i < n; ++i) {
+                        const double diff = std::fabs(static_cast<double>(b.out[i]) - static_cast<double>(f.out[i]));
+                        differs           = differs || diff > 0.0;
+                        worst.note(diff, inverse ? "inverse" : "forward", p.name, n, f.exponent, i);
+                    }
+                    mismatched += differs ? 1u : 0u;
+                }
+            }
+        }
+        std::printf("[ measured ] %s at the full exponent: %lu of %lu inputs reach it, %lu of those differ from "
+                    "fixed, max %.1f LSB (pin %.1f) at %s %s n=%lu e=%d index %lu\n",
+                    cfg::name(), ul(attained), ul(tried), ul(mismatched), worst.value, pin, worst.what, worst.name,
+                    ul(worst.n), worst.e, ul(worst.index));
+        EXPECT_GT(pin, 0.0) << "unmeasured pin";
+        EXPECT_GT(attained, 0u) << cfg::name() << ": no input reached the fixed exponent";
+        // The sweep must contain a catch-up case, or the bound below would
+        // be pinning nothing and the old claim would be creeping back in.
+        EXPECT_GT(mismatched, 0u) << cfg::name()
+                                  << ": every input at the full exponent was bit-identical to fixed; the "
+                                     "sweep no longer exercises a different rounding history";
+        EXPECT_LE(worst.value, pin) << cfg::name() << " " << worst.what << " " << worst.name << " n=" << worst.n
+                                    << " e=" << worst.e << " index " << worst.index;
     }
 
     // ========================================================================
@@ -1162,10 +1283,12 @@ namespace {
         noise_row row{material,           n,         level_db,        r.exponent,
                       db(signal),         db(noise), db(model.noise), db(late.noise),
                       noise / model.noise};
+        // rms in output LSB is the number the headers quote; the dBFS
+        // columns are the model comparison.
         std::printf("[ floor ] %s %-5s N=%5lu %4.0f dBFS e=%2d  signal %7.2f  floor %7.2f  model %7.2f (late %7.2f) "
-                    "dBFS/component  ratio %.3f  snr %6.2f dB\n",
+                    "dBFS/component  rms %6.3f LSB  ratio %.3f  snr %6.2f dB\n",
                     Cfg::name(), material, ul(n), level_db, r.exponent, row.signal_db, row.floor_db, row.model_db,
-                    row.model_late_db, row.ratio, row.signal_db - row.floor_db);
+                    row.model_late_db, std::sqrt(noise) / Cfg::k_lsb, row.ratio, row.signal_db - row.floor_db);
         return row;
     }
 
@@ -1297,9 +1420,11 @@ namespace {
             std::uint64_t post_pass; ///< make_real_post_pass_table(n)
         };
         // Taken 2026-09-18 on x86-64 Linux, glibc 2.39 (GCC 13.3.0 and clang
-        // 18.1.3 agree), kernel a55a14f. The other CI hosts (macOS arm64,
-        // Windows UCRT, the newlib QEMU legs) either reproduce these or the
-        // difference is a recorded finding per host and N.
+        // 18.1.3 agree), on the Stage 3b kernel as merged in tap/DspTap#27;
+        // unchanged by the octant-symmetric generator (2026-09-22). The other
+        // CI hosts (macOS arm64, Windows UCRT, the newlib QEMU legs) either
+        // reproduce these or the difference is a recorded finding per host
+        // and N.
         constexpr std::array<pinned, 3> expected{{{256, 0x95f5c68afe494835ull, 0x66c84a75861eafb6ull},
                                                   {512, 0x6df6ff99a3ed3c85ull, 0x4b1374200abed27cull},
                                                   {2048, 0xe42c528f3ae88b45ull, 0xa0f40e80bbf4efb9ull}}};
@@ -1321,6 +1446,109 @@ namespace {
             EXPECT_EQ(tw_sum, p.twiddles) << "n=" << p.n << ": this host's libm produced a different twiddle table";
             EXPECT_EQ(post_sum, p.post_pass)
                 << "n=" << p.n << ": this host's libm produced a different post-pass table";
+        }
+    }
+
+    // ========================================================================
+    // Output fingerprints: the exact integer result, per profile and policy.
+    // ========================================================================
+
+    /// FNV-1a-64 over an output block and its exponent: each sample as its
+    /// unsigned bit pattern, least significant byte first (2 bytes for Q15, 4
+    /// for Q31), then the exponent as a 4-byte unsigned. One differing LSB
+    /// anywhere, or a different exponent, changes it.
+    template <typename Sample>
+    std::uint64_t output_fingerprint(const std::vector<Sample>& out, int exponent) {
+        std::uint64_t h    = 0xcbf29ce484222325ull;
+        const auto    fold = [&h](std::uint32_t bits, int bytes) {
+            for (int b = 0; b < bytes; ++b) {
+                h ^= static_cast<std::uint64_t>((bits >> (8 * b)) & 0xffu);
+                h *= 0x100000001b3ull;
+            }
+        };
+        for (const Sample v : out) {
+            fold(static_cast<std::uint32_t>(static_cast<std::make_unsigned_t<Sample>>(v)), static_cast<int>(sizeof v));
+        }
+        fold(static_cast<std::uint32_t>(exponent), 4);
+        return h;
+    }
+
+    // The fixed-point transform is integer arithmetic over a checksum-pinned
+    // table, so its output for a fixed input is one exact bit pattern on
+    // every host, and that pattern is the strongest pin the battery can hold:
+    // it fixes the rounding count of the complex multiply (fft_arith.h: two
+    // mul_coeff roundings per output component, no fused form), the shift
+    // schedule, the sign convention and the packing at once, where every
+    // tolerance-based test above has slack. Proven against the mutation
+    // reviewer A of tap/DspTap#27 ran: a fused accumulate-then-round complex
+    // multiply in rotate() passes 179 of the other 180 tests (the one failure
+    // a Parseval pin, by luck of the seed); applied locally on 2026-09-22
+    // (a copy of the include tree, this TU rebuilt against it) it fails all
+    // eight Q31 fingerprints here and none of the eight Q15 ones: the fused
+    // form differs from the two-rounding form by about one LSB32 per
+    // rotation, which is 2^-14 of a Q15 LSB and is rounded away by the
+    // narrow on this input. rotate() is one function shared by both
+    // profiles, so the Q31 pins hold the rounding form for the Q15 path
+    // too; the Q15 pins hold the widen/narrow, the schedule and the packing
+    // of that path. The Welch-model ratio cannot see the mutation at all (it
+    // moves the ratio by about 3% of the pin's slack); this test is what
+    // makes "the two-rounding form is the contract" enforceable.
+    //
+    // Input: full-scale white noise from the shared xorshift32, seed
+    // 0x2545F491 ^ N, used as the time block for the forward and as the
+    // packed spectrum for the inverse (the two pins are independent). Values
+    // taken 2026-09-22 on x86-64 Linux (glibc 2.39, GCC 13.3.0 and clang
+    // 18.1.3 identical) on the Stage 3b kernel as merged in tap/DspTap#27;
+    // the other CI hosts (macOS arm64, Windows UCRT, the four newlib QEMU
+    // legs) reproduce them, and a host that does not is a finding to record
+    // per host and pin (as for the table checksums), never a skip.
+    struct fingerprint_pins {
+        std::uint64_t forward_512;
+        std::uint64_t inverse_512;
+        std::uint64_t forward_2048;
+        std::uint64_t inverse_2048;
+    };
+    template <typename Cfg>
+    constexpr fingerprint_pins k_fingerprints{0, 0, 0, 0};
+    template <>
+    constexpr fingerprint_pins k_fingerprints<q15_fixed>{0x4f175f4249270f31ull, 0x0f3c8b2a39ec223bull,
+                                                         0xaa3d6d7935f2236eull, 0xd8fff1abc5ade94aull};
+    template <>
+    constexpr fingerprint_pins k_fingerprints<q31_fixed>{0x2b68021a254d5404ull, 0xd566c7d6240f5833ull,
+                                                         0x78836f72717d5823ull, 0x1bf3a2198038ef4cull};
+    template <>
+    constexpr fingerprint_pins k_fingerprints<q15_bfp>{0x25e5ec565482430eull, 0x8347e29c2a96a280ull,
+                                                       0x056ef3dccd411b3aull, 0xd3a7cfeef3f95a75ull};
+    template <>
+    constexpr fingerprint_pins k_fingerprints<q31_bfp>{0xced316f629630991ull, 0xf9887376e9bfa8a5ull,
+                                                       0x510fe44ccd740698ull, 0xe12bab5c64d06041ull};
+
+    TYPED_TEST(fft_fixed_point_test, OutputFingerprintIsPinned) {
+        using cfg       = TypeParam;
+        using s         = typename cfg::sample;
+        const auto& pin = k_fingerprints<cfg>;
+        for (const std::size_t n : {std::size_t{512}, std::size_t{2048}}) {
+            const auto x = tap::dsp::test::random_signal<s>(n, 0x2545F491u ^ static_cast<std::uint32_t>(n), 1.0);
+            const auto f = run_forward<cfg>(x);
+            const auto i = run_inverse<cfg>(x);
+            const auto forward_sum = output_fingerprint(f.out, f.exponent);
+            const auto inverse_sum = output_fingerprint(i.out, i.exponent);
+            // Printed before any assertion so a -V log carries every host's
+            // values whether or not they match (two 32-bit halves: newlib's
+            // printf has no %llx).
+            std::printf("[ fingerprint ] %s n=%lu forward e=%d fnv1a64=%08lx%08lx inverse e=%d fnv1a64=%08lx%08lx\n",
+                        cfg::name(), ul(n), f.exponent, static_cast<unsigned long>(forward_sum >> 32),
+                        static_cast<unsigned long>(forward_sum & 0xffffffffu), i.exponent,
+                        static_cast<unsigned long>(inverse_sum >> 32),
+                        static_cast<unsigned long>(inverse_sum & 0xffffffffu));
+            const std::uint64_t expected_forward = n == 512 ? pin.forward_512 : pin.forward_2048;
+            const std::uint64_t expected_inverse = n == 512 ? pin.inverse_512 : pin.inverse_2048;
+            EXPECT_NE(expected_forward, 0u) << "unmeasured fingerprint " << cfg::name() << " forward n=" << n;
+            EXPECT_NE(expected_inverse, 0u) << "unmeasured fingerprint " << cfg::name() << " inverse n=" << n;
+            EXPECT_EQ(forward_sum, expected_forward)
+                << cfg::name() << " forward n=" << n << ": the kernel's output is not the pinned bit pattern";
+            EXPECT_EQ(inverse_sum, expected_inverse)
+                << cfg::name() << " inverse n=" << n << ": the kernel's output is not the pinned bit pattern";
         }
     }
 
