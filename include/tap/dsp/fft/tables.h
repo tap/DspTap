@@ -15,13 +15,21 @@
 // Every coefficient is generated in double through std::cos / std::sin and
 // rounded ONCE by fft_arith<std::int32_t>::make_coeff (round half away from
 // zero, saturating), so |w_q - w| <= 0.5 LSB of Q1.30 on every host
-// (`TwiddleTableIsWithinHalfLsb` in the battery). Host libm last-bit
-// differences can move a double that lies within 2^-31 of a rounding
-// boundary onto the other side, so fixed-point transform outputs are
-// host-identical only if the table is; the battery pins each certified N's
-// table checksum (FNV-1a-64 over the int32 bit patterns, in index order) so
-// a libm difference is detected rather than silently absorbed
-// (`TwiddleTableChecksumIsPinned`).
+// (`TwiddleTableIsWithinHalfLsb` in the battery); the kernel twiddles go
+// through libm for the first octant only and reach the rest of the circle by
+// exact symmetry. Two things can still move a coefficient by one Q1.30 LSB
+// between hosts: a libm last-bit difference (glibc, newlib, UCRT, Apple),
+// and fp-contraction of a generator expression (Decision D9: a compiler that
+// fuses an a - b*c into one rounding, the default on Apple arm64 and on the
+// M55 leg), either of which can carry a double that lies within 2^-31 of a
+// rounding boundary onto the other side. The generators therefore contain no
+// contractible expression (the post-pass writes 0.5 * (1.0 - sin), a product
+// of a difference, never 0.5 - 0.5 * sin), and fixed-point transform outputs
+// are host-identical only if the table is: the battery pins each certified
+// N's table checksum (FNV-1a-64 over the int32 bit patterns, in index order)
+// so a libm difference is detected rather than silently absorbed
+// (`TwiddleTableChecksumIsPinned`), and pins the transforms' own output
+// fingerprints on top (`OutputFingerprintIsPinned`).
 
 #pragma once
 
@@ -71,10 +79,22 @@ namespace tap::dsp::detail {
     /// 1.0 (k_coeff_one = 2^30) and k = m/4 is exactly i, since make_coeff
     /// rounds the double 1.0 / 0.0 exactly; the kernel relies on neither.
     ///
-    /// The angle is formed as 2*pi*k/m in double from the integer k, one
-    /// rounding per angle; for m <= 2^16 the angle error (< 2^-48 rad) is
-    /// three orders of magnitude below the Q1.30 quantum, so the 0.5 LSB
-    /// bound holds with margin.
+    /// Only the first octant, k in [0, m/8], goes through libm: cos and sin
+    /// of the angle 2*pi*k/m, formed in double from the integer k (one
+    /// rounding per angle; for the kernel's m = N/2 <= 2^15 the angle error,
+    /// < 2^-49 rad, is five orders of magnitude below the Q1.30 quantum, so
+    /// the 0.5 LSB bound holds with margin), each rounded once by make_coeff.
+    /// At k = m/8 the sine is set equal to the cosine (the exact value is
+    /// sqrt(1/2) for both). The other seven octants are the first one's
+    /// quantized values under the exact symmetries of the circle,
+    ///   W^(m/4 - k) = i conj(W^k),  W^(m/2 - k) = -conj(W^k),  W^(m - k) = conj(W^k),
+    /// applied to the Q1.30 integers (a negation is exact in Q1.30, and
+    /// make_coeff rounds half away from zero, so a negated coefficient is the
+    /// coefficient of the negated double). Consequences: the k <-> m - k
+    /// conjugate symmetry and the k <-> m/4 - k swap hold bit-exactly on every
+    /// host by construction, and a libm difference can enter only through the
+    /// m/8 + 1 first-octant evaluations rather than through 2m of them
+    /// (`TwiddleTableIsWithinHalfLsb` checks the symmetries and the bound).
     ///
     /// @pre m is a power of two >= 2 (the kernel's length, N/2 for a real
     ///      transform of N).
@@ -82,11 +102,29 @@ namespace tap::dsp::detail {
         assert(m >= 2 && (m & (m - 1)) == 0);
         using arith = fft_arith<std::int32_t>;
         std::vector<arith::coeff> table(2 * m);
-        const double              step = 2.0 * std::numbers::pi / static_cast<double>(m);
-        for (std::size_t k = 0; k < m; ++k) {
+        const std::size_t         octant  = m / 8; // 0 for m < 8: only k = 0 is evaluated
+        const std::size_t         quarter = m / 4;
+        const std::size_t         half    = m / 2;
+        const double              step    = 2.0 * std::numbers::pi / static_cast<double>(m);
+        for (std::size_t k = 0; k <= octant; ++k) {
             const double angle = step * static_cast<double>(k);
             table[2 * k]       = arith::make_coeff(std::cos(angle));
-            table[2 * k + 1]   = arith::make_coeff(std::sin(angle));
+            table[2 * k + 1]   = (k == octant && octant > 0) ? table[2 * k] : arith::make_coeff(std::sin(angle));
+        }
+        for (std::size_t k = octant + 1; k <= quarter; ++k) { // W^k = i conj(W^(m/4 - k)): (c, s) -> (s, c)
+            const std::size_t j = quarter - k;
+            table[2 * k]        = table[2 * j + 1];
+            table[2 * k + 1]    = table[2 * j];
+        }
+        for (std::size_t k = quarter + 1; k <= half; ++k) { // W^k = -conj(W^(m/2 - k)): (c, s) -> (-c, s)
+            const std::size_t j = half - k;
+            table[2 * k]        = static_cast<arith::coeff>(-table[2 * j]);
+            table[2 * k + 1]    = table[2 * j + 1];
+        }
+        for (std::size_t k = half + 1; k < m; ++k) { // W^k = conj(W^(m - k)): (c, s) -> (c, -s)
+            const std::size_t j = m - k;
+            table[2 * k]        = table[2 * j];
+            table[2 * k + 1]    = static_cast<arith::coeff>(-table[2 * j + 1]);
         }
         return table;
     }
@@ -106,6 +144,13 @@ namespace tap::dsp::detail {
     /// index is the bin number. |wkr + i*wki| = sqrt(0.5*(1 - sin)) <= 1/sqrt(2),
     /// so the products never approach the coefficient's own range.
     ///
+    /// wkr is computed as 0.5 * (1.0 - sin), the same double bit for bit as
+    /// 0.5 - 0.5 * sin under round-to-nearest (halving the singly rounded
+    /// 1 - sin is exact) but not an a - b*c pattern, so no -ffp-contract mode
+    /// can fuse it into a single rounding (file header, D9). The angle is
+    /// formed as for the twiddles, here over n <= 2^16, where its error
+    /// (< 2^-47 rad) is still five orders of magnitude below the quantum.
+    ///
     /// @pre n is a power of two >= 4 (n == 4 yields the one unused entry).
     inline std::vector<fft_arith<std::int32_t>::coeff> make_real_post_pass_table(std::size_t n) {
         assert(n >= 4 && (n & (n - 1)) == 0);
@@ -115,7 +160,7 @@ namespace tap::dsp::detail {
         const double              step = 2.0 * std::numbers::pi / static_cast<double>(n);
         for (std::size_t k = 0; k < quarter; ++k) {
             const double angle = step * static_cast<double>(k);
-            table[2 * k]       = arith::make_coeff(0.5 - 0.5 * std::sin(angle));
+            table[2 * k]       = arith::make_coeff(0.5 * (1.0 - std::sin(angle)));
             table[2 * k + 1]   = arith::make_coeff(0.5 * std::cos(angle));
         }
         return table;
