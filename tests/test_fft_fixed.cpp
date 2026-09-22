@@ -282,17 +282,26 @@ namespace {
         std::vector<Sample> x;
     };
 
-    /// The square-wave complex exponential z_j = a sgn cos(theta_j + pi/8) +
-    /// i a sgn sin(theta_j + pi/8), theta_j = 2 pi j k / M, packed as pairs;
-    /// amplitude a as a fraction of full scale (1.0 puts every component at
-    /// a rail: from_double(+-1.0) is INT_MAX / INT_MIN exactly).
+    /// The square-wave complex exponential z_j = a sgn cos(theta_j) +
+    /// i a sgn sin(theta_j), theta_j = 2 pi (j k / M + 1/16), packed as
+    /// pairs, with k / M = sixteenths / 16; amplitude a as a fraction of full
+    /// scale (1.0 puts every component at a rail: from_double(+-1.0) is
+    /// INT_MAX / INT_MIN exactly). The signs come from the angle in exact
+    /// sixteenths of a turn, not from libm: with the 1/16 turn phase the
+    /// M/16 exponential lands exactly on multiples of a quarter turn, where
+    /// the sign of a ~1e-16 residue of cos or sin depends on the host's libm
+    /// and on fp-contraction of the angle expression (the M55 leg produced a
+    /// different pattern from the hosts that way). On an exact zero the sign
+    /// is taken as positive.
     template <typename Sample>
-    std::vector<Sample> square_exponential(std::size_t n, double k_over_m, double amplitude) {
+    std::vector<Sample> square_exponential(std::size_t n, unsigned sixteenths, double amplitude) {
         std::vector<Sample> x(n);
         for (std::size_t j = 0; j < n / 2; ++j) {
-            const double theta = 2.0 * std::numbers::pi * k_over_m * static_cast<double>(j) + std::numbers::pi / 8.0;
-            x[2 * j]           = sample_scale<Sample>::from_double(std::cos(theta) >= 0.0 ? amplitude : -amplitude);
-            x[2 * j + 1]       = sample_scale<Sample>::from_double(std::sin(theta) >= 0.0 ? amplitude : -amplitude);
+            const unsigned turn  = (sixteenths * static_cast<unsigned>(j % 16) + 1u) % 16u;
+            const bool     cos_p = turn <= 4u || turn >= 12u;
+            const bool     sin_p = turn <= 8u;
+            x[2 * j]             = sample_scale<Sample>::from_double(cos_p ? amplitude : -amplitude);
+            x[2 * j + 1]         = sample_scale<Sample>::from_double(sin_p ? amplitude : -amplitude);
         }
         return x;
     }
@@ -357,8 +366,8 @@ namespace {
         // a rail; the fundamental sits at complex bin k where the stage
         // twiddles are 45 degrees (k = M/8), 22.5 degrees (M/16) and 135
         // degrees (3M/8). phi keeps the samples off the zero crossings.
-        for (const double k_over_m : {1.0 / 8.0, 1.0 / 16.0, 3.0 / 8.0}) {
-            p.push_back({"square exponential", square_exponential<Sample>(n, k_over_m, 1.0)});
+        for (const unsigned sixteenths : {2u, 1u, 6u}) {
+            p.push_back({"square exponential", square_exponential<Sample>(n, sixteenths, 1.0)});
         }
         // Real square waves at bins N/8 and N/4 + 1.
         for (const double k_over_n : {1.0 / 8.0, 1.0 / 4.0 + 1.0 / static_cast<double>(n)}) {
@@ -902,13 +911,18 @@ namespace {
     // Sweep: the sizes above, levels 0 to -8 dBFS in 0.2 dB steps, a
     // constant, an on-bin tone, the square exponentials at M/8 and M/16 and
     // white noise, both directions, plus the two Q15 tie cases a dense
-    // amplitude sweep (every Q15 amplitude 8192 .. 32767 on these patterns,
-    // 2026-09-22) found first: the M/16 exponential at 26686 LSB (N = 512,
-    // inverse) and the M/8 exponential at 27160 LSB (N = 2048, inverse).
-    // Measured 2026-09-22 on x86-64 Linux (glibc 2.39, GCC 13.3.0 and clang
-    // 18.1.3 -O3 agree; integer arithmetic over the pinned tables), on the
-    // Stage 3b kernel as merged in tap/DspTap#27, and pinned at 2x:
-    //   Q15/bfp   max 1 LSB  (the narrow's tie; 2 of 2 tie cases differ)
+    // amplitude sweep (every Q15 amplitude 8192 .. 32767 on the two
+    // exponentials, 2026-09-22) found first: the M/8 exponential at 27152 LSB
+    // (N = 512) and at 27160 LSB (N = 2048), both inverse, two samples each.
+    // The tie cases and the exponentials are exact by construction; the
+    // constant, the tone and the amplitudes go through pow / cos, so a libm
+    // last-bit difference can move one sweep input by an LSB on another host
+    // and change the counts printed below by a few, which the bound and the
+    // "at least one catch-up" assertion are indifferent to. Measured
+    // 2026-09-22 on x86-64 Linux (glibc 2.39, GCC 13.3.0 and clang 18.1.3
+    // -O3 agree; integer arithmetic over the pinned tables), on the Stage 3b
+    // kernel as merged in tap/DspTap#27, and pinned at 2x:
+    //   Q15/bfp   max 1 LSB  (the narrow's tie; both tie cases differ)
     //   Q31/bfp   max 4 LSB  at index 0, the DC path where the round-half-up
     //             biases add coherently; 2 LSB away from it
     template <typename Cfg>
@@ -933,19 +947,19 @@ namespace {
                 const double amplitude = std::pow(10.0, -static_cast<double>(tenths) / 200.0);
                 inputs.push_back({"constant", std::vector<s>(n, sample_scale<s>::from_double(amplitude))});
                 inputs.push_back({"tone", tap::dsp::test::tone<s>(n, static_cast<double>(n / 8 + 1), amplitude, 0.3)});
-                inputs.push_back({"square exponential M/8", square_exponential<s>(n, 1.0 / 8.0, amplitude)});
-                inputs.push_back({"square exponential M/16", square_exponential<s>(n, 1.0 / 16.0, amplitude)});
+                inputs.push_back({"square exponential M/8", square_exponential<s>(n, 2u, amplitude)});
+                inputs.push_back({"square exponential M/16", square_exponential<s>(n, 1u, amplitude)});
                 inputs.push_back({"noise", tap::dsp::test::random_signal<s>(
                                                n, 0x2545F491u ^ static_cast<std::uint32_t>(n), amplitude)});
             }
             if constexpr (cfg::k_is_q15) {
                 if (n == 512) {
-                    inputs.push_back({"tie: square exponential M/16 at 26686 LSB",
-                                      square_exponential<s>(n, 1.0 / 16.0, 26686.0 / 32768.0)});
+                    inputs.push_back(
+                        {"tie: square exponential M/8 at 27152 LSB", square_exponential<s>(n, 2u, 27152.0 / 32768.0)});
                 }
                 if (n == 2048) {
-                    inputs.push_back({"tie: square exponential M/8 at 27160 LSB",
-                                      square_exponential<s>(n, 1.0 / 8.0, 27160.0 / 32768.0)});
+                    inputs.push_back(
+                        {"tie: square exponential M/8 at 27160 LSB", square_exponential<s>(n, 2u, 27160.0 / 32768.0)});
                 }
             }
             for (const auto& p : inputs) {
