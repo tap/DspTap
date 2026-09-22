@@ -36,23 +36,31 @@ from every transform in place of a floating scale:
 |---|---|---|---|---|---|
 | `double` | `real_fft` | Ooura split-radix | X | golden model | desktop, reference |
 | `float` | `real_fft32` | Ooura split-radix (vDSP / CMSIS-Helium backends) | X | float epsilon | Cortex-M55, Hexagon HVX, Apple Silicon |
-| `std::int16_t` (Q15), `scaling::fixed` | `real_fft_q15` | int32 radix-4, Q1.30 twiddles | X / N, e = log2 N | 0.29 LSB rms (the output rounding); 65.8 dB at 0 dBFS, 25.9 dB at −40 dBFS | Cortex-M4 (soft-float), M33 |
-| `std::int32_t` (Q31), `scaling::fixed` | `real_fft_q31` | same kernel, in place | X / 2N, e = log2 N + 1 | 0.69 LSB rms; 148.9 dB at 0 dBFS, 108.9 dB at −40 dBFS | Cortex-M4, M33, M55 |
-| Q15, `scaling::block_floating` | `real_fft_q15_bfp` | same, per-stage headroom scan | X / 2^e, 0 ≤ e ≤ log2 N | 90.4 dB at 0 dBFS, 80.5 dB at −40 dBFS | round-trip consumers |
-| Q31, `scaling::block_floating` | `real_fft_q31_bfp` | same | X / 2^e, 0 ≤ e ≤ log2 N + 1 | 159.6 dB at 0 dBFS, 155.3 dB at −40 dBFS | round-trip consumers |
+| `std::int16_t` (Q15), `scaling::fixed` | `real_fft_q15` | int32 radix-4, Q1.30 twiddles | X / N, e = log2 N | 0.29 LSB rms (the output rounding); 66.5 dB at 0 dBFS, 26.6 dB at −40 dBFS | Cortex-M4 (soft-float), M33 |
+| `std::int32_t` (Q31), `scaling::fixed` | `real_fft_q31` | same kernel, in place | X / 2N, e = log2 N + 1 | 0.68 LSB rms; 149.4 dB at 0 dBFS, 109.4 dB at −40 dBFS | Cortex-M4, M33, M55 |
+| Q15, `scaling::block_floating` | `real_fft_q15_bfp` | same, per-stage headroom scan | X / 2^e, 0 ≤ e ≤ log2 N | 90.6 dB at 0 dBFS, 80.6 dB at −40 dBFS | round-trip consumers |
+| Q31, `scaling::block_floating` | `real_fft_q31_bfp` | same | X / 2^e, 0 ≤ e ≤ log2 N + 1 | 160.6 dB at 0 dBFS, 155.7 dB at −40 dBFS | round-trip consumers |
 
 Fixed-point contract in one line: with `G` the double profile on the same
 input read as fractions of full scale, `G.forward == data · 2^e` and `G`'s
 unnormalized `inverse_inplace == data · 2^e`; the fixed-point `inverse()`
 applies no 2/N, and a round trip gives `x == out · 2^(e_fwd + e_inv + 1 − log2 N)`.
-`fixed_scaling_exponent(N)` returns the fixed constant. Saturation-free for
-every input under both policies (Q15 through two guard bits in the int32
-kernel, Q31 through a one-bit pre-shift under fixed scaling or the headroom
-rule under block floating point). The Q15 fixed forward scale is the one
+`fixed_scaling_exponent(N)` returns the fixed constant; every transform
+returns `e` and is `[[nodiscard]]`. The int32 kernel performs no saturating
+operation for any input under either policy (Q15 through two guard bits,
+Q31 through a one-bit pre-shift under fixed scaling or the headroom rule
+under block floating point; pinned by `SaturationFreeWorstCaseDoesNotWrap`);
+the Q15 output narrowing clamps at the rail exactly when the true value is
+the rail (a full-scale Nyquist alternation, pinned 0.5 LSB). Block floating
+point at its full exponent agrees with fixed scaling within a pinned bound
+(Q31 4 LSB at the DC index, Q15 1 LSB), bit-identically only when every
+stage shifted the fixed amount. The Q15 fixed forward scale is the one
 CMSIS-DSP documents for `arm_rfft_q15`; the rest of the convention is stated
-in `fft.h` (Decision D3). Floors are output-referred against the double
-golden model; the Welch-model derivation and the full level sweep are in the
-design note.
+in `fft.h` (Decision D3). Floors are the `[ floor ]` rows the battery's
+`NoiseFloorTracksWelchModel` prints (output-referred against the double
+golden model, N = 512, white noise); the Welch-model derivation and the full
+level sweep are in the design note, and the output bit patterns themselves
+are pinned per profile (`OutputFingerprintIsPinned`).
 
 ```cpp
 #include "tap/dsp/fft.h"

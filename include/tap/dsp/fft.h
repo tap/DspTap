@@ -486,24 +486,48 @@ namespace tap::dsp {
     ///  - scaling::block_floating: 0 <= e <= fixed_scaling_exponent(N),
     ///    data-dependent; the kernel never shifts more than the stage's
     ///    growth requires beyond the headroom present, and never consumes
-    ///    the last bit; at the full exponent the result is the fixed schedule's,
-    ///    bit for bit. `BfpExponentIsWithinRange`, `BfpMatchesFixedAfterShift`,
-    ///    `BfpAtTheFullExponentIsBitIdenticalToFixed`, `SilenceIsSilence`.
-    ///  - Saturation-free for every input under both policies: Q15 through
-    ///    the two guard bits of the widened Q2.29 data, Q31 through the
-    ///    pre-shift (fixed) or the headroom rule (block floating); the
-    ///    worst case is the packed pair at full scale under a 45-degree
-    ///    twiddle. `SaturationFreeWorstCaseDoesNotWrap`.
+    ///    the last bit. Brought to a common exponent, the block-floating
+    ///    output agrees with the fixed one within a pinned bound (Q15 1.0
+    ///    LSB, Q31 4.0 LSB measured; pinned 2 / 8). At the full exponent it
+    ///    is bit-identical to the fixed output only when every stage shifted
+    ///    the fixed amount (the full-scale patterns, pinned); in general the
+    ///    two schedules reach the same exponent through different rounding
+    ///    histories (an input with headroom at entry shifts less at the
+    ///    first stage and catches up later) and differ by up to 4 LSB (Q31,
+    ///    at the DC index; 2 LSB elsewhere) or 1 LSB (Q15, where the int32
+    ///    history's few LSB32 survive the narrow only on a rounding tie),
+    ///    measured and pinned at 2x. `BfpExponentIsWithinRange`,
+    ///    `BfpMatchesFixedAfterShift`, `BfpAtTheFullExponentIsBitIdenticalToFixed`,
+    ///    `BfpAtTheFullExponentAgreesWithFixedWithinPin`, `SilenceIsSilence`.
+    ///  - Saturation. The int32 kernel performs no saturating operation for
+    ///    any input under either policy: Q15 through the two guard bits of
+    ///    the widened Q2.29 data, Q31 through the pre-shift (fixed) or the
+    ///    headroom rule (block floating); the worst case is the packed pair
+    ///    at full scale under a 45-degree twiddle. The Q15 output narrowing
+    ///    (round-half-up, saturating) clamps at the rail exactly when the
+    ///    true value is the rail: a full-scale Nyquist alternation lands on
+    ///    32767.5 LSB and comes back as 32767, the pinned 0.5 LSB rail
+    ///    shortfall. Largest deviation from the golden model over the
+    ///    adversarial full-scale sweep, both directions: Q15 0.50 / 0.75 LSB
+    ///    (fixed / block floating), Q31 4.25 / 15.99 LSB, at index 0 for
+    ///    Q31; pinned at 1.0 / 1.5 / 8.5 / 32. `SaturationFreeWorstCaseDoesNotWrap`.
+    ///  - Host identity. The fixed-point output is integer arithmetic over a
+    ///    checksum-pinned table: for a fixed input it is one bit pattern on
+    ///    every host, pinned per profile, policy, direction and N = 512 /
+    ///    2048. `OutputFingerprintIsPinned`, `TwiddleTableChecksumIsPinned`.
     ///  - Noise floor (output-referred, against the double golden model on
-    ///    the same quantized input; N = 256 / 512 / 2048, 0 to -60 dBFS):
-    ///    Q15 fixed 0.28 - 0.30 LSB rms (the narrow's rounding; per-bin SNR
-    ///    68.7 / 65.8 / 60.1 dB on full-scale white noise); Q31 fixed
-    ///    0.65 - 0.83 LSB rms (151 / 149 / 143 dB), level-independent, i.e.
-    ///    SNR falls 20 dB per 20 dB of level; block floating point keeps
-    ///    84 - 90 dB (Q15) and 157 - 161 dB (Q31) at full scale and does not
-    ///    lose the low-level signal (77 - 87 dB Q15 at -40 dBFS). Welch's
-    ///    variance model predicts 0.55 LSB32 for the kernel; the rest is the
-    ///    round-half-up bias, largest at DC under block floating point
+    ///    the same quantized input; N = 256 / 512 / 2048, 0 to -60 dBFS; the
+    ///    numbers are the `[ floor ]` rows `NoiseFloorTracksWelchModel`
+    ///    prints, forward, white noise): Q15 fixed 0.26 - 0.30 LSB rms at
+    ///    every N and level (the narrow's own rounding; per-bin SNR 69.1 /
+    ///    66.5 / 60.2 dB at 0 dBFS); Q31 fixed 0.67 - 0.75 LSB rms (152.0 /
+    ///    149.4 / 142.8 dB), level-independent, i.e. SNR falls 20 dB per
+    ///    20 dB of level; block floating point keeps 84 - 91 dB (Q15) and
+    ///    157 - 161 dB (Q31) at 0 dBFS and does not lose the low-level
+    ///    signal (78 - 86 dB Q15, 154 - 156 dB Q31 at -40 dBFS). Welch's
+    ///    variance model predicts 0.57 - 0.59 LSB32 for the kernel; the
+    ///    measured/model ratio of 1.31 - 1.74 (Q31 fixed) is the
+    ///    round-half-up bias, largest at index 0 under block floating point
     ///    (fft/fixed_point.h, "Honest limit"). `NoiseFloorTracksWelchModel`,
     ///    `RoundingBiasOnNegatedInputIsBounded`, `Q15TracksDouble`, `Q31TracksDouble`,
     ///    `Q15AndQ31AgreeToTheQ15Floor`.
@@ -521,10 +545,20 @@ namespace tap::dsp {
     ///    allocates an int32 work buffer of N at construction (in-place API
     ///    preserved at the caller's int16 buffer); Q31 transforms in place.
     ///    Transforms are noexcept and allocation-free, the object is copyable,
-    ///    there is no alignment requirement, one transform at a time per
-    ///    object. `TransformsAreNoexcept`, `ForwardInplaceAllocatesNothing` (and the
-    ///    inverse and out-of-place forms), `CopyProducesBitIdenticalOutput`,
-    ///    `OutOfPlaceIsCopyThenInPlace`.
+    ///    there is no alignment requirement. `TransformsAreNoexcept`,
+    ///    `ForwardInplaceAllocatesNothing` (and the inverse and out-of-place
+    ///    forms), `CopyProducesBitIdenticalOutput`, `OutOfPlaceIsCopyThenInPlace`.
+    ///  - Thread rule: one transform at a time per object. This deviates
+    ///    from the design record (audit Part 7 lists `is_shareable` true for
+    ///    both fixed profiles): Q15 is NOT shareable, since the in-place
+    ///    int16 API needs the per-object int32 work buffer; Q31 has no
+    ///    mutable state (its transforms touch the caller's buffer and the
+    ///    tables only) but its transforms are non-const in this stage, as
+    ///    the floating profiles' are. Stage 4 states shareability as an
+    ///    engine trait (Q31 true, Q15 false) and decides transform constness
+    ///    across engines (the split-radix port's transforms are const).
+    ///  - Every transform returns the exponent and is [[nodiscard]]: under
+    ///    block floating point a discarded e is a silent scale error.
     ///  - Latency 0; no NaN or denormal behaviour to state (integer data).
     ///
     /// Per-profile noise floors and the Welch-model derivation are in
