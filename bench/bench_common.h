@@ -17,6 +17,7 @@
 #include <type_traits>
 
 #include "tap/dsp/fft.h"
+#include "tap/dsp/fft/split_radix.h"
 
 // TAP_DSP_BENCH_ENGINE — the engine a scenario measures. A bare identifier,
 // set by bench/CMakeLists.txt (cache variable of the same name; default
@@ -28,11 +29,20 @@
 //                same class (TAP_DSP_FFT_CMSIS on the `m55` key, vDSP on Apple),
 //                that backend is what this value measures; the printed
 //                `backend=` field (backend_name below) says which.
-//   split_radix  TODO(Stage 2a): the C++20 port, detail::split_radix_rdft<Sample>,
-//                built beside the C. The port agent replaces the static_assert
-//                below with the second alias and makes bench/icount/CMakeLists.txt
-//                build every float scenario twice (docs/audit-fft-and-code-smells.md,
-//                Part 11: the C-vs-port ratio is the Stage 2b gate).
+//   split_radix  the C++20 port, tap::dsp::detail::split_radix_rdft<Sample>
+//                (include/tap/dsp/fft/split_radix.h), built beside the C from
+//                Stage 2a and called directly — no backend define reaches it,
+//                so on the `m55` key its sibling is CMSIS and on every other
+//                key the Ooura C. It is measured through split_radix_bench_adapter
+//                below, which presents basic_real_fft's out-of-place
+//                forward()/inverse() surface with the same copy loop and the
+//                same 2/N arithmetic, so the two engines' counts differ only
+//                by the transform. bench/icount/CMakeLists.txt builds every
+//                float scenario twice, the second with a `_port` key suffix
+//                that scripts/icount.py reports and never gates
+//                (docs/audit-fft-and-code-smells.md, Part 11: the C-vs-port
+//                ratio is the Stage 2b gate; nothing is ratcheted in 2a
+//                because nothing is routed).
 //
 // A documented macro, on purpose — not a registry. Once Stage 4 makes the
 // engine an explicit class parameter this selector becomes that parameter.
@@ -44,20 +54,70 @@
 
 namespace tap::dsp::bench {
 
-    constexpr const char* k_engine_name = TAP_DSP_BENCH_STRINGIZE(TAP_DSP_BENCH_ENGINE);
-    static_assert(std::string_view{k_engine_name} == "reference_c",
-                  "TAP_DSP_BENCH_ENGINE: only reference_c exists until the Stage 2a port lands split_radix");
+    constexpr const char* k_engine_name           = TAP_DSP_BENCH_STRINGIZE(TAP_DSP_BENCH_ENGINE);
+    constexpr bool        k_engine_is_split_radix = std::string_view{k_engine_name} == "split_radix";
+    static_assert(k_engine_is_split_radix || std::string_view{k_engine_name} == "reference_c",
+                  "TAP_DSP_BENCH_ENGINE must be reference_c (the vendored C) or split_radix (the Stage 2a port)");
+
+    /// The port behind basic_real_fft's out-of-place surface, for like-for-like
+    /// counts: copy() and the 2/N scaling below are basic_real_fft::forward /
+    /// ::inverse's statements, so a port-vs-C delta is the transform's alone.
+    /// A bench adapter, not a consumer surface: Stage 2b routes basic_real_fft
+    /// itself at the engine and this class goes with the `_port` binaries.
+    template <typename Sample>
+    class split_radix_bench_adapter {
+      public:
+        explicit split_radix_bench_adapter(std::size_t n)
+            : m_size(static_cast<int>(n))
+            , m_engine(n) {}
+
+        std::size_t size() const noexcept { return m_engine.size(); }
+
+        void forward_inplace(Sample* data) noexcept { m_engine.forward_inplace(data); }
+        void inverse_inplace(Sample* data) noexcept { m_engine.inverse_inplace(data); }
+
+        void forward(const Sample* input, Sample* output) noexcept {
+            copy(input, output);
+            forward_inplace(output);
+        }
+
+        void inverse(const Sample* input, Sample* output) noexcept {
+            copy(input, output);
+            inverse_inplace(output);
+            const Sample scale = Sample(2) / static_cast<Sample>(m_size);
+            for (int i = 0; i < m_size; ++i) {
+                output[i] *= scale;
+            }
+        }
+
+      private:
+        void copy(const Sample* input, Sample* output) noexcept {
+            if (input != output) {
+                for (int i = 0; i < m_size; ++i) {
+                    output[i] = input[i];
+                }
+            }
+        }
+
+        int                                        m_size;
+        tap::dsp::detail::split_radix_rdft<Sample> m_engine;
+    };
 
     /// The transform under test for the selected engine.
     template <typename Sample>
-    using fft_under_test = tap::dsp::basic_real_fft<Sample>;
+    using fft_under_test = std::conditional_t<k_engine_is_split_radix, split_radix_bench_adapter<Sample>,
+                                              tap::dsp::basic_real_fft<Sample>>;
 
-    /// Which backend basic_real_fft<Sample> was built over, from the macros
-    /// fft.h switches on. The accelerated backends apply to float only;
-    /// double is always the Ooura C.
+    /// Which backend the transform under test runs on. For reference_c: what
+    /// basic_real_fft<Sample> was built over, from the macros fft.h switches
+    /// on (the accelerated backends apply to float only; double is always the
+    /// Ooura C). For split_radix: the port itself, which has no backend.
     template <typename Sample>
     constexpr const char* backend_name() noexcept {
-        if constexpr (std::is_same_v<Sample, float>) {
+        if constexpr (k_engine_is_split_radix) {
+            return "split_radix";
+        }
+        else if constexpr (std::is_same_v<Sample, float>) {
 #if defined(TAP_DSP_FFT_CMSIS)
             return "cmsis";
 #elif defined(TAP_DSP_FFT_ACCELERATE)
