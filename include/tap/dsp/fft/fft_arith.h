@@ -77,13 +77,17 @@
 //        one bit unused. headroom_bits is 31 for an all-zero block AND for
 //        {-1}: 31 means "no information", not "silence".
 //  - Twiddles are generated at construction in double, w_k = cos/sin of
-//    2*pi*k/N through std::cos/std::sin, then rounded once by make_coeff.
-//    Host libm last-bit differences (glibc, newlib, UCRT, Apple) can move a
-//    double that lies within 2^-31 of a Q1.30 rounding boundary onto the
-//    other side, so fixed-point outputs are host-identical only if the table
-//    is; the 3b battery pins the table's checksum for each certified N so a
-//    libm difference is detected rather than silently absorbed. (The
-//    quantization bound |w_q - w| <= 0.5 LSB holds on every host.)
+//    2*pi*k/N through std::cos/std::sin for the first octant and by exact
+//    symmetry for the rest (fft/tables.h), each rounded once by make_coeff.
+//    Host libm last-bit differences (glibc, newlib, UCRT, Apple) and
+//    fp-contraction of a generator expression (Decision D9; the generators
+//    are written so that none is contractible) can move a double that lies
+//    within 2^-31 of a Q1.30 rounding boundary onto the other side, so
+//    fixed-point outputs are host-identical only if the table is; the 3b
+//    battery pins the table's checksum for each certified N, and the
+//    transforms' output fingerprints on top, so such a difference is
+//    detected rather than silently absorbed. (The quantization bound
+//    |w_q - w| <= 0.5 LSB holds on every host.)
 //
 // Every operation is constexpr and noexcept. The int32 operations preserve
 // the data's Q format whatever it is (Q0.31 for the Q31 profile, Q2.29 for

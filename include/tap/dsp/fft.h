@@ -1,5 +1,5 @@
 /// @file fft.h
-/// @brief Real FFT with a fixed numeric contract and pluggable float32 backends.
+/// @brief Real FFT with a fixed numeric contract: double, float, Q15 and Q31 profiles.
 // SPDX-License-Identifier: MIT
 // Copyright 2025-2026 Timothy Place and the DspTap contributors.
 //
@@ -8,9 +8,16 @@
 // copy of the vendored Ooura transform under a diverging wrapper. This is the
 // consolidated wrapper: one Ooura numeric contract, one place to add a faster
 // backend. See README.md for the provenance and migration notes.
+//
+// Four profiles share the contract (packing, exp(+i), unnormalized inverse):
+// double (the golden model) and float (the embedded floating profile) run the
+// Ooura transform; std::int16_t (Q15) and std::int32_t (Q31) run the int32
+// fixed-point kernel in fft/fixed_point.h, whose transforms return an exponent
+// in place of a floating scale (Stage 3b of docs/audit-fft-and-code-smells.md).
 
 #pragma once
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -19,6 +26,8 @@
 #include <new>
 #include <type_traits>
 #include <vector>
+
+#include "tap/dsp/fft/fixed_point.h"
 
 // Ooura C functions. rdft comes from third_party/ooura/fftsg.c (double);
 // rdft_f is the same source instantiated for float (fftsg_float.c) so both
@@ -307,8 +316,13 @@ namespace tap::dsp {
 #endif
     } // namespace detail
 
-    /// Real FFT using the Ooura split-radix algorithm, parameterized over the
-    /// sample type (float or double — the two Ooura instantiations).
+    /// Real FFT with a fixed numeric contract, parameterized over the sample
+    /// type: float or double (the two Ooura split-radix instantiations, this
+    /// primary template) and std::int16_t or std::int32_t (the Q15 and Q31
+    /// fixed-point profiles, the specialization below, which adds the Scaling
+    /// policy parameter and returns an exponent from every transform).
+    /// Scaling is meaningful for the fixed-point profiles only; the floating
+    /// profiles accept scaling::fixed (the default) and nothing else.
     ///
     /// FFT size must be a power of 2 (>= 4), fixed at construction. Workspace
     /// (bit-reversal and trig tables) is allocated once in the constructor;
@@ -329,10 +343,11 @@ namespace tap::dsp {
     ///
     /// The raw inverse is unnormalized: inverse_inplace() must be followed by
     /// a 2/N scaling for a round trip, which inverse() applies for you.
-    template <typename Sample>
+    template <typename Sample, typename Scaling = scaling::fixed>
     class basic_real_fft {
         static_assert(std::is_same_v<Sample, float> || std::is_same_v<Sample, double>,
-                      "basic_real_fft supports the two Ooura instantiations: float and double");
+                      "basic_real_fft supports float and double (Ooura) and std::int16_t / std::int32_t (Q15 / Q31)");
+        static_assert(std::is_same_v<Scaling, scaling::fixed>, "scaling policies apply to the fixed-point profiles");
 
       public:
         explicit basic_real_fft(size_t size)
@@ -446,11 +461,176 @@ namespace tap::dsp {
 #endif
     };
 
+    /// The fixed-point profiles: Q15 (std::int16_t) and Q31 (std::int32_t)
+    /// I/O over one int32 radix-4 kernel (fft/fixed_point.h), same packing and
+    /// exp(+i) convention as the floating profiles, with the scale carried by
+    /// an exponent instead of a floating mantissa. Contract, as numbers (each
+    /// pinned by the named test of the Stage 3b battery, tests/test_fft_fixed.cpp
+    /// and the widened tests/test_fft.cpp):
+    ///
+    ///  - Exponent. Every transform returns e. Read the buffer as fractions of
+    ///    full scale (Q0.15 / Q0.31) and let G be basic_real_fft<double> on the
+    ///    same input read the same way: after forward_inplace, G's forward
+    ///    result == data * 2^e (same packing); after inverse_inplace, G's
+    ///    UNNORMALIZED inverse result == data * 2^e. The fixed-point inverse()
+    ///    applies NO 2/N (unlike the floating profiles); a round trip
+    ///    reconstructs x == out * 2^(e_fwd + e_inv + 1 - log2 N) under both
+    ///    policies. `RoundTripReproducesInput`, `RoundTripReconstructsInputPerPolicy`,
+    ///    `FixedForwardScaleIsExactlyXOverN`, `FixedForwardScaleIsExactlyXOverTwoN`.
+    ///  - scaling::fixed (default): e == fixed_scaling_exponent(N)
+    ///    == log2 N + fft_arith<Sample>::k_fixed_scaling_input_pre_shift in
+    ///    both directions: log2 N for Q15 (output exactly X / N), log2 N + 1
+    ///    for Q31 (X / 2N; the one-bit input pre-shift is the price of no
+    ///    guard bits, fft_arith.h). `FixedExponentIsTheStatedConstant`,
+    ///    `FixedInverseCarriesTheSameExponent`.
+    ///  - scaling::block_floating: 0 <= e <= fixed_scaling_exponent(N),
+    ///    data-dependent; the kernel never shifts more than the stage's
+    ///    growth requires beyond the headroom present, and never consumes
+    ///    the last bit. Brought to a common exponent, the block-floating
+    ///    output agrees with the fixed one within a pinned bound (Q15 1.0
+    ///    LSB, Q31 4.0 LSB measured; pinned 2 / 8). At the full exponent it
+    ///    is bit-identical to the fixed output only when every stage shifted
+    ///    the fixed amount (the full-scale patterns, pinned); in general the
+    ///    two schedules reach the same exponent through different rounding
+    ///    histories (an input with headroom at entry shifts less at the
+    ///    first stage and catches up later) and differ by up to 4 LSB (Q31,
+    ///    at the DC index; 2 LSB elsewhere) or 1 LSB (Q15, where the int32
+    ///    history's few LSB32 survive the narrow only on a rounding tie),
+    ///    measured and pinned at 2x. `BfpExponentIsWithinRange`,
+    ///    `BfpMatchesFixedAfterShift`, `BfpAtTheFullExponentIsBitIdenticalToFixed`,
+    ///    `BfpAtTheFullExponentAgreesWithFixedWithinPin`, `SilenceIsSilence`.
+    ///  - Saturation. The int32 kernel performs no saturating operation for
+    ///    any input under either policy: Q15 through the two guard bits of
+    ///    the widened Q2.29 data, Q31 through the pre-shift (fixed) or the
+    ///    headroom rule (block floating); the worst case is the packed pair
+    ///    at full scale under a 45-degree twiddle. The Q15 output narrowing
+    ///    (round-half-up, saturating) clamps at the rail exactly when the
+    ///    true value is the rail: a full-scale Nyquist alternation lands on
+    ///    32767.5 LSB and comes back as 32767, the pinned 0.5 LSB rail
+    ///    shortfall. Largest deviation from the golden model over the
+    ///    adversarial full-scale sweep, both directions: Q15 0.50 / 0.75 LSB
+    ///    (fixed / block floating), Q31 4.25 / 15.99 LSB, at index 0 for
+    ///    Q31; pinned at 1.0 / 1.5 / 8.5 / 32. `SaturationFreeWorstCaseDoesNotWrap`.
+    ///  - Host identity. The fixed-point output is integer arithmetic over a
+    ///    checksum-pinned table: for a fixed input it is one bit pattern on
+    ///    every host, pinned per profile, policy, direction and N = 512 /
+    ///    2048. `OutputFingerprintIsPinned`, `TwiddleTableChecksumIsPinned`.
+    ///  - Noise floor (output-referred, against the double golden model on
+    ///    the same quantized input; N = 256 / 512 / 2048, 0 to -60 dBFS; the
+    ///    numbers are the `[ floor ]` rows `NoiseFloorTracksWelchModel`
+    ///    prints, forward, white noise): Q15 fixed 0.26 - 0.30 LSB rms at
+    ///    every N and level (the narrow's own rounding; per-bin SNR 69.1 /
+    ///    66.5 / 60.2 dB at 0 dBFS); Q31 fixed 0.67 - 0.75 LSB rms (152.0 /
+    ///    149.4 / 142.8 dB), level-independent, i.e. SNR falls 20 dB per
+    ///    20 dB of level; block floating point keeps 84 - 91 dB (Q15) and
+    ///    157 - 161 dB (Q31) at 0 dBFS and does not lose the low-level
+    ///    signal (78 - 86 dB Q15, 154 - 156 dB Q31 at -40 dBFS). Welch's
+    ///    variance model predicts 0.57 - 0.59 LSB32 for the kernel; the
+    ///    measured/model ratio of 1.31 - 1.74 (Q31 fixed) is the
+    ///    round-half-up bias, largest at index 0 under block floating point
+    ///    (fft/fixed_point.h, "Honest limit"). `NoiseFloorTracksWelchModel`,
+    ///    `RoundingBiasOnNegatedInputIsBounded`, `Q15TracksDouble`, `Q31TracksDouble`,
+    ///    `Q15AndQ31AgreeToTheQ15Floor`.
+    ///  - CMSIS-DSP compatibility (Decision D3): CMSIS documents its q15 /
+    ///    q31 real FFTs as "downscaled by 2 for every stage", i.e. a forward
+    ///    output of X / N with log2 N bits to upscale. The Q15 fixed forward
+    ///    here is that same X / N; the Q31 fixed forward is X / 2N, one bit
+    ///    below, because of the pre-shift; the inverse here is Ooura's
+    ///    unnormalized inverse over 2^e, i.e. (1/N) sum X W^-jk divided by 2
+    ///    (Q15) or 4 (Q31), which is not CMSIS's inverse table; block
+    ///    floating point has no CMSIS analogue. The exponent, not a fixed
+    ///    Q format per N, is the contract here; nothing of CMSIS's
+    ///    behaviour was measured or reproduced, only its documentation read.
+    ///  - Size 4 <= N <= 65536, a power of two, fixed at construction. Q15
+    ///    allocates an int32 work buffer of N at construction (in-place API
+    ///    preserved at the caller's int16 buffer); Q31 transforms in place.
+    ///    Transforms are noexcept and allocation-free, the object is copyable,
+    ///    there is no alignment requirement. `TransformsAreNoexcept`,
+    ///    `ForwardInplaceAllocatesNothing` (and the inverse and out-of-place
+    ///    forms), `CopyProducesBitIdenticalOutput`, `OutOfPlaceIsCopyThenInPlace`.
+    ///  - Thread rule: one transform at a time per object. This deviates
+    ///    from the design record (audit Part 7 lists `is_shareable` true for
+    ///    both fixed profiles): Q15 is NOT shareable, since the in-place
+    ///    int16 API needs the per-object int32 work buffer; Q31 has no
+    ///    mutable state (its transforms touch the caller's buffer and the
+    ///    tables only) but its transforms are non-const in this stage, as
+    ///    the floating profiles' are. Stage 4 states shareability as an
+    ///    engine trait (Q31 true, Q15 false) and decides transform constness
+    ///    across engines (the split-radix port's transforms are const).
+    ///  - Every transform returns the exponent and is [[nodiscard]]: under
+    ///    block floating point a discarded e is a silent scale error.
+    ///  - Latency 0; no NaN or denormal behaviour to state (integer data).
+    ///
+    /// Per-profile noise floors and the Welch-model derivation are in
+    /// docs/fft-fixed-point.md and the README profiles table.
+    template <typename Sample, typename Scaling>
+        requires fft_arith<Sample>::k_is_fixed_point
+    class basic_real_fft<Sample, Scaling> {
+      public:
+        using engine = detail::fixed_point_rdft<Sample, Scaling>;
+
+        /// The constant exponent of scaling::fixed (and the upper bound of
+        /// scaling::block_floating) for size n; the tests use it in place of
+        /// magic numbers.
+        [[nodiscard]] static constexpr int fixed_scaling_exponent(std::size_t n) noexcept {
+            return engine::fixed_scaling_exponent(n);
+        }
+
+        /// @pre size is a power of two in [4, 65536] (asserted).
+        explicit basic_real_fft(std::size_t size)
+            : m_engine(size) {}
+
+        [[nodiscard]] std::size_t size() const noexcept { return m_engine.size(); }
+        [[nodiscard]] std::size_t num_bins() const noexcept { return m_engine.size() / 2 + 1; }
+
+        /// In-place forward FFT: Sample[size] -> packed spectrum Sample[size],
+        /// scaled by 2^-e. @return e, the output's scale: under block floating
+        /// point a discarded exponent is a silent scale error, hence nodiscard.
+        [[nodiscard]] int forward_inplace(Sample* data) noexcept { return m_engine.forward_inplace(data); }
+
+        /// In-place inverse FFT: packed spectrum -> Sample[size], the
+        /// UNNORMALIZED inverse scaled by 2^-e. @return e.
+        [[nodiscard]] int inverse_inplace(Sample* data) noexcept { return m_engine.inverse_inplace(data); }
+
+        /// Out-of-place forward FFT: copy, then forward_inplace. Output may
+        /// alias input. @return e.
+        [[nodiscard]] int forward(const Sample* input, Sample* output) noexcept {
+            copy(input, output);
+            return forward_inplace(output);
+        }
+
+        /// Out-of-place inverse FFT: copy, then inverse_inplace. NO 2/N is
+        /// applied (the exponent carries the scale, unlike the floating
+        /// profiles' inverse()). Output may alias input. @return e.
+        [[nodiscard]] int inverse(const Sample* input, Sample* output) noexcept {
+            copy(input, output);
+            return inverse_inplace(output);
+        }
+
+      private:
+        void copy(const Sample* input, Sample* output) noexcept {
+            if (input != output) {
+                std::copy_n(input, m_engine.size(), output);
+            }
+        }
+
+        engine m_engine;
+    };
+
     /// Double-precision real FFT — the desktop/golden-model profile.
     using real_fft = basic_real_fft<double>;
 
     /// Single-precision real FFT — the embedded real-time profile (Cortex-M55,
     /// Hexagon HVX), where hardware floating point is single-precision only.
     using real_fft32 = basic_real_fft<float>;
+
+    /// Q15 real FFT (Q0.15 I/O), fixed scaling: e == log2 N, output exactly X / N.
+    using real_fft_q15 = basic_real_fft<std::int16_t>;
+    /// Q31 real FFT (Q0.31 I/O), fixed scaling: e == log2 N + 1, output exactly X / 2N.
+    using real_fft_q31 = basic_real_fft<std::int32_t>;
+    /// Q15 real FFT, block floating point: 0 <= e <= log2 N, data-dependent.
+    using real_fft_q15_bfp = basic_real_fft<std::int16_t, scaling::block_floating>;
+    /// Q31 real FFT, block floating point: 0 <= e <= log2 N + 1, data-dependent.
+    using real_fft_q31_bfp = basic_real_fft<std::int32_t, scaling::block_floating>;
 
 } // namespace tap::dsp

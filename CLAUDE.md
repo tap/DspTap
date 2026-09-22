@@ -30,7 +30,11 @@ instruments (`analysis/`). See `README.md` for each asset's contract summary.
   formats, the single rounding point, saturation — and exist for M33/M55-class targets
   (Bluetooth-adjacent converters, eurorack/pedal deployments) where double or any float is
   unaffordable. Per-primitive fixed-point adoption is opt-in and is a documented Q-format design
-  each time, via traits over raw sample types, never wrapper classes.
+  each time, via traits over raw sample types, never wrapper classes. The real FFT is the
+  four-profile ladder in full: `double` / `float` / Q15 / Q31 over one contract, the fixed
+  profiles as `basic_real_fft<int16_t|int32_t, Scaling>` returning an exponent, with a
+  fixed-scaling and a block-floating policy (`fft.h`, `fft/fixed_point.h`,
+  `docs/fft-fixed-point.md`), each floor a measured number against the double profile.
 - **Real-time safe by construction.** Geometry fixed at construction, every buffer allocated
   there; processing is `noexcept` and allocation-free. Numerically fragile recursions (e.g. the
   order-48 Levinson–Durbin inside `pvoc`) run in double even in the float profile — documented
@@ -83,7 +87,10 @@ should measure, extend the capi + bridge alongside it.
 1. `include/tap/dsp/<name>.h` — `basic_<name><Sample>` + aliases, full contract docstring
    (geometry, conventions, latency, limits), MIT SPDX banner.
 2. `tests/test_<name>.cpp` — typed battery pinning every contract point, plus float/double
-   cross-precision agreement; add to `tests/CMakeLists.txt`.
+   cross-precision agreement; add to `tests/CMakeLists.txt`. State each profile's numbers
+   (scale, floor, saturation-free level, exponent where there is one), and name the on-target
+   leg that runs its battery (the M4/M4F/M33/M55 QEMU legs run `tap_dsp_tests` whole unless the
+   `MAIN_FILTER` excludes a suite by name).
 3. `README.md` section (and bump the primitive count in the intro line).
 4. capi + `dsptap_py` exposure if the notebooks need it.
 5. Vendored code goes under `third_party/` with license retained and a `NOTICE.md` entry — and is
