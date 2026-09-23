@@ -42,10 +42,22 @@ namespace tap::dsp::detail {
     ///     fft.h documented "a power of two >= 4" for every profile, so N < 32
     ///     or N > 4096 under TAP_DSP_FFT_CMSIS was undefined behaviour — a
     ///     HardFault at N = 4 on the M55 leg is how the oracle found it (audit
-    ///     Part 13). The constructor now states the range as a precondition
-    ///     (TAP_EXPECTS: a debug assertion, STYLE.md §4) and checks the init
-    ///     status the same way; basic_real_fft<float, cmsis_real_fft_f32>::
-    ///     supports_size(n) is the release-mode query.
+    ///     Part 13). The constructor states the range as a precondition
+    ///     (TAP_EXPECTS: a debug assertion, STYLE.md §4), never truncates a
+    ///     size above k_max_size into the library's uint16_t argument (65536
+    ///     would arrive as 0), and checks the init status the same way.
+    ///     RELEASE-MODE BEHAVIOUR, DECIDED: the check evaluates to nothing, so
+    ///     a size outside the range remains a precondition violation — the
+    ///     instance stays zero-initialized and the first transform is
+    ///     undefined behaviour (a HardFault on the M55). Deliberately no
+    ///     defined fallback: a branch in the transforms would cost the hot
+    ///     path on every call for a case the precondition excludes, and would
+    ///     hand a consumer an object that silently transforms nothing.
+    ///     basic_real_fft<float, cmsis_real_fft_f32>::supports_size(n) is the
+    ///     mandatory gate wherever N comes from configuration (the capi's
+    ///     dsptap_fft_create applies it per profile; MuTap's config path must,
+    ///     docs/fft-design.md "MuTap bump checklist"); its values for this
+    ///     engine are pinned on the M55 leg (tests/test_fft_engine.cpp).
     ///   - k_is_shareable = false: the transform runs through the per-object
     ///     scratch buffer (arm_rfft_fast_f32 is out of place), so two threads
     ///     may not transform through one object concurrently; the transforms
@@ -64,7 +76,10 @@ namespace tap::dsp::detail {
             : m_scratch(n, 0.0f)
             , m_n(static_cast<int>(n)) {
             TAP_EXPECTS(n >= k_min_size && n <= k_max_size && (n & (n - 1)) == 0);
-            const arm_status status = arm_rfft_fast_init_f32(&m_inst, static_cast<uint16_t>(n));
+            // The range check guards the narrowing: the library takes a uint16_t and
+            // 65536 would arrive as 0, so an out-of-range n never reaches it.
+            const arm_status status =
+                n <= k_max_size ? arm_rfft_fast_init_f32(&m_inst, static_cast<uint16_t>(n)) : ARM_MATH_ARGUMENT_ERROR;
             TAP_EXPECTS(status == ARM_MATH_SUCCESS);
             static_cast<void>(status); // the release build evaluates TAP_EXPECTS to nothing
         }

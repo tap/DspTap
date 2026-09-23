@@ -218,8 +218,17 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///     supports_size(n), the constexpr predicate over it. Construction
     ///     requires supports_size(size) (TAP_EXPECTS: a debug assertion and
     ///     nothing in a release build, the house precondition style,
-    ///     STYLE.md §4 and detail/expects.h; release-mode callers query the
-    ///     predicate). Per engine:
+    ///     STYLE.md §4 and detail/expects.h). Stated so nobody reads more
+    ///     into it: in a release build a size outside the range is a
+    ///     precondition violation, i.e. undefined behaviour (for the CMSIS
+    ///     engine a HardFault on the first transform; for the others whatever
+    ///     the arithmetic does past its tables), and there is deliberately no
+    ///     defined fallback in the transforms. supports_size is therefore the
+    ///     MANDATORY gate wherever N comes from configuration rather than a
+    ///     constant: the capi's dsptap_fft_create applies it per profile, and
+    ///     a consumer's config path must (docs/fft-design.md, "MuTap bump
+    ///     checklist"). `SupportsSizeIsThePowerOfTwoInterval` pins the
+    ///     predicate on every leg. Per engine:
     ///       split-radix (double, float)   4 … 2^30  (the int-indexing bound
     ///                                     of Ooura's arithmetic; bit identity
     ///                                     is gated to 2^20, the oracle sweeps

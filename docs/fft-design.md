@@ -782,14 +782,25 @@ MinSizeRel, so in CI the check is the constexpr predicate, pinned as
 `static_assert`s on every leg (N = 16 and 8192 rejected under CMSIS,
 accepted by the split-radix engine named in the same binary; 32 and 4096
 constructed and round-tripped under CMSIS), plus a Debug-only death test
-that runs in a local Debug configure (it passes there). A violated
-precondition in a release build is undefined behaviour exactly as the plain
-`assert` it replaces was; the release-mode tool is `supports_size`, which
-the capi's pattern (check, then construct) already follows. A repo-wide
-precondition policy remains its own plan; `TAP_EXPECTS` is used for fft.h's
-power-of-two and size-range preconditions (and the backends' own) and
-nothing else. `tests/test_fft_oracle.cpp` reads each profile's sweep range
-from the class instead of carrying the CMSIS range under `#if`.
+that runs in a local Debug configure (it passes there). **Release-mode
+behaviour, decided (35a/F1):** a violated precondition in a release build
+is undefined behaviour exactly as the plain `assert` it replaces was — for
+the CMSIS engine the instance stays zero-initialized and the first transform
+HardFaults; there is deliberately no defined fallback, because a branch in
+the transforms would cost the hot path on every call for a case the
+precondition excludes and would hand a consumer an object that silently
+transforms nothing. `supports_size` is therefore the *mandatory* gate
+wherever N comes from configuration. The capi's `dsptap_fft_create` applies
+it per profile since the #35 fix pass (before that it hard-coded 4 and the
+fixed-point 65536 and never read the float engines' range, so a vDSP or
+CMSIS build of the capi would have passed 2^21 or 16 straight through);
+the CMSIS wrapper also no longer narrows a size above `k_max_size` into the
+library's `uint16_t` argument (65536 would arrive as 0). MuTap's config path
+is on the bump checklist below. A repo-wide precondition policy remains its
+own plan; `TAP_EXPECTS` is used for fft.h's power-of-two and size-range
+preconditions (and the backends' own) and nothing else.
+`tests/test_fft_oracle.cpp` reads each profile's sweep range from the class
+instead of carrying the CMSIS range under `#if`.
 
 ### Shareability as an engine trait
 
@@ -890,19 +901,51 @@ as a class-template spelling (partial specializations on it in
 `test_fft_rt.cpp`, `::engine` in the capi); not worth it for a hazard the
 fixed-point profiles do not have.
 
-**What the tag does not close, recorded.**
-- MuTap's `fdaf<float>`, `fd_kalman`, `pem_afc`, `postfilter`, `nn_suppressor`
-  embed `basic_real_fft<Sample>` by value in `tap::mu`; their symbols do not
-  carry the tag until MuTap opens the same inline namespace in its own
-  namespace (`namespace tap::mu::inline TAP_DSP_FFT_ABI`), which is a
-  one-line change per header on the bump that pins this tree. Until then
-  the hazard F4 describes is closed for DspTap's own embedders and for
-  `basic_real_fft` itself, and open one level up in MuTap exactly as before.
-- CMSIS-vs-split-radix parity runs on the Cortex-M55 QEMU leg only (the plan
-  said "compile-only on M55"; it in fact runs there, under emulation, with
-  both engines in one binary — `fft_backend_parity/cmsis` beside
-  `fft_backend_parity/split_radix`), nowhere on a host and nowhere on
-  hardware. Recorded, not closed.
+**What the tag does not close: MuTap's own embedders, until the bump.**
+The classes that hold a `basic_real_fft<Sample>` by value in `tap::mu` (at
+MuTap `801204d`, per the 35a review) are `partitioned_fdaf` (fdaf.h:431),
+`partitioned_fdkf` (fd_kalman.h:534), `pem_afc` (pem_afc.h:204, plus its
+`Core`), `residual_suppressor` (postfilter.h:726) and `nn_suppressor`
+(nn_suppressor.h:425); `aec_chain` (postfilter.h:787) is a second-level
+embedder that holds its `Canceller` / `Post` as template arguments and so
+inherits the tag once they carry it. Their symbols do not carry the tag
+until MuTap does the following; until then the hazard F4 describes is
+closed for DspTap's own embedders and for `basic_real_fft` itself, and open
+one level up in MuTap exactly as before.
+
+**MuTap bump checklist (the pin that picks up #35):**
+1. Wrap each of the five headers' class definitions in
+   `namespace tap::mu::inline TAP_DSP_FFT_ABI { … }` (a different namespace
+   from `tap::dsp::fft_split_radix`, which is fine: the tag only has to
+   appear in the mangled name; the macro is in scope through
+   `mutap/fft.h`). postfilter.h holds two of the six classes.
+2. **No forward declaration of any tagged class anywhere** — a later
+   `template <typename> class partitioned_fdaf;` in plain `tap::mu` declares
+   a *different* class. None exists today in MuTap, MuTap-Max or DspTap
+   (grepped by the review); it must stay that way. Explicit specialisations
+   and `using` through the enclosing namespace remain legal.
+3. **Validate N with `basic_real_fft<Sample>::supports_size(n)` wherever a
+   block size comes from configuration**, with the CMSIS numbers (32 …
+   4096) in the error text: on the M55 a config block size outside that
+   range is a release-mode HardFault at the first `process()` otherwise.
+4. Expect `partitioned_fdaf<double>` and the other double instantiations to
+   carry a tag their layout does not need (the tag is keyed on the float
+   default) — the same cost class as the fixed-point paragraph above; no
+   correctness effect.
+5. Name the Xcode / AppleClang that matters for MuTap-Max on the bump: the
+   macOS CI runner here is AppleClang 21.0.0, not 15/16. MuTap-Max's
+   externals hold these classes in non-template classes, one dylib each,
+   all from one build — no cross-build exposure there.
+6. Gate as always: fingerprints byte-identical on every leg.
+
+**Not closed by Stage 4, and not the tag's business:**
+- CMSIS-vs-split-radix parity runs under emulation on the Cortex-M55 QEMU
+  leg, as it has since that leg landed (main's `test_fft_backend.cpp`
+  already compared `basic_real_fft<float>` — CMSIS under the define — to
+  the split-radix reference); what #35 adds is that the two engines are
+  typed rows in one binary (`fft_backend_parity/cmsis` beside
+  `/split_radix`) and that the named split-radix routing row runs there.
+  The remaining gap: QEMU only, never a host, never hardware.
 - The vDSP same-binary microbenchmark (above, "Host microbenchmark").
 
 ### The ratchet, and one thing it caught

@@ -344,13 +344,22 @@ Deviations from the text above, each recorded there:
 - **`is_shareable` is `k_is_shareable`** (house `k_` prefix), and an engine's transforms are
   `const` exactly when shareable (Q31's became `const` behind `requires`-constrained
   overloads), `static_assert`ed by the class; the class's transforms stay non-const (N11).
-- **CMSIS parity is not compile-only on the M55: it runs there**, under QEMU, with both engines
-  in one binary (`fft_backend_parity/cmsis` beside `/split_radix`). Nowhere on a host and
-  nowhere on hardware; recorded, not closed.
+- **CMSIS parity is not compile-only on the M55: it runs there**, under QEMU, as it has since
+  that leg landed (main's backend test already compared the CMSIS default to the split-radix
+  reference); what #35 adds is the two engines as typed rows in one binary
+  (`fft_backend_parity/cmsis` beside `/split_radix`) and the named split-radix routing row on
+  that leg. Nowhere on a host and nowhere on hardware; recorded, not closed.
 - **Construction "checks" the range as the house precondition** (`TAP_EXPECTS`: debug
   assertion, nothing in release, STYLE.md §4), with `supports_size(n)` as the constexpr,
   release-mode predicate pinned by `static_assert`s on every leg; the CMSIS init status is
-  checked the same way. Not a release-mode check.
+  checked the same way and the `uint16_t` narrowing is guarded. Not a release-mode check:
+  out of range in release remains a precondition violation (decided, 35a/F1; no defined
+  fallback in the transforms), and `supports_size` is the mandatory gate wherever N comes
+  from configuration — the capi applies it per profile since the fix pass, MuTap's config
+  path is on the bump checklist in `docs/fft-design.md` (with the real embedder list:
+  `partitioned_fdaf`, `partitioned_fdkf`, `pem_afc` + `Core`, `residual_suppressor`,
+  `nn_suppressor`; `aec_chain` inherits the tag through its template arguments; no forward
+  declarations of the tagged classes anywhere).
 - **No `std::span` overloads** (Part 9 listed them as a Stage 4 assertion): none were added,
   so none are asserted.
 - **The Apple same-binary *microbenchmark*** still needs a Mac; the same-binary parity *test*
