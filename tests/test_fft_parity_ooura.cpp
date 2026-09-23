@@ -16,9 +16,17 @@
 //                          basic_real_fft, i.e. the same C, and the suite was
 //                          Ooura-vs-Ooura and trivially green; the port was
 //                          worked from that red re-point to green statement
-//                          by statement. At Stage 2b (routing flipped) the
-//                          alias goes back to basic_real_fft, which then IS
-//                          the port, and the suite guards the flip.
+//                          by statement. Stage 2b routed basic_real_fft at
+//                          the port and the alias STAYS on the engine: on the
+//                          M55 and macOS legs basic_real_fft<float> is a
+//                          backend (CMSIS, vDSP), not the port, so pointing
+//                          the alias at the class would turn the float gate
+//                          red there for a reason that has nothing to do
+//                          with the port. The class-to-engine identity is
+//                          pinned separately by tests/test_fft_routing.cpp
+//                          (memcmp, double and, where no backend is
+//                          selected, float); the two files together are the
+//                          flip's proof.
 //
 // The comparison is memcmp over the raw output bytes: not EXPECT_EQ (which
 // calls +0.0 and -0.0 equal and any NaN unequal to itself), not a tolerance.
@@ -141,10 +149,12 @@ namespace {
     // ------------------------------------------------------------------------
     // The side under test. Re-point here, nowhere else.
     //
-    // Stage 2a (the port lands beside the C, nothing routed): re-point at
+    // Stage 2a (the port lands beside the C, nothing routed): re-pointed at
     //     tap::dsp::detail::split_radix_rdft<Sample>
-    // Stage 2b (routing flipped): back to basic_real_fft, which then IS the
-    // port, and the suite guards the flip.
+    // Stage 2b (routing flipped): stays on the engine (see the file comment:
+    // basic_real_fft<float> is a backend on two legs), and
+    // tests/test_fft_routing.cpp pins basic_real_fft to the engine byte for
+    // byte on the profiles that route to it.
     // Both expose the constructor-from-size / forward_inplace / inverse_inplace
     // surface Part 4 fixes, so nothing else in this file changes.
     // ------------------------------------------------------------------------

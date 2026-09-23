@@ -6,14 +6,18 @@
 // Extracted from the Tap family DSP libraries (MuTap's adaptive-filtering FFT
 // and AmbiTap's binaural convolution FFT), which each carried a byte-identical
 // copy of the vendored Ooura transform under a diverging wrapper. This is the
-// consolidated wrapper: one Ooura numeric contract, one place to add a faster
-// backend. See README.md for the provenance and migration notes.
+// consolidated wrapper: one numeric contract (Ooura's), one place to add a
+// faster backend. See README.md for the provenance and migration notes.
 //
 // Four profiles share the contract (packing, exp(+i), unnormalized inverse):
 // double (the golden model) and float (the embedded floating profile) run the
-// Ooura transform; std::int16_t (Q15) and std::int32_t (Q31) run the int32
-// fixed-point kernel in fft/fixed_point.h, whose transforms return an exponent
-// in place of a floating scale (Stage 3b of docs/audit-fft-and-code-smells.md).
+// split-radix engine in fft/split_radix.h, the C++20 transliteration of
+// Ooura's rdft that Stage 2a landed bit-identical to the vendored C and
+// Stage 2b routed here (docs/audit-fft-and-code-smells.md, Part 3); the
+// float profile may instead be routed to an accelerated backend by the build
+// (below). std::int16_t (Q15) and std::int32_t (Q31) run the int32
+// fixed-point kernel in fft/fixed_point.h, whose transforms return an
+// exponent in place of a floating scale (Stage 3b).
 
 #pragma once
 
@@ -28,13 +32,19 @@
 #include <vector>
 
 #include "tap/dsp/fft/fixed_point.h"
+#include "tap/dsp/fft/split_radix.h"
 
-// Ooura C functions. rdft comes from third_party/ooura/fftsg.c (double);
-// rdft_f is the same source instantiated for float (fftsg_float.c) so both
-// precisions can link into one binary. They are built into the DspTap::fft
-// static library; the tap::dsp INTERFACE target links it automatically.
-// cdft/cdft_f (the complex transform) are declared for consumers that need raw
-// Ooura access; the wrappers below use only rdft/rdft_f.
+// The vendored Ooura C, declared but no longer called by anything in this
+// header: rdft (third_party/ooura/fftsg.c, double) and rdft_f (the same
+// source instantiated for float, fftsg_float.c) are still built into the
+// tap_dsp_fft static library that the tap::dsp INTERFACE target links, so a
+// consumer that took these declarations from here keeps linking, and
+// tests/test_fft_parity_ooura.cpp, the bit-identity gate for the engine that
+// replaced them, calls them through these declarations against its own
+// reference build of the C. Stage 2c removes the C from the shipping tree
+// and these declarations with it (the parity gate moves with the reference
+// copy); until then nothing in DspTap, MuTap or MuTap-Max reaches rdft through
+// basic_real_fft any more.
 extern "C" {
 void rdft(int n, int isgn, double* a, int* ip, double* w);
 void cdft(int n, int isgn, double* a, int* ip, double* w);
@@ -44,15 +54,17 @@ void cdft_f(int n, int isgn, float* a, int* ip, float* w);
 
 // Optional per-platform float32 FFT backends, chosen by the build. AT MOST ONE
 // may be defined (they are mutually exclusive), and each applies ONLY to float
-// — double always stays Ooura, the golden model, so the double-precision
-// reference battery is unaffected:
+// — double always runs the split-radix engine, the golden model, so the
+// double-precision reference battery is unaffected:
 //   TAP_DSP_FFT_CMSIS       CMSIS-DSP Helium on the bare-metal Cortex-M55
 //   TAP_DSP_FFT_ACCELERATE  Apple's vDSP (Accelerate) on macOS
-// Each wrapper below re-presents its backend in Ooura's EXACT numeric contract
-// (same packed layout, exp(+i) sign convention, unnormalized inverse), so every
-// intermediate spectrum matches the Ooura build to float epsilon and the whole
-// float32 test battery stays a valid oracle. Measured vs autovectorized Ooura:
-// ~3x fewer instructions on the M55, ~3x faster on Apple Silicon per transform.
+// Each wrapper below re-presents its backend in the split-radix engine's
+// EXACT numeric contract (Ooura's: same packed layout, exp(+i) sign
+// convention, unnormalized inverse), so every intermediate spectrum matches
+// the default build to float epsilon and the whole float32 test battery stays
+// a valid oracle. Measured vs the autovectorized vendored C, to which the
+// engine is bit-identical: ~3x fewer instructions on the M55, ~3x faster on
+// Apple Silicon per transform (bench/README.md, docs/fft-design.md).
 #if defined(TAP_DSP_FFT_CMSIS) && defined(TAP_DSP_FFT_ACCELERATE)
 #error "TAP_DSP_FFT_CMSIS and TAP_DSP_FFT_ACCELERATE are mutually exclusive"
 #endif
@@ -69,12 +81,6 @@ void cdft_f(int n, int isgn, float* a, int* ip, float* w);
 namespace tap::dsp {
 
     namespace detail {
-        inline void ooura_rdft(int n, int isgn, double* a, int* ip, double* w) {
-            rdft(n, isgn, a, ip, w);
-        }
-        inline void ooura_rdft(int n, int isgn, float* a, int* ip, float* w) {
-            rdft_f(n, isgn, a, ip, w);
-        }
 
 #if defined(TAP_DSP_FFT_CMSIS)
         // Wraps CMSIS-DSP's radix-4/8 Helium real FFT to reproduce Ooura's
@@ -301,33 +307,75 @@ namespace tap::dsp {
         };
 #endif // TAP_DSP_FFT_ACCELERATE
 
-#if defined(TAP_DSP_FFT_FLOAT_BACKEND)
-#if defined(TAP_DSP_FFT_CMSIS)
-        using float_fft_engine = cmsis_real_fft_f32;
-#else
-        using float_fft_engine = accelerate_real_fft_f32;
-#endif
-        // Empty stand-in so basic_real_fft<double> carries no backend state.
-        struct fft_engine_noop {
-            void init(int) noexcept {}
-        };
+        // The engine behind basic_real_fft's floating profiles: the split-radix
+        // engine for double always, and for float unless the build selected an
+        // accelerated backend above. The two shapes differ only in how they are
+        // constructed (the engine takes its size in the constructor; the
+        // backend wrappers are default-constructed and init()ed, unchanged
+        // from before the Stage 2b flip), which make_floating_engine hides.
         template <typename Sample>
-        using float_engine_t = std::conditional_t<std::is_same_v<Sample, float>, float_fft_engine, fft_engine_noop>;
+        struct floating_engine {
+            using type = split_radix_rdft<Sample>;
+        };
+#if defined(TAP_DSP_FFT_FLOAT_BACKEND)
+        template <>
+        struct floating_engine<float> {
+#if defined(TAP_DSP_FFT_CMSIS)
+            using type = cmsis_real_fft_f32;
+#else
+            using type = accelerate_real_fft_f32;
 #endif
+        };
+#endif
+        template <typename Sample>
+        using floating_engine_t = typename floating_engine<Sample>::type;
+
+        template <typename Sample>
+        floating_engine_t<Sample> make_floating_engine(std::size_t n) {
+            if constexpr (std::is_same_v<floating_engine_t<Sample>, split_radix_rdft<Sample>>) {
+                return split_radix_rdft<Sample>(n);
+            }
+            else {
+                floating_engine_t<Sample> engine;
+                engine.init(static_cast<int>(n));
+                return engine;
+            }
+        }
     } // namespace detail
 
     /// Real FFT with a fixed numeric contract, parameterized over the sample
-    /// type: float or double (the two Ooura split-radix instantiations, this
-    /// primary template) and std::int16_t or std::int32_t (the Q15 and Q31
+    /// type: float or double (the two floating profiles, this primary
+    /// template) and std::int16_t or std::int32_t (the Q15 and Q31
     /// fixed-point profiles, the specialization below, which adds the Scaling
     /// policy parameter and returns an exponent from every transform).
     /// Scaling is meaningful for the fixed-point profiles only; the floating
     /// profiles accept scaling::fixed (the default) and nothing else.
     ///
+    /// Routing (Stage 2b of docs/audit-fft-and-code-smells.md, Part 3):
+    ///   - double  -> detail::split_radix_rdft<double> (fft/split_radix.h),
+    ///                always. The golden model.
+    ///   - float   -> detail::split_radix_rdft<float>, unless the build
+    ///                defines TAP_DSP_FFT_CMSIS (CMSIS-DSP Helium, bare-metal
+    ///                Cortex-M55) or TAP_DSP_FFT_ACCELERATE (Apple vDSP), in
+    ///                which case the backend wrapper above re-presents the
+    ///                same contract to float epsilon (tests/test_fft_backend.cpp).
+    ///   - Q15/Q31 -> detail::fixed_point_rdft (the specialization below).
+    /// The split-radix engine is the C++20 transliteration of Ooura's rdft
+    /// and is BIT-IDENTICAL to the vendored C for both precisions
+    /// (tests/test_fft_parity_ooura.cpp, Decision D10), so the flip changed no
+    /// output bit of any consumer; tests/test_fft_routing.cpp pins that this
+    /// class's output is byte-identical to the engine's.
+    ///
     /// FFT size must be a power of 2 (>= 4), fixed at construction. Workspace
-    /// (bit-reversal and trig tables) is allocated once in the constructor;
-    /// the transforms themselves are noexcept and allocation-free, so they
-    /// are safe on a real-time audio thread.
+    /// (bit-reversal and trig tables) is allocated AND BUILT in the constructor
+    /// (the vendored C built its tables lazily on the first transform; the
+    /// engine does not, audit item F6), so the first transform costs what
+    /// every later one costs; the transforms themselves are noexcept and
+    /// allocation-free, so they are safe on a real-time audio thread
+    /// (tests/test_fft_rt.cpp). No alignment requirement on the data pointer.
+    /// NaN propagates to every bin (no data-dependent branches). Latency 0.
+    /// Copyable, and a copy is bit-identical to its source; the object is held
+    /// by value in every consumer.
     ///
     /// Packing after a forward transform of N real samples (N/2 + 1 bins):
     ///   - bin[0].real    = data[0]   (DC;      imag is zero, not stored)
@@ -343,52 +391,78 @@ namespace tap::dsp {
     ///
     /// The raw inverse is unnormalized: inverse_inplace() must be followed by
     /// a 2/N scaling for a round trip, which inverse() applies for you.
+    ///
+    /// Noise floor (docs/fft-design.md, contract table; measured 2026-09-23
+    /// on x86-64 Linux, GCC 13.3.0 and Clang 18.1.3 -O3, glibc 2.39, the
+    /// engine as routed here): double against the compensated-summation DFT
+    /// oracle, relative 2-norm error of the forward on full-scale uniform
+    /// noise at N = 256, 1.85e-16, pinned at 4x (7.4e-16) for the libm and
+    /// fp-contraction spread across hosts
+    /// (`fft_oracle_floor.DoubleForwardTracksCompensatedDft`); float against
+    /// double, same metric at N = 512 on the split-radix engine itself,
+    /// 1.12e-7 (the audit's Part 6 N2 probe value of 1.105e-7, re-measured on
+    /// what ships; the two runs differ in material, not in engine), pinned at
+    /// 2x (2.25e-7) (`RealFftCrossPrecision.FloatEngineTracksDoubleAtN512`),
+    /// and < 1e-6 at N = 1024 through basic_real_fft (`FloatTracksDouble`).
+    ///
+    /// fp-contraction policy (Decision D9; measurements in docs/fft-design.md,
+    /// "The fp-contraction policy"). tap::dsp does NOT export an
+    /// -ffp-contract setting to its consumers and this header sets none: the
+    /// engine's arithmetic is compiled under whatever contraction the
+    /// consumer's compiler applies, alike for every instantiation in that
+    /// build. The bit-identity gate against the vendored C runs at
+    /// -ffp-contract=off on both sides, and at default flags the identity was
+    /// MEASURED to hold as well on every CI platform (0 ulp on linux, windows
+    /// and macOS arm64 and on the Cortex-M4, M4F, M33 and M55 legs, three of
+    /// them VFMA; identical bench checksums between the C and the engine on
+    /// every Ooura bench key; MuTap's fingerprint rows byte-identical through
+    /// the flip, float rows included, with no flag set anywhere), because the
+    /// engine's statements are textually the C's and each compiler fuses both
+    /// sides alike. That is an observation, not a guarantee: x86-64 built
+    /// with -march (FMA) is measured to fuse the two sides differently and is
+    /// not claimed. Why no export: an INTERFACE -ffp-contract=off would reach
+    /// every consumer translation unit that includes this header and would
+    /// pessimize the VFMA / FMA targets the float profile exists for (the
+    /// M55, Apple arm64) for the whole of that code, in exchange for a
+    /// cross-compiler bit reproducibility that libm's last-bit cos/sin
+    /// differences between glibc, newlib, UCRT and Apple already deny across
+    /// hosts. A consumer that needs bit reproducibility across its own
+    /// compilers sets -ffp-contract=off on its own targets; the contract this
+    /// header makes is the one above.
+    ///
+    /// Thread rule: one transform at a time per object, as before the flip.
+    /// The split-radix engine's transforms are const and it has no mutable
+    /// state after construction, so a double object (or a float one with no
+    /// backend) could be shared; this class's transforms stay non-const
+    /// because the CMSIS and vDSP wrappers carry scratch, and Stage 4 states
+    /// shareability as an engine trait rather than per build define.
     template <typename Sample, typename Scaling = scaling::fixed>
     class basic_real_fft {
         static_assert(std::is_same_v<Sample, float> || std::is_same_v<Sample, double>,
-                      "basic_real_fft supports float and double (Ooura) and std::int16_t / std::int32_t (Q15 / Q31)");
+                      "basic_real_fft supports float and double (split radix) and std::int16_t / std::int32_t "
+                      "(Q15 / Q31)");
         static_assert(std::is_same_v<Scaling, scaling::fixed>, "scaling policies apply to the fixed-point profiles");
 
       public:
+        /// The engine this instantiation routes to (see the class docstring).
+        using engine = detail::floating_engine_t<Sample>;
+
+        /// @pre size is a power of two, size >= 4 (asserted).
         explicit basic_real_fft(size_t size)
-            : m_size(static_cast<int>(size)) {
+            : m_size(static_cast<int>(size))
+            , m_engine(detail::make_floating_engine<Sample>(size)) {
             assert(size >= 4 && (size & (size - 1)) == 0);
-#if defined(TAP_DSP_FFT_FLOAT_BACKEND)
-            if constexpr (std::is_same_v<Sample, float>) {
-                m_engine.init(m_size); // Ooura workspace stays unallocated
-                return;
-            }
-#endif
-            m_ip.assign(2 + static_cast<size_t>(std::sqrt(static_cast<double>(size) / 2.0)) + 1, 0);
-            m_w.assign(size / 2, Sample(0));
-            m_ip[0] = 0; // triggers Ooura table init on first call
         }
 
         size_t size() const noexcept { return static_cast<size_t>(m_size); }
         size_t num_bins() const noexcept { return static_cast<size_t>(m_size / 2 + 1); }
 
         /// In-place forward FFT: time-domain Sample[size] -> packed spectrum Sample[size].
-        void forward_inplace(Sample* data) noexcept {
-#if defined(TAP_DSP_FFT_FLOAT_BACKEND)
-            if constexpr (std::is_same_v<Sample, float>) {
-                m_engine.forward_inplace(data);
-                return;
-            }
-#endif
-            detail::ooura_rdft(m_size, 1, data, m_ip.data(), m_w.data());
-        }
+        void forward_inplace(Sample* data) noexcept { m_engine.forward_inplace(data); }
 
         /// In-place inverse FFT: packed spectrum Sample[size] -> time-domain Sample[size],
         /// UNSCALED — multiply by 2/size for a normalized round trip.
-        void inverse_inplace(Sample* data) noexcept {
-#if defined(TAP_DSP_FFT_FLOAT_BACKEND)
-            if constexpr (std::is_same_v<Sample, float>) {
-                m_engine.inverse_inplace(data);
-                return;
-            }
-#endif
-            detail::ooura_rdft(m_size, -1, data, m_ip.data(), m_w.data());
-        }
+        void inverse_inplace(Sample* data) noexcept { m_engine.inverse_inplace(data); }
 
         /// Out-of-place forward FFT. Output may alias input.
         void forward(const Sample* input, Sample* output) noexcept {
@@ -416,6 +490,14 @@ namespace tap::dsp {
         /// already takes float in the same-type forward()/inverse() above. These
         /// allocate a staging buffer (a setup-time path), unlike the noexcept,
         /// allocation-free in-place transforms.
+        ///
+        /// DEPRECATED (Decision D5, audit item F7): removed after one consumer
+        /// cycle, i.e. once MuTap and MuTap-Max have pinned a tree containing
+        /// this deprecation. No consumer on disk calls them (grepped at Stage
+        /// 2b: DspTap's tools/capi, MuTap, MuTap-Max); the replacement is the
+        /// caller's own double staging buffer and the same-type transforms.
+        [[deprecated("basic_real_fft<double>::forward(const float*, float*) allocates per call and is removed "
+                     "after one consumer cycle (Decision D5); stage through a double buffer instead")]]
         void forward(const float* input, float* output)
             requires std::is_same_v<Sample, double>
         {
@@ -430,6 +512,9 @@ namespace tap::dsp {
         }
 
         /// Float-I/O inverse on the double engine, scaled by 2/size like inverse().
+        /// DEPRECATED with forward(const float*, float*) above (Decision D5).
+        [[deprecated("basic_real_fft<double>::inverse(const float*, float*) allocates per call and is removed "
+                     "after one consumer cycle (Decision D5); stage through a double buffer instead")]]
         void inverse(const float* input, float* output)
             requires std::is_same_v<Sample, double>
         {
@@ -453,12 +538,8 @@ namespace tap::dsp {
             }
         }
 
-        int                 m_size;
-        std::vector<int>    m_ip;
-        std::vector<Sample> m_w;
-#if defined(TAP_DSP_FFT_FLOAT_BACKEND)
-        detail::float_engine_t<Sample> m_engine;
-#endif
+        int    m_size;
+        engine m_engine;
     };
 
     /// The fixed-point profiles: Q15 (std::int16_t) and Q31 (std::int32_t)
@@ -562,7 +643,8 @@ namespace tap::dsp {
     ///  - Latency 0; no NaN or denormal behaviour to state (integer data).
     ///
     /// Per-profile noise floors and the Welch-model derivation are in
-    /// docs/fft-fixed-point.md and the README profiles table.
+    /// docs/fft-design.md ("The fixed-point profiles") and the README
+    /// profiles table.
     template <typename Sample, typename Scaling>
         requires fft_arith<Sample>::k_is_fixed_point
     class basic_real_fft<Sample, Scaling> {

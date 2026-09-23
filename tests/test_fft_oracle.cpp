@@ -47,6 +47,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <numbers>
 #include <type_traits>
@@ -806,6 +807,48 @@ namespace {
             const auto a = to_doubles(tap::dsp::test::random_signal<TypeParam>(n, 0x1D872B41u));
             expect_inverse_matches_dft<TypeParam>(n, a, "dft inverse broadband");
         }
+    }
+
+    // ------------------------------------------------------------------------
+    // The double profile's noise floor as a MEASURED number (docs/fft-design.md,
+    // contract table, "Noise floor"; Stage 2b): the relative 2-norm error of
+    // the double forward transform against the compensated DFT on full-scale
+    // uniform noise at N = 256, the largest size the oracle covers. The
+    // Higham bound above is a correctness envelope (4 eps log2 N, i.e. 7.1e-15
+    // here); this is the number the engine actually lands at. Measured
+    // 2026-09-23 (x86-64 Linux, GCC 13.3.0 and Clang 18.1.3 -O3, glibc 2.39,
+    // the split-radix engine as routed at Stage 2b; both compilers print the
+    // same value): 1.8455e-16. Pinned at 4x,
+    // not the battery's usual 2x: the last bits of a double transform depend
+    // on libm's cos/sin (glibc, newlib, UCRT, Apple differ) and on the leg's
+    // fp-contraction (fft.h, D9), and an rms over 256 values is the wrong
+    // place to make that spread a failure; a wrong operation order would land
+    // orders of magnitude away, not 2x.
+    // ------------------------------------------------------------------------
+    constexpr double k_double_floor_vs_dft_256 = 7.4e-16;
+
+    TEST(fft_oracle_floor, DoubleForwardTracksCompensatedDft) {
+        constexpr std::size_t     n = 256;
+        const compensated_dft     oracle(n);
+        const std::vector<double> x        = tap::dsp::test::random_signal<double>(n, 0xA5A5A5A5u);
+        const std::vector<double> expected = oracle.forward(x);
+
+        tap::dsp::real_fft  fft(n);
+        std::vector<double> got = x;
+        fft.forward_inplace(got.data());
+
+        double err = 0.0;
+        double ref = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            const double d = got[i] - expected[i];
+            err += d * d;
+            ref += expected[i] * expected[i];
+        }
+        const double rel = std::sqrt(err / ref);
+        std::printf("[ measured ] DoubleForwardTracksCompensatedDft N=%lu: relative 2-norm error %.4e (pin %.3e)\n",
+                    static_cast<unsigned long>(n), rel, k_double_floor_vs_dft_256);
+        EXPECT_GT(k_double_floor_vs_dft_256, 0.0) << "unmeasured pin";
+        EXPECT_LT(rel, k_double_floor_vs_dft_256) << "measured " << rel;
     }
 
     TYPED_TEST(fft_oracle_test, InverseMatchesCompensatedDftOnToneSpectrum) {

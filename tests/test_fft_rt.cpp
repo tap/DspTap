@@ -22,9 +22,10 @@
 // WHAT THE GUARD SEES AND WHAT IT DOES NOT. It counts C++ allocation
 // functions only. An engine that allocates through malloc/calloc directly, or
 // inside a vendor library (Apple's vDSP on the macOS leg, CMSIS on the M55),
-// is invisible to it. For today's Ooura path the claim is complete: makewt
-// and makect write into the caller's preallocated ip/w tables (fftsg.c
-// 655-756) and the C never calls an allocator. For the backends the guard
+// is invisible to it. For the split-radix engine (the double profile, and
+// float without a backend, since Stage 2b) the claim is complete: the
+// engine's tables are two std::vectors sized in the constructor, and nothing
+// in a transform touches an allocator. For the backends the guard
 // covers the wrapper's own code and nothing more; a malloc interposer
 // (glibc's __libc_malloc, or DYLD_INTERPOSE) is the tool for the vendor
 // layer and is out of scope here. The self-test CountsAVectorAllocation
@@ -32,12 +33,12 @@
 // that test fails first.
 //
 // The FIRST call after construction is covered as well as a steady-state one:
-// today Ooura builds its trig and bit-reversal tables lazily on the first
-// transform (Part 1, item F6), and that initialization must be allocation-free
-// too, because the first transform a consumer runs is very often on the audio
-// thread already. The port moves table construction into the constructor
-// (Part 4); this test is indifferent to where it happens, only to what it
-// allocates.
+// the vendored C built its trig and bit-reversal tables lazily on the first
+// transform (Part 1, item F6), and that initialization had to be
+// allocation-free too, because the first transform a consumer runs is very
+// often on the audio thread already. The engine builds its tables in the
+// constructor (Part 4; routed at Stage 2b); this test is indifferent to where
+// it happens, only to what it allocates, so it keeps covering the first call.
 //
 // NOT covered, deliberately: the float-I/O convenience overloads on the
 // double engine (forward(const float*, float*) / inverse(const float*,

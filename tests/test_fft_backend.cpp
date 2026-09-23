@@ -4,21 +4,31 @@
 // Parity oracle for the optional float32 FFT backends (TAP_DSP_FFT_CMSIS on the
 // M55, TAP_DSP_FFT_ACCELERATE on Apple; see include/tap/dsp/fft.h and README.md).
 // When one is active, basic_real_fft<float> routes through that backend; this
-// test pins it to Ooura's rdft_f — the golden model — bin-for-bin at the two
+// test pins it to the reference float engine — detail::split_radix_rdft<float>,
+// the C++20 transliteration of Ooura's rdft_f that is bit-identical to the
+// vendored C (tests/test_fft_parity_ooura.cpp) — bin-for-bin at the two
 // certified geometries (512-pt canceller, 2048-pt suppressor analysis).
+//
+// Before Stage 2b (docs/audit-fft-and-code-smells.md, Part 3) the reference
+// here was the raw rdft_f of fftsg_float.c. The 2b flip re-pointed it at the
+// ported engine, as the plan specifies: that is a change of oracle only
+// because the Stage 2a gate holds the engine bit-identical to the C, so the
+// numbers this file pins against are the same numbers.
 //
 // The reconciliation under test: both backends use the engineering convention
 // exp(-i2*pi/N), while our contract is Ooura's exp(+i2*pi/N) with an
 // unnormalized inverse. Each wrapper conjugates the imaginary bins and rescales
-// so every intermediate spectrum matches Ooura; if that ever drifts, the
-// bin-for-bin comparison below fails loudly.
+// so every intermediate spectrum matches the reference; if that ever drifts,
+// the bin-for-bin comparison below fails loudly.
 //
 // When no backend is defined (the default desktop/Hexagon/Linux build),
-// basic_real_fft<float> already IS Ooura, so these become Ooura-vs-Ooura
-// identity checks — trivially exact, and a live guard that the reference path
-// keeps matching the wrapper. The rest of the FFT contract (packing, the +i
-// sign convention, Parseval, float-tracks-double) is covered by test_fft.cpp,
-// which exercises the same backend.
+// basic_real_fft<float> already IS the split-radix engine, so these become
+// port-vs-port identity checks — trivially exact, and a live guard that the
+// reference path keeps matching the wrapper. That degeneration is acceptable
+// only because the Stage 2a gate exists: the engine's fidelity to the C is
+// proven there, independently of this file. The rest of the FFT contract
+// (packing, the +i sign convention, Parseval, float-tracks-double) is covered
+// by test_fft.cpp, which exercises the same backend.
 
 #include <algorithm>
 #include <cmath>
@@ -29,23 +39,21 @@
 #include <gtest/gtest.h>
 
 #include "tap/dsp/fft.h"
+#include "tap/dsp/fft/split_radix.h"
 
 namespace {
 
-    // Direct Ooura float reference, independent of the C++ wrapper's backend:
-    // rdft_f is the extern "C" symbol regardless of TAP_DSP_FFT_CMSIS, so it is
-    // always the golden model to compare the wrapper against.
+    // The float reference, independent of the C++ wrapper's backend: the
+    // split-radix engine called directly. No backend define reaches it (it is
+    // the engine, not basic_real_fft), so under TAP_DSP_FFT_CMSIS or
+    // TAP_DSP_FFT_ACCELERATE it is the Ooura-contract golden model to compare
+    // the wrapper against, and it is bit-identical to the rdft_f this struct
+    // called before the Stage 2b flip.
     struct ooura_ref {
-        int                m_n;
-        std::vector<int>   m_ip;
-        std::vector<float> m_w;
+        tap::dsp::detail::split_radix_rdft<float> m_engine;
         explicit ooura_ref(int n)
-            : m_n(n)
-            , m_ip(2 + static_cast<size_t>(std::sqrt(static_cast<double>(n) / 2.0)) + 1)
-            , m_w(static_cast<size_t>(n) / 2) {
-            m_ip[0] = 0;
-        }
-        void forward(float* a) { rdft_f(m_n, 1, a, m_ip.data(), m_w.data()); }
+            : m_engine(static_cast<size_t>(n)) {}
+        void forward(float* a) { m_engine.forward_inplace(a); }
     };
 
     std::vector<float> broadband(int n, unsigned seed) {
@@ -63,8 +71,9 @@ namespace {
     class fft_backend_parity : public ::testing::TestWithParam<int> {};
 
     // Forward transform of the wrapper (CMSIS when TAP_DSP_FFT_CMSIS) must match
-    // the Ooura reference to single-precision rounding, in the packed layout
-    // and sign convention the whole DSP chain assumes.
+    // the split-radix reference to single-precision rounding, in the packed
+    // layout and sign convention the whole DSP chain assumes. The test keeps
+    // its name: the reference is Ooura's transform, bit for bit.
     TEST_P(fft_backend_parity, ForwardMatchesOoura) {
         const int n = GetParam();
 

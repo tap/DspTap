@@ -29,6 +29,7 @@
 
 #include "support/signals.h"
 #include "tap/dsp/fft.h"
+#include "tap/dsp/fft/split_radix.h"
 
 namespace {
 
@@ -456,22 +457,24 @@ namespace {
         return std::sqrt(err / ref);
     }
 
-    // The two precisions are the same algorithm on the same data: float must
-    // track double to single-precision rounding, which is what makes the
-    // float64 desktop oracle meaningful for the float32 embedded targets.
-    TEST(RealFftCrossPrecision, FloatTracksDouble) {
-        constexpr size_t n = 1024;
-
-        const auto         xd = random_signal<double>(n, 99);
+    /// The relative 2-norm error of a float forward transform against the
+    /// double golden model on the same signal (float -> double is exact, so
+    /// both engines see identical input values).
+    template <typename FloatEngine>
+    double float_engine_error_vs_double(size_t n, unsigned seed) {
+        const auto         xd = random_signal<double>(n, seed);
         std::vector<float> xf(n);
         for (size_t i = 0; i < n; ++i) {
             xf[i] = static_cast<float>(xd[i]);
         }
+        std::vector<double> sd(n);
+        for (size_t i = 0; i < n; ++i) {
+            sd[i] = static_cast<double>(xf[i]);
+        }
+        auto sf = xf;
 
-        tap::dsp::real_fft   fft64(n);
-        tap::dsp::real_fft32 fft32(n);
-        auto                 sd = xd;
-        auto                 sf = xf;
+        tap::dsp::real_fft fft64(n);
+        FloatEngine        fft32(n);
         fft64.forward_inplace(sd.data());
         fft32.forward_inplace(sf.data());
 
@@ -482,7 +485,38 @@ namespace {
             err += d * d;
             ref += sd[i] * sd[i];
         }
-        EXPECT_LT(std::sqrt(err / ref), 1e-6);
+        return std::sqrt(err / ref);
+    }
+
+    // The two precisions are the same algorithm on the same data: float must
+    // track double to single-precision rounding, which is what makes the
+    // float64 desktop oracle meaningful for the float32 embedded targets.
+    // Through basic_real_fft, so on a backend build (CMSIS, vDSP) it is the
+    // backend that is held to the bound.
+    TEST(RealFftCrossPrecision, FloatTracksDouble) {
+        EXPECT_LT(float_engine_error_vs_double<tap::dsp::real_fft32>(1024, 99), 1e-6);
+    }
+
+    // The float profile's noise floor as a MEASURED number (docs/fft-design.md,
+    // contract table, "Noise floor"): the same metric at N = 512 on the
+    // split-radix engine itself, which is basic_real_fft<float> wherever no
+    // backend define is active and is bit-identical to the vendored C's float
+    // build on every leg, so the number is the shipping float profile's on
+    // every host and does not change on the M55 / macOS backend legs.
+    // Measured 2026-09-23 (x86-64 Linux, GCC 13.3.0 and Clang 18.1.3 -O3,
+    // glibc 2.39, the engine as routed at Stage 2b; both compilers print the
+    // same value): 1.1236e-7, against the audit's Part 6 N2 probe value of
+    // 1.105e-7 (different material; the probe was never a committed test).
+    // Pinned at 2x: the float rounding sequence is fixed by the statements,
+    // and the VFMA legs and libm differences move the last bits, not the rms.
+    constexpr double k_float_engine_tracks_double_512 = 2.25e-7;
+
+    TEST(RealFftCrossPrecision, FloatEngineTracksDoubleAtN512) {
+        const double err = float_engine_error_vs_double<tap::dsp::detail::split_radix_rdft<float>>(512, 99);
+        std::printf("[ measured ] FloatEngineTracksDoubleAtN512: relative 2-norm error %.4e (pin %.3e)\n", err,
+                    k_float_engine_tracks_double_512);
+        EXPECT_GT(k_float_engine_tracks_double_512, 0.0) << "unmeasured pin";
+        EXPECT_LT(err, k_float_engine_tracks_double_512) << "measured " << err;
     }
 
     // The fixed-point profiles against the same golden model: the relative
@@ -513,7 +547,17 @@ namespace {
 
     // The double-engine float-I/O convenience overloads (used by AmbiTap's HRTF
     // analysis): a float-buffer round trip through the double FFT reproduces the
-    // input to float precision.
+    // input to float precision. The overloads are [[deprecated]] since Stage
+    // 2b (Decision D5: removed after one consumer cycle); these two tests keep
+    // pinning them until they go, so the warning is silenced here and nowhere
+    // else.
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#elif defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
     TEST(RealFftFloatIO, RoundTripReproducesInput) {
         constexpr size_t n = 256;
 
@@ -559,5 +603,10 @@ namespace {
             EXPECT_FLOAT_EQ(spec_f[i], static_cast<float>(spec_d[i])) << "bin " << i;
         }
     }
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#elif defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 } // namespace
