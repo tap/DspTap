@@ -319,24 +319,26 @@ target_link_libraries(tap_dsp_analysis_typed PRIVATE
 # clang-tidy checks every compile command a file has.
 # ==============================================================================
 if(NOT TAP_DSP_BARE_METAL)
+    # name:path-from-the-project-root:precision. Relative paths, because an
+    # absolute Windows path's drive colon would split the entry.
     set(_tap_dsp_tidy_only_tus)
     if(NOT TAP_DSP_BUILD_BENCH)
         list(APPEND _tap_dsp_tidy_only_tus
-            bench_fft:${PROJECT_SOURCE_DIR}/bench/bench_fft.cpp:0
-            size_probe:${PROJECT_SOURCE_DIR}/bench/size_probe.cpp:0
-            icount_float:${PROJECT_SOURCE_DIR}/bench/icount/icount_main.cpp:0
-            icount_fixed:${PROJECT_SOURCE_DIR}/bench/icount/icount_main.cpp:2)
+            bench_fft:bench/bench_fft.cpp:0
+            size_probe:bench/size_probe.cpp:0
+            icount_float:bench/icount/icount_main.cpp:0
+            icount_fixed:bench/icount/icount_main.cpp:2)
     endif()
     if(NOT TAP_DSP_BUILD_CAPI)
-        list(APPEND _tap_dsp_tidy_only_tus capi:${PROJECT_SOURCE_DIR}/tools/capi/dsptap_capi.cpp:0)
+        list(APPEND _tap_dsp_tidy_only_tus capi:tools/capi/dsptap_capi.cpp:0)
     endif()
-    list(APPEND _tap_dsp_tidy_only_tus fingerprint:${PROJECT_SOURCE_DIR}/tools/fingerprint/fingerprint.cpp:0)
+    list(APPEND _tap_dsp_tidy_only_tus fingerprint:tools/fingerprint/fingerprint.cpp:0)
     foreach(_tu IN LISTS _tap_dsp_tidy_only_tus)
         string(REPLACE ":" ";" _parts "${_tu}")
         list(GET _parts 0 _name)
         list(GET _parts 1 _src)
         list(GET _parts 2 _precision)
-        add_library(tap_dsp_tidy_only_${_name} OBJECT EXCLUDE_FROM_ALL ${_src})
+        add_library(tap_dsp_tidy_only_${_name} OBJECT EXCLUDE_FROM_ALL ${PROJECT_SOURCE_DIR}/${_src})
         target_include_directories(tap_dsp_tidy_only_${_name} PRIVATE
             ${PROJECT_SOURCE_DIR}/bench ${PROJECT_SOURCE_DIR}/tools/capi)
         target_compile_definitions(tap_dsp_tidy_only_${_name} PRIVATE

@@ -352,7 +352,7 @@ precondition only; a repo-wide precondition policy is its own plan. The capi's p
 defects from Part 2 (`void*` handles, exceptions crossing `extern "C"` in the old entry points,
 allocation in the decimator's process path) are owned here too.
 
-**Landed (wave 4, tap/DspTap PR "Stage 6: hygiene"), with these deviations.**
+**Landed (wave 4, tap/DspTap#34), with these deviations.**
 - *Delegated to Stage 4* (same wave, which owns `fft.h` and `fft/`): the two duplicated
   `fft.h` paragraphs (F9) and `TAP_EXPECTS` for the power-of-two precondition. Nothing
   under `fft.h` / `fft/` was touched here; `fft/tables.h` already takes pi from
