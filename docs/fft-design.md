@@ -738,7 +738,7 @@ with its meaning (pinned by `tests/test_fft_engine.cpp`):
 | `basic_real_fft<double>`, `real_fft` | `<double, detail::split_radix_rdft<double>>` | always |
 | `basic_real_fft<float>`, `real_fft32` | `<float, default_real_fft_engine_t<float>>` | the split-radix engine, or `detail::cmsis_real_fft_f32` under `TAP_DSP_FFT_CMSIS`, or `detail::accelerate_real_fft_f32` under `TAP_DSP_FFT_ACCELERATE`; selected in exactly one place in `fft.h` |
 | `basic_real_fft<float, detail::split_radix_rdft<float>>` | that engine | new: an engine named explicitly, beside the accelerated default in the same binary |
-| `basic_real_fft<float \| double, scaling::fixed>` | the selected engine | the pre-Stage-4 spelling every profile shared (`tools/capi/dsptap_capi.cpp`'s generic seam writes it); accepted, resolves to the default engine, and is a **distinct type** from the one-argument form (same layout and code, different template arguments) |
+| `basic_real_fft<float \| double, scaling::fixed>` | the selected engine | the pre-Stage-4 spelling every profile shared; accepted, resolves to the default engine, and is a **distinct type** from the one-argument form (same layout and code, different template arguments: +2,949 B x86-64 / +1,995 B M55 of duplicate wrappers when both are instantiated, 35a/F3). No in-tree writer since the #35 fix pass (the capi's seam uses `detail::default_real_fft_policy_t<Sample>`, so `fft_impl<float>` holds exactly `real_fft32`); **expires after one consumer cycle** (D4), then a `static_assert` |
 | `basic_real_fft<std::int16_t \| std::int32_t, Scaling>` | the fixed-point specialization | unchanged; the second argument is the Scaling policy |
 
 Any other second argument on a floating `Sample` must satisfy the concept

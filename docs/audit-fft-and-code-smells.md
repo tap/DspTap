@@ -1176,8 +1176,14 @@ ABI tag derived from the selection. Landed (#35).** The default alone leaves the
 hazard in every class that embeds the FFT by value; the tag closes it — for DspTap's own
 embedders at #35, for MuTap's on its bump. Tag names `fft_split_radix` / `fft_cmsis` /
 `fft_vdsp`; the second template argument keeps meaning "scaling policy" on the fixed-point
-profiles, which therefore carry the tag too (recorded in Part 13). Alternative kept on record:
-no default, consumers name the engine.
+profiles, which therefore carry the tag too (recorded in Part 13). **Expiry, D5-style (35a/F3):**
+`basic_real_fft<float | double, scaling::fixed>`, the pre-Stage-4 spelling, resolves to the
+selected engine as a second type with identical code (+2,949 B x86-64 / +1,995 B M55 of duplicate
+wrappers when both are instantiated); no in-tree writer remains after the #35 fix pass (the
+capi's seam uses `detail::default_real_fft_policy_t`), and the resolution is tolerated for one
+consumer cycle — until MuTap and MuTap-Max pin a tree containing #35 — then
+`detail::floating_engine_of<Sample, scaling::fixed>` goes and the spelling becomes a
+`static_assert`. Alternative kept on record: no default, consumers name the engine.
 
 **D5. Float-I/O-on-double overloads: `[[deprecated]]` for one consumer cycle, then deleted.**
 Not gated on AmbiTap, which is not on disk and keeps its own wrapper per README.

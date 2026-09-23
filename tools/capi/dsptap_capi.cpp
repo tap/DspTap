@@ -106,9 +106,9 @@ namespace {
     // The DSPTAP_FFT_PROFILE_* a (sample type, scaling policy) pair reports. Exhaustive on
     // purpose: an instantiation that is not mapped here fails to compile instead of reporting a
     // neighbour's profile.
-    template <typename Sample, typename Scaling>
+    template <typename Sample, typename Policy>
     constexpr int profile_of() {
-        constexpr bool bfp = std::is_same_v<Scaling, tap::dsp::scaling::block_floating>;
+        constexpr bool bfp = std::is_same_v<Policy, tap::dsp::scaling::block_floating>;
         if constexpr (std::is_same_v<Sample, double>) {
             static_assert(!bfp, "the floating profiles have no scaling policy");
             return DSPTAP_FFT_PROFILE_DOUBLE;
@@ -128,21 +128,26 @@ namespace {
         }
     }
 
-    template <typename Sample, typename Scaling = tap::dsp::scaling::fixed>
+    // Policy is basic_real_fft's own second argument: the selected engine for the floating
+    // profiles (so fft_impl<float> holds exactly tap::dsp::real_fft32, the type pvoc and
+    // log_mel in this same library hold — not the pre-Stage-4 <float, scaling::fixed> spelling,
+    // a second type with identical code; 35a/F3) and the scaling policy for the fixed-point
+    // ones. profile_of<> reads the policy: block_floating names the BFP profiles.
+    template <typename Sample, typename Policy = tap::dsp::detail::default_real_fft_policy_t<Sample>>
     struct fft_impl final : dsptap_fft_s {
-        using fft_type                      = tap::dsp::basic_real_fft<Sample, Scaling>;
+        using fft_type                      = tap::dsp::basic_real_fft<Sample, Policy>;
         static constexpr bool k_fixed_point = tap::dsp::sample_traits<Sample>::k_is_fixed_point;
 
         explicit fft_impl(std::size_t n)
             : fft(n)
             , buf(n, Sample(0)) {}
         int  size() const noexcept override { return static_cast<int>(fft.size()); }
-        int  profile() const noexcept override { return profile_of<Sample, Scaling>(); }
+        int  profile() const noexcept override { return profile_of<Sample, Policy>(); }
         bool is_fixed_point() const noexcept override { return k_fixed_point; }
         int  sample_bytes() const noexcept override { return static_cast<int>(sizeof(Sample)); }
         int  fixed_scaling_exponent() const noexcept override {
             if constexpr (k_fixed_point) {
-                return tap::dsp::basic_real_fft<Sample, Scaling>::fixed_scaling_exponent(fft.size());
+                return fft_type::fixed_scaling_exponent(fft.size());
             }
             else {
                 return 0;

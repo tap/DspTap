@@ -209,9 +209,17 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     /// for a floating Sample, scaling::fixed in the second position names the
     /// selected engine. That legacy spelling is a distinct type from
     /// basic_real_fft<float> (same layout, same code, different template
-    /// arguments); new code writes the one-argument form or names an engine.
-    /// Any other second argument on a floating Sample must satisfy
-    /// real_fft_engine<Engine, Sample> (static_assert).
+    /// arguments — measured +2,949 bytes of .text on x86-64 g++ -O2 and
+    /// +1,995 on the M55 when both are instantiated, the class wrappers
+    /// duplicated over one shared engine); nothing in DspTap writes it since
+    /// the #35 fix pass (the capi's generic seam uses
+    /// detail::default_real_fft_policy_t<Sample>) and nothing in MuTap or
+    /// MuTap-Max ever did. EXPIRY, D5-style: the resolution
+    /// (detail::floating_engine_of<Sample, scaling::fixed>) is tolerated for
+    /// one consumer cycle — until MuTap and MuTap-Max have pinned a tree
+    /// containing #35 — and then becomes a static_assert naming the
+    /// one-argument form. Any other second argument on a floating Sample
+    /// must satisfy real_fft_engine<Engine, Sample> (static_assert).
     ///
     /// Engine contract numbers, read from the engine and re-exported here:
     ///   - k_min_size / k_max_size, the power-of-two size range, and
