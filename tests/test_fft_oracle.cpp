@@ -130,33 +130,30 @@ namespace {
     template <typename Sample>
     struct profile;
 
-    // Size range a profile's engine accepts. fft.h promises any power of two
-    // >= 4 for Ooura, and the double profile is always Ooura. The float
-    // profile is whatever backend the build selected: under TAP_DSP_FFT_CMSIS
-    // (the M55 leg) CMSIS-DSP's arm_rfft_fast_init_f32 accepts 32..4096 only
-    // (arm_rfft_fast_init_f32.c, the switch at the end) and fft.h's wrapper
-    // does not check its return status, so a size outside that range is
-    // undefined behaviour — a HardFault at N = 4 on the QEMU M55 leg is how
-    // this was found. Until fft.h rejects or falls back on those sizes (a
-    // finding for the fft.h owner, not this file), the float sweeps on that
-    // backend run over the range the backend supports. vDSP (macOS) takes the
-    // full range.
-    constexpr std::size_t k_ooura_min_n = 4;
-    constexpr std::size_t k_ooura_max_n = std::size_t{1} << 20;
-#if defined(TAP_DSP_FFT_CMSIS)
-    constexpr std::size_t k_float_backend_min_n = 32;
-    constexpr std::size_t k_float_backend_max_n = 4096;
-#else
-    constexpr std::size_t k_float_backend_min_n = k_ooura_min_n;
-    constexpr std::size_t k_float_backend_max_n = k_ooura_max_n;
-#endif
+    // Size range a profile's engine accepts, read from the class: since Stage
+    // 4 every engine states k_min_size / k_max_size as contract numbers and
+    // basic_real_fft re-exports them (split-radix 4 … 2^30; CMSIS-DSP 32 …
+    // 4096 on the M55 leg, where the constructor now checks
+    // arm_rfft_fast_init_f32's status instead of ignoring it; vDSP 4 … 2^20;
+    // fixed point 4 … 65536). The sweeps here are capped at 2^20 on top of
+    // that — the parity gate's ceiling, and what a sweep's buffers can be —
+    // and at TAP_DSP_PARITY_MAX_N by sizes_up_to below. Until Stage 4 this
+    // file carried the CMSIS range itself under #if TAP_DSP_FFT_CMSIS, which
+    // is how the range was found (a HardFault at N = 4 on the QEMU M55 leg);
+    // the responsibility is the header's now and this file only reads it
+    // (test_fft_engine.cpp pins the numbers).
+    constexpr std::size_t k_sweep_ceiling = std::size_t{1} << 20;
+    template <typename Sample>
+    constexpr std::size_t k_engine_min_n = tap::dsp::basic_real_fft<Sample>::k_min_size;
+    template <typename Sample>
+    constexpr std::size_t k_engine_max_n = std::min(tap::dsp::basic_real_fft<Sample>::k_max_size, k_sweep_ceiling);
 
     template <>
     struct profile<double> {
         static constexpr double      k_epsilon    = std::numeric_limits<double>::epsilon();
         static constexpr double      k_full_scale = 1.0; ///< closed-form drive amplitude
-        static constexpr std::size_t k_min_n      = k_ooura_min_n;
-        static constexpr std::size_t k_max_n      = k_ooura_max_n;
+        static constexpr std::size_t k_min_n      = k_engine_min_n<double>;
+        static constexpr std::size_t k_max_n      = k_engine_max_n<double>;
         static double                to_double(double v) { return v; }
         static double                from_double(double v) { return v; }
         static double                forward_scale(std::size_t) { return 1.0; } ///< engine forward = scale * DFT
@@ -168,8 +165,8 @@ namespace {
     struct profile<float> {
         static constexpr double      k_epsilon    = std::numeric_limits<float>::epsilon();
         static constexpr double      k_full_scale = 1.0;
-        static constexpr std::size_t k_min_n      = k_float_backend_min_n;
-        static constexpr std::size_t k_max_n      = k_float_backend_max_n;
+        static constexpr std::size_t k_min_n      = k_engine_min_n<float>;
+        static constexpr std::size_t k_max_n      = k_engine_max_n<float>;
         static double                to_double(float v) { return static_cast<double>(v); }
         static float                 from_double(double v) { return static_cast<float>(v); }
         static double                forward_scale(std::size_t) { return 1.0; }
@@ -210,8 +207,8 @@ namespace {
         static constexpr double      k_q_io          = tap::dsp::test::sample_scale<I>::k_lsb;
         static constexpr double      k_q_int         = 1.0 / static_cast<double>(std::int64_t{1} << k_internal_bits);
         static constexpr double      k_full_scale    = tap::dsp::test::sample_scale<I>::k_full_scale;
-        static constexpr std::size_t k_min_n         = 4;
-        static constexpr std::size_t k_max_n         = 65536;
+        static constexpr std::size_t k_min_n         = k_engine_min_n<I>;
+        static constexpr std::size_t k_max_n         = k_engine_max_n<I>;
         static constexpr double      k_roundings_per_stage = 4.0;
         static constexpr double      k_post_pass           = 4.0;
         static constexpr double      k_margin              = 2.0;

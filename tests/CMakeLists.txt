@@ -115,10 +115,14 @@ endfunction()
 #     apiece, pinning target-independent design numbers;
 #   - MultitoneAnalysis: the double joint-fit instrument floor, same reason.
 # Everything else — every float32 suite, the double real_fft contract suite,
-# every float-tracks-double oracle check, the FFT backend suites (CMSIS-DSP
-# Helium against the split-radix engine on the M55) and the Stage 2b routing
-# proof (test_fft_routing.cpp: basic_real_fft is the engine byte for byte
-# where no backend is selected), fir_kernels over float/Q15/Q31, decimate,
+# every float-tracks-double oracle check, the FFT engine suites
+# (test_fft_backend.cpp, typed over the engines the leg can build: the
+# split-radix engine everywhere and CMSIS-DSP Helium beside it on the M55;
+# test_fft_engine.cpp, the Stage 4 engine-parameter contract — default
+# selection, ABI tag, per-engine size ranges, shareability) and the routing
+# proof (test_fft_routing.cpp: basic_real_fft is its engine byte for byte,
+# for the split-radix engine named explicitly on every leg and for the
+# selected default), fir_kernels over float/Q15/Q31, decimate,
 # sample_traits, quantize, the cheap Kaiser tests, SineAnalysis, and whatever
 # a later PR appends — runs on target.
 # ------------------------------------------------------------------------------
@@ -129,6 +133,7 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_fft.cpp
         test_fft_arith.cpp
         test_fft_backend.cpp
+        test_fft_engine.cpp
         test_fft_fixed.cpp
         test_fft_routing.cpp
         test_fir_kernels.cpp
