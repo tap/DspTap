@@ -6,17 +6,21 @@ stage by stage; every entry that still depends on a measurement is marked
 `TODO(stage …)` and names the stage whose PR supplies the number. Landed so
 far: Stage 2a (the port beside the C, tap/DspTap#28), Stage 3b (the Q15 / Q31
 profiles, tap/DspTap#27; its design record, formerly `docs/fft-fixed-point.md`,
-is folded in below as "The fixed-point profiles") and Stage 2b (the routing
-flip, tap/DspTap#31). Until every stage has landed, the plan of record is
+is folded in below as "The fixed-point profiles"), Stage 2b (the routing
+flip, tap/DspTap#31), Stage 2c (the C leaves the shipping tree, tap/DspTap#32)
+and Stage 4 (the engine parameter and the ABI tag, tap/DspTap#35; "Stage 4"
+below). Until every stage has landed, the plan of record is
 [`audit-fft-and-code-smells.md`](audit-fft-and-code-smells.md) (parts are
 cited as "audit Part N" below), and each PR links its stage.*
 
 ## Purpose and scope
 
-`tap::dsp::basic_real_fft<Sample>` (`include/tap/dsp/fft.h`) is a
-four-profile real-FFT contract — `double` (the golden model) and `float` (the
-embedded profile, optionally accelerated by vDSP or CMSIS-Helium) on the
-C++20 split-radix engine, and the Q15 / Q31 fixed-point profiles from
+`tap::dsp::basic_real_fft<Sample, Policy = detail::default_real_fft_policy_t<Sample>>`
+(`include/tap/dsp/fft.h`) is a four-profile real-FFT contract — `double` (the
+golden model) and `float` (the embedded profile) on an engine that is the
+second template argument since Stage 4
+(the C++20 split-radix engine by default; vDSP or CMSIS-Helium where the
+build selects them for `float`), and the Q15 / Q31 fixed-point profiles from
 `sample_traits.h` on an int32 radix-4 kernel. The contract is the packing, the
 sign convention, the scaling, and the numbers in the table below; the engine
 behind it changed (the vendored C until Stage 2b, the port of the same
@@ -43,7 +47,8 @@ profiles" below.
 
 | Contract point | `double` (`real_fft`) | `float` (`real_fft32`) | Q15 (`real_fft_q15`, `real_fft_q15_bfp`) | Q31 (`real_fft_q31`, `real_fft_q31_bfp`) |
 |---|---|---|---|---|
-| Engine | `detail::split_radix_rdft<double>` (`fft/split_radix.h`), always | `detail::split_radix_rdft<float>`, or the CMSIS-DSP Helium / vDSP wrapper when `TAP_DSP_FFT_CMSIS` / `TAP_DSP_FFT_ACCELERATE` is on (`test_fft_backend.cpp` pins those to the engine at float epsilon); `test_fft_routing.cpp` pins the class to the engine byte for byte where no backend is on | `detail::fixed_point_rdft<std::int16_t, Scaling>` (`fft/fixed_point.h`) | `detail::fixed_point_rdft<std::int32_t, Scaling>` |
+| Engine | `detail::split_radix_rdft<double>` (`fft/split_radix.h`) by default (`default_real_fft_engine_t<double>`); since Stage 4 the second template argument, so any `real_fft_engine` can be named | `detail::split_radix_rdft<float>` by default, or `detail::cmsis_real_fft_f32` (`fft/backends/cmsis.h`) / `detail::accelerate_real_fft_f32` (`fft/backends/accelerate.h`) when `TAP_DSP_FFT_CMSIS` / `TAP_DSP_FFT_ACCELERATE` is on; `test_fft_backend.cpp` is typed over the engines the leg can build and pins each to the split-radix engine at float epsilon in one binary; `test_fft_routing.cpp` pins the class to the named split-radix engine byte for byte on every leg and to the selected default | `detail::fixed_point_rdft<std::int16_t, Scaling>` (`fft/fixed_point.h`); the second argument is the Scaling policy on the fixed-point profiles | `detail::fixed_point_rdft<std::int32_t, Scaling>` |
+| Size range (`k_min_size` … `k_max_size`, `supports_size(n)`; Stage 4) | 4 … 2^30 (the int-indexing bound; bit identity gated to 2^20, oracle to 65536) | split-radix 4 … 2^30; vDSP 4 … 2^20; **CMSIS 32 … 4096** (`arm_rfft_fast_init_f32`'s table; status checked since Stage 4) — `EngineRangesAreTheStatedNumbers` as static_asserts in `test_fft_engine.cpp`, `ConstructsAtTheRangeBounds` | 4 … 65536 | 4 … 65536 |
 | Packing | `data[0]` = DC, `data[1]` = Nyquist, `data[2k]` / `data[2k+1]` = bin *k* re / im, `1 ≤ k < N/2`; `N/2 + 1` bins | same | same (`ImpulseHasFlatSpectrum`, `DcAndNyquistPacking`, the oracle's closed forms) | same |
 | Sign | `W = exp(+2πi/N)`; imaginary parts conjugated vs the engineering DFT | same | same (`SignConventionIsPlusI`, `OnBinSineIsPlusHalfNInTheImaginarySlot`) | same |
 | Forward scale | 1 (`A[k] = Σ a[j] W^(jk)`, unnormalized) | 1 | `fixed`: exactly `X / N` in Q0.15, `e = log2 N` (`FixedForwardScaleIsExactlyXOverN`); `block_floating`: `X · 2^-e`, `0 ≤ e ≤ log2 N` returned (`BfpExponentIsWithinRange`) | `fixed`: exactly `X / 2N` in Q0.31, `e = log2 N + 1` — the one-bit input pre-shift (`FixedForwardScaleIsExactlyXOverTwoN`); `block_floating`: `X · 2^-e`, `0 ≤ e ≤ log2 N + 1` |
@@ -53,7 +58,7 @@ profiles" below.
 | Noise floor | 1.85e-16 relative 2-norm error of the forward vs the compensated-DFT oracle on full-scale uniform noise at N = 256, measured 2026-09-23 on x86-64 Linux (GCC 13.3.0 and Clang 18.1.3 -O3, glibc 2.39; both print the same value), pinned at 4× for the libm and fp-contraction spread across hosts (`fft_oracle_floor.DoubleForwardTracksCompensatedDft`); the spread the pin exists for is in the CI logs of tap/DspTap#31 (run 35847675386): 1.8928e-16 on `cortex-m4-softfp` / `cortex-m4f` / `cortex-m33` (jobs 107137662986 / 107137663129 / 107137662923) and 1.6643e-16 on `cortex-m55` (107137663056), newlib's libm and each leg's contraction; the hosted legs run ctest non-verbose and print no value. The Higham correctness envelope the oracle sweeps to N = 65536 is separate (`test_fft_oracle.cpp`) | 1.12e-7 relative 2-norm error vs `double` at N = 512 on the engine itself, so the same *engine* is measured on the M55 / macOS backend legs (where `basic_real_fft<float>` is CMSIS / vDSP), measured as above, pinned at 2× (`RealFftCrossPrecision.FloatEngineTracksDoubleAtN512`); the value moves in the last bits with libm and fp-contraction (D9), not the engine: 1.1236e-7 on x86-64 and the soft-float `cortex-m4-softfp` leg, 1.1650e-7 on the VFMA legs `cortex-m4f` / `cortex-m33` / `cortex-m55` (same run and jobs), all inside the pin — the audit's Part 6 N2 probe value was 1.105e-7 on other material; and `< 1e-6` at N = 1024 through `basic_real_fft` (`FloatTracksDouble`) | fixed: 0.29 LSB rms (the narrow's own rounding) at every N and level; per-bin SNR 69.1 / 66.5 / 60.2 dB at 0 dBFS, N = 256 / 512 / 2048; BFP 87 – 91 dB at 0 dBFS (`NoiseFloorTracksWelchModel`; the full table in "The fixed-point profiles" §5) | fixed: 0.67 – 0.75 LSB rms, level-independent; 152.0 / 149.4 / 142.8 dB at 0 dBFS; BFP 157 – 161 dB |
 | Latency | 0 (block transform, no internal delay) | 0 | 0 | 0 |
 | Alignment | none required on `Sample*` | none (vDSP's internal split buffers are placed by the wrapper, not the caller) | none | none |
-| Shareability across threads | the engine builds its tables in the constructor and its transforms are `const noexcept`, so one engine object is shareable once constructed; `basic_real_fft`'s transforms stay non-const this stage (its float sibling may be a scratch-carrying backend) and the `is_shareable` engine trait is `TODO(stage 4)` | not through `basic_real_fft` today: the vDSP / CMSIS engines carry scratch; false for those engines — `TODO(stage 4)` | **false**: the in-place int16 API needs the per-object int32 work buffer (a recorded deviation from audit Part 7, which listed both fixed profiles as shareable) | no mutable state during a transform (the caller's buffer and the const tables only), but the transforms are non-const this stage; the trait says true at Stage 4 |
+| Shareability across threads (`k_is_shareable`, an engine trait re-exported by the class; Stage 4) | **true**: tables built in the constructor, transforms `const noexcept` | **true** on the split-radix engine, **false** on vDSP and CMSIS (per-object scratch); the class's transforms stay non-const on every profile (audit N11) and the trait is the statement; a shareable engine's transforms are `const` and the class `static_assert`s it (`ShareabilityIsTheHeadersNumber` in `test_fft_rt.cpp` and `test_fft_engine.cpp`) | **false**: the in-place int16 API needs the per-object int32 work buffer (a recorded deviation from audit Part 7, which listed both fixed profiles as shareable) | **true**: no mutable state during a transform; the engine's transforms are `const` behind `requires`-constrained overloads since Stage 4 |
 | Real-time safety | transforms `noexcept`, allocation-free (`test_fft_rt.cpp`; the float-I/O-on-double overloads are the exception, `[[deprecated]]` since 2b and removed after one consumer cycle, D5) | same | same (`TransformsAreNoexcept`, `*AllocatesNothing`, `CopyProducesBitIdenticalOutput`) | same |
 | NaN / denormals | NaN propagates to every bin; denormal input is slow on x86 without FTZ, and FTZ differs between the split-radix, vDSP and CMSIS builds | same | not applicable / none | not applicable / none |
 | Host identity | not across hosts: libm's `cos` / `sin` last bit differs between glibc, newlib, UCRT and Apple (below) | same | one bit pattern on every host, pinned per profile, policy, direction and N = 512 / 2048 (`OutputFingerprintIsPinned`, `TwiddleTableChecksumIsPinned`) | same |
@@ -573,6 +578,7 @@ VFMA, any x86 built with `-march`). Therefore:
    | local, this port's development host | g++ 13.3.0 and clang++ 18.1.3, x86-64 without `-march` | 4 … 65536, 2^20 | 0 | 0 |
    | local, at tap/DspTap#31 (2b review) | g++ 13.3.0 `-O3 -march=haswell` (FMA, GCC contracts across statements after inlining) | 4 … 65536, 2^20 | 0 | **> 0 at N = 1024, 4096, 16384, 65536, 2^20** (0 at 2048, 8192, 32768); the informational target's per-value ulp distance reaches 256 / 4 (fwd / inv) at 1024 and 16384 / 65536 at 2^20 on bins near zero; the review's independent harness on `basic_real_fft<float>` vs the C: 56 of 1200 blocks differ at N ≥ 1024, max \|Δ\| / max \|ref\| = 3.6e-7 |
    | local, at tap/DspTap#31 (2b review) | clang++ 18.1.3 `-O3 -march=haswell` (FMA, per-statement contraction) | 4 … 65536, 2^20 | 0 | 0 |
+   | local, at tap/DspTap#34 (Stage 6 reviews; #34 touches neither `fft.h` nor `fft/`) | g++ `-O3 -march=x86-64-v3`, default `-ffp-contract=fast` | pvoc's float output through `basic_real_fft<float>` | codegen moved (float `cftrec4` 194 → 168 `vfmadd`, double 224 → 254) | **float output bits moved with an edit to unrelated code in the same TU** (log_mel.h's constructor), every pvoc function instruction-identical; ~30 unrelated lines appended to the TU made the outputs identical again — the output depends on TU context, not only on flags |
 
    Zero everywhere, including the four FMA-capable legs (macOS arm64, M4F,
    M33, M55): because every statement is textually identical on the two
@@ -591,7 +597,26 @@ VFMA, any x86 built with `-march`). Therefore:
    after inlining (588 fused instructions in a TU instantiating the port vs
    372 in the two C files, `-O3 -march=haswell`; clang 221 vs 333; both
    0 / 0 with the flag). The gate at `-ffp-contract=off` is 6 / 6 on both
-   compilers at `-march=haswell`.
+   compilers at `-march=haswell`. The Stage 6 reviews (tap/DspTap#34, last
+   row) sharpened this: under GCC's cross-statement contraction on an FMA
+   target the engine's output depends on **translation-unit context** —
+   what else the TU inlines decides how `cftmdl2` is inlined into `cftrec4`
+   / `cftleaf`, and with it which products fuse — so an edit to code that
+   never touches the FFT can move a consumer's float bits, and the double
+   codegen moved in the same experiment even though no double bit was seen
+   to move; "double is identical under g++ with FMA" is therefore an
+   observation about the builds measured, not a guarantee. Two experiments,
+   kept apart: the engine-vs-C gate is bit-identical at `-ffp-contract=off`
+   and, at default flags, on every CI platform, MSVC and the four QEMU legs
+   included; the fingerprint A/B (pvoc / log_mel through the class, main vs
+   branch) has been run on g++ and on the M33 leg and not on MSVC or
+   AppleClang. `fft.h`'s D9 paragraph states the same. For #35 itself the
+   35b review's A/B of this tree against `main` with `tools/fingerprint`
+   (12 lines: pvoc float / double x 4 configs, log_mel float / double x log
+   / pcen) is identical at g++ default flags, at `-O3 -DNDEBUG`, at `-O3
+   -DNDEBUG -march=x86-64-v3` (FMA) and on the Cortex-M33 leg — the
+   inline-namespace move of pvoc and log_mel did not perturb the TU enough
+   to trip the #34 effect here, which is evidence, not a guarantee.
 3. **Decided at Stage 2b, stated in `fft.h`'s class docstring: `tap::dsp`
    does NOT export `-ffp-contract=off`** (or any contraction setting) to its
    consumers, and the header sets none; the engine is compiled under whatever
@@ -706,6 +731,332 @@ process review measured the same independently (g++ `-O2` 0.71 → 1.70 s,
 one second per optimized TU that instantiates both profiles, consistent
 with the audit's "1.3 s as C++ for the whole file"; D8 stands unless
 MuTap's build shows a regression these numbers do not predict.
+
+## Stage 4: the engine parameter and the ABI tag (tap/DspTap#35)
+
+Audit F4 and Decision D4. What landed, what was measured, and what it does
+not close.
+
+### The engine parameter
+
+`basic_real_fft<Sample, Policy = detail::default_real_fft_policy_t<Sample>>`.
+One parameter list, two meanings, so every spelling in use keeps compiling
+with its meaning (pinned by `tests/test_fft_engine.cpp`):
+
+| Spelling | Resolves to | Note |
+|---|---|---|
+| `basic_real_fft<double>`, `real_fft` | `<double, detail::split_radix_rdft<double>>` | always |
+| `basic_real_fft<float>`, `real_fft32` | `<float, default_real_fft_engine_t<float>>` | the split-radix engine, or `detail::cmsis_real_fft_f32` under `TAP_DSP_FFT_CMSIS`, or `detail::accelerate_real_fft_f32` under `TAP_DSP_FFT_ACCELERATE`; selected in exactly one place in `fft.h` |
+| `basic_real_fft<float, detail::split_radix_rdft<float>>` | that engine | new: an engine named explicitly, beside the accelerated default in the same binary |
+| `basic_real_fft<float \| double, scaling::fixed>` | the selected engine | the pre-Stage-4 spelling every profile shared; accepted, resolves to the default engine, and is a **distinct type** from the one-argument form (same layout and code, different template arguments: +2,949 B x86-64 / +1,995 B M55 of duplicate wrappers when both are instantiated, 35a/F3). No in-tree writer since the #35 fix pass (the capi's seam uses `detail::default_real_fft_policy_t<Sample>`, so `fft_impl<float>` holds exactly `real_fft32`); **expires after one consumer cycle** (D4), then a `static_assert` |
+| `basic_real_fft<std::int16_t \| std::int32_t, Scaling>` | the fixed-point specialization | unchanged; the second argument is the Scaling policy |
+
+Any other second argument on a floating `Sample` must satisfy the concept
+`tap::dsp::real_fft_engine<Engine, Sample>`: constructible from the size,
+copyable, two `noexcept` in-place transforms, `size()`, and the three
+contract constants `k_min_size`, `k_max_size`, `k_is_shareable`. The four
+engines satisfy it; `int` and `scaling::fixed` do not (the class resolves
+the legacy spelling before the concept is checked). The alternative D4 kept
+on record — no default, consumers name the engine — was not taken: the
+consumers hold `basic_real_fft<Sample>` in forty-odd places and the default
+is what makes the build define a build define.
+
+Backends moved to `fft/backends/cmsis.h` and `fft/backends/accelerate.h`,
+included by whoever selects them (fft.h under the define, or a translation
+unit naming the engine). Every engine is constructed from its size; the
+`init()` shape and `make_floating_engine` are gone. The CMSIS object library
+is unchanged and stays PIC. The vDSP wrapper's duplicated "Computed at use
+rather than cached" paragraph (audit F9; the Stage 6 "two duplicated fft.h
+paragraphs" item) is one paragraph now.
+
+### Size ranges as contract numbers
+
+Each engine states `k_min_size` / `k_max_size`; the class re-exports them,
+offers `supports_size(n)` (a power of two inside the interval, `constexpr`),
+and states `supports_size(size)` as the constructor's precondition through
+`TAP_EXPECTS`, checked before the engine is built so the engine's own
+assertion is never the first to fire.
+
+| Engine | Range | Where the number comes from |
+|---|---|---|
+| split-radix (`double`, `float`) | 4 … 2^30 | the int-indexing bound of Ooura's arithmetic (n is an `int`; every index and table offset stays below 2^31). Exercised: bit identity 4 … 65536 and 2^20 (the gate), the oracle 4 … 65536. Above 2^20 the transform is the same statements over larger tables and is not separately measured. 2^30 rather than 2^20 so the precondition does not narrow what a consumer could construct before Stage 4 ("a power of two ≥ 4") |
+| vDSP (`float`, Apple) | 4 … 2^20 | vDSP documents no maximum; 2^20 is the bound the float oracle has always stated for this engine and the size the split-radix gate runs to. Through the class it is swept to 65536 on the macOS leg and pinned bin-for-bin at 512 / 2048; 65536 … 2^20 is inside the range on vDSP's word, not on a measurement here |
+| CMSIS-DSP (`float`, Cortex-M55) | **32 … 4096** | `arm_rfft_fast_init_f32` dispatches through a `switch` over exactly {32, …, 4096} and returns `ARM_MATH_ARGUMENT_ERROR` otherwise, leaving the instance uninitialized. Until Stage 4 the wrapper ignored that status and fft.h promised "≥ 4" for every profile: N = 4 hard-faulted on the M55 leg (audit Part 13, found by the oracle). The constructor now checks the status (`TAP_EXPECTS`) as well as the range |
+| fixed point (Q15, Q31) | 4 … 65536 | as at Stage 3b, now spelled through the same constants |
+
+What construction does out of range: `TAP_EXPECTS` is the house
+precondition (STYLE.md §4, `include/tap/dsp/detail/expects.h`): an
+assertion in a debug build, nothing in a release build, never a throw
+(some Tap consumers build `-fno-exceptions`). Every CI battery is Release /
+MinSizeRel, so in CI the check is the constexpr predicate, pinned as
+`static_assert`s on every leg (N = 16 and 8192 rejected under CMSIS,
+accepted by the split-radix engine named in the same binary; 32 and 4096
+constructed and round-tripped under CMSIS), plus a Debug-only death test
+that runs in a local Debug configure (it passes there). **Release-mode
+behaviour, decided (35a/F1):** a violated precondition in a release build
+is undefined behaviour exactly as the plain `assert` it replaces was — for
+the CMSIS engine the instance stays zero-initialized and the first transform
+HardFaults; there is deliberately no defined fallback, because a branch in
+the transforms would cost the hot path on every call for a case the
+precondition excludes and would hand a consumer an object that silently
+transforms nothing. `supports_size` is therefore the *mandatory* gate
+wherever N comes from configuration. The capi's `dsptap_fft_create` applies
+it per profile since the #35 fix pass (before that it hard-coded 4 and the
+fixed-point 65536 and never read the float engines' range, so a vDSP or
+CMSIS build of the capi would have passed 2^21 or 16 straight through);
+the CMSIS wrapper also no longer narrows a size above `k_max_size` into the
+library's `uint16_t` argument (65536 would arrive as 0). MuTap's config path
+is on the bump checklist below. A repo-wide precondition policy remains its
+own plan; `TAP_EXPECTS` is used for fft.h's power-of-two and size-range
+preconditions (and the backends' own) and nothing else.
+`tests/test_fft_oracle.cpp` reads each profile's sweep range from the class
+instead of carrying the CMSIS range under `#if`.
+
+### Shareability as an engine trait
+
+`k_is_shareable` (the plan's `is_shareable`, under the house `k_` prefix):
+split-radix true, Q31 true, vDSP / CMSIS / Q15 false. Decision on constness
+across engines: **shareable implies const** — a shareable engine's
+transforms are `const`, and the class `static_assert`s it, so that half of
+the trait is what the compiler sees rather than a comment; the converse is
+not asserted (an engine with const transforms over `mutable` scratch that
+says `k_is_shareable = false` is accepted, and honest) and is a convention
+the tests pin: for the six shipped instantiations const and shareable
+coincide (`test_fft_rt.cpp`, `test_fft_engine.cpp`). The Q31 fixed-point
+transforms became `const` behind `requires`-constrained overloads
+(`k_widens` selects the Q15 pair, which goes through the per-object work
+buffer and stays non-const). Also noted (35a/F7): `int` is `std::int32_t` on
+every CI target, so `basic_real_fft<int>` compiles and is the Q31 profile. The class's own transforms stay non-const on every profile
+(audit N11: the public API's constness must not depend on the selected
+engine). The `std::span` overloads Part 9 listed were not added: Stage 4
+added no overload to the transform surface, so there is nothing to equate
+(`test_fft_rt.cpp` says so where Part 9 expected the assertion).
+
+### The ABI tag: what it is, the evidence, what it does not change
+
+`fft.h` opens `namespace tap::dsp::inline TAP_DSP_FFT_ABI` around
+`basic_real_fft` and the aliases, with `TAP_DSP_FFT_ABI` one of
+`fft_split_radix` / `fft_cmsis` / `fft_vdsp` from the selection (the plan
+named them `fft_ooura` / `fft_vdsp` / `fft_cmsis`; `fft_ooura` predates 2c,
+when the default became the split-radix engine, and the name is true today).
+`pvoc.h` and `log_mel.h` define `basic_pvoc` and `basic_log_mel` inside the
+same inline namespace, because they hold a `basic_real_fft<Sample>` by value.
+`k_real_fft_abi_tag` exposes the tag as text.
+
+**Why.** `basic_real_fft<float>`'s object layout follows the selected engine
+(`m_engine` *is* the engine), and so does the layout of every class that
+holds one by value. Their member functions are weak (COMDAT) definitions in
+every image that instantiates them. macOS dyld coalesces weak definitions
+across all loaded images — every image's `WEAK_DEF` references to one
+mangled name are bound to a single chosen definition, unless the symbol is
+not exported (hidden visibility) — and on ELF a `dlopen`ed plugin resolves
+its references against the executable's and `RTLD_GLOBAL` objects' exports
+before its own. So two images built with different defaults, loaded into one
+process, would run one image's code over the other image's layout: F4's
+cross-image hazard. Not observed today (MuTap-Max forces vDSP off through
+MuTap; the capi is never loaded into Max), real in principle.
+
+**What an inline namespace changes and does not change.** It changes one
+thing: the mangled name of every entity declared inside it. Unqualified and
+`tap::dsp`-qualified lookup is unchanged (an inline namespace's members are
+members of the enclosing namespace for lookup; `using tap::dsp::basic_real_fft;`
+in MuTap's `mutap/fft.h` works as before), overload resolution and ADL are
+unchanged, the object layouts are unchanged, no code is generated. With the
+engine a template argument, `basic_real_fft<float>`'s own symbols already
+differ between two builds without the tag (the argument is in the mangled
+name); the tag is what separates the embedders'.
+
+**Evidence.** One translation unit (`template class` instantiations of
+`basic_real_fft<float>`, `<double>`, `<std::int16_t>` and `basic_pvoc<float>`)
+compiled twice for the Cortex-M55 with arm-none-eabi-g++ 13.2.1 (`-O2`,
+`-mcpu=cortex-m55 -mfloat-abi=hard`), with and without `-DTAP_DSP_FFT_CMSIS`,
+`arm-none-eabi-nm -C` on the objects:
+
+- At `8350f13` (the branch base): **50 of 50** weak (`W` / `V`) symbol names
+  are identical in both objects, over two different layouts (each object
+  also carries 4 non-weak COMDAT group-section `n` symbols, the
+  constructors', not counted), among them
+
+  ```
+  W tap::dsp::basic_pvoc<float>::process(float, float)
+  W tap::dsp::basic_real_fft<float, tap::dsp::scaling::fixed>::forward_inplace(float*)
+  W tap::dsp::basic_real_fft<short, tap::dsp::scaling::fixed>::forward_inplace(short*)
+  ```
+
+- At tap/DspTap#35: **0 of 65** weak names are shared (and 0 of all 69
+  lines, the 4 `n` symbols included). The same three read
+
+  ```
+  W tap::dsp::fft_split_radix::basic_pvoc<float>::process(float, float)
+  W tap::dsp::fft_split_radix::basic_real_fft<float, tap::dsp::detail::split_radix_rdft<float> >::forward_inplace(float*)
+  W tap::dsp::fft_split_radix::basic_real_fft<short, tap::dsp::scaling::fixed>::forward_inplace(short*)
+  ```
+  in the default object and
+  ```
+  W tap::dsp::fft_cmsis::basic_pvoc<float>::process(float, float)
+  W tap::dsp::fft_cmsis::basic_real_fft<float, tap::dsp::detail::cmsis_real_fft_f32>::forward_inplace(float*)
+  W tap::dsp::fft_cmsis::basic_real_fft<short, tap::dsp::scaling::fixed>::forward_inplace(short*)
+  ```
+  in the CMSIS one. The 35a review's recount with a TU that also
+  instantiates `basic_log_mel<float>`: 96 of 107 weak names shared at the
+  base, 31 of 122 at this branch, every remaining one in `std::` or
+  `tap::dsp::detail::` — the engines and tables themselves, whose layout does
+  not depend on the define, so their coalescing is harmless.
+  `tests/test_fft_engine.cpp` pins the same property from inside the battery
+  on every leg: `typeid(real_fft32).name()`, `typeid(pvoc32).name()` and
+  `typeid(log_mel32).name()` contain the expected tag and none of the other
+  two.
+
+  **And the loader half, measured in a process (`tests/test_fft_abi_tag.cpp`,
+  linux and macOS; asked for by the 35a review, whose experiment it
+  reproduces).** One translation unit (`tests/abi/abi_tag_image.cpp`) is
+  built into two loadable modules: image A with the configured build's
+  defines (tag `fft_split_radix` on linux, `fft_vdsp` on macOS) and image B
+  with `TAP_DSP_FFT_CMSIS` and a stub engine of a different layout on the
+  include path (tag `fft_cmsis`); the host `dlopen`s A then B with
+  `RTLD_GLOBAL` and asks each image what its embedders see through
+  `extern "C"` probes, the member calls laundered through a volatile
+  pointer so the loader, not the optimizer, decides the target. Measured on
+  linux (g++ 13.3): an embedder of `basic_real_fft<float>` defined in plain
+  `tap::dsp` and instantiated in image B **ran image A's code** — its
+  `which()` returned `fft_split_radix` from inside the `fft_cmsis` image and
+  the bound member saw a layout of 80 bytes against the real 184 — which is
+  F4 live; the identical embedder defined inside `inline namespace
+  TAP_DSP_FFT_ABI` reported its own tag and its own layout in both images,
+  and `pvoc32` / `log_mel32` computed identical, finite checksums in both
+  images with both loaded (`TaggedEmbedderIsImmuneToCrossImageCoalescing`;
+  the untagged outcome is asserted on the linux/GCC host and printed as
+  `[ measured ]` elsewhere, `UntaggedEmbedderIsWhatTheTagExistsFor`). Under
+  `RTLD_LOCAL` on ELF nothing coalesces (the review measured it; the test
+  runs one mode per process because the first `dlopen` decides an image's
+  bindings). The test is hosted, non-Windows: the QEMU legs have no loader,
+  and a Windows image exports nothing without `__declspec`, so the
+  coalescing has no path there.
+
+**The fixed-point profiles are inside the tag, deliberately stated.** A
+partial specialization is the same template as its primary and lives in the
+same namespace, so `basic_real_fft<std::int16_t, scaling::fixed>` carries
+the tag although its layout does not depend on the selection. What that
+costs: two images built with different float defaults in one process each
+instantiate their own copy of the fixed-point code (a coalescing that would
+have been harmless does not happen), and if they ever exchanged a
+`real_fft_q15` across their boundary by type the link would fail rather
+than silently merge. What it does not cost: any correctness, any
+instruction in a transform (the fixed-point icount scenarios are +0.00 % on
+every key). The alternative — the fixed-point profiles outside the tag —
+requires splitting `basic_real_fft` into two templates or an alias-template
+indirection, which breaks `basic_real_fft<std::int16_t, scaling::block_floating>`
+as a class-template spelling (partial specializations on it in
+`test_fft_rt.cpp`, `::engine` in the capi); not worth it for a hazard the
+fixed-point profiles do not have.
+
+**What the tag does not close: MuTap's own embedders, until the bump.**
+The classes that hold a `basic_real_fft<Sample>` by value in `tap::mu` (at
+MuTap `801204d`, per the 35a review) are `partitioned_fdaf` (fdaf.h:431),
+`partitioned_fdkf` (fd_kalman.h:534), `pem_afc` (pem_afc.h:204, plus its
+`Core`), `residual_suppressor` (postfilter.h:726) and `nn_suppressor`
+(nn_suppressor.h:425); `aec_chain` (postfilter.h:787) is a second-level
+embedder that holds its `Canceller` / `Post` as template arguments and so
+inherits the tag once they carry it. Their symbols do not carry the tag
+until MuTap does the following; until then the hazard F4 describes is
+closed for DspTap's own embedders and for `basic_real_fft` itself, and open
+one level up in MuTap exactly as before.
+
+**MuTap bump checklist (the pin that picks up #35):**
+1. Wrap each of the five headers' class definitions in
+   `namespace tap::mu::inline TAP_DSP_FFT_ABI { … }` (a different namespace
+   from `tap::dsp::fft_split_radix`, which is fine: the tag only has to
+   appear in the mangled name; the macro is in scope through
+   `mutap/fft.h`). postfilter.h holds two of the six classes.
+2. **No forward declaration of any tagged class anywhere** — a later
+   `template <typename> class partitioned_fdaf;` in plain `tap::mu` declares
+   a *different* class. None exists today in MuTap, MuTap-Max or DspTap
+   (grepped by the review); it must stay that way. Explicit specialisations
+   and `using` through the enclosing namespace remain legal.
+3. **Validate N with `basic_real_fft<Sample>::supports_size(n)` wherever a
+   block size comes from configuration**, with the CMSIS numbers (32 …
+   4096) in the error text: on the M55 a config block size outside that
+   range is a release-mode HardFault at the first `process()` otherwise.
+4. Expect `partitioned_fdaf<double>` and the other double instantiations to
+   carry a tag their layout does not need (the tag is keyed on the float
+   default) — the same cost class as the fixed-point paragraph above; no
+   correctness effect.
+5. Name the Xcode / AppleClang that matters for MuTap-Max on the bump: the
+   macOS CI runner here is AppleClang 21.0.0, not 15/16. MuTap-Max's
+   externals hold these classes in non-template classes, one dylib each,
+   all from one build — no cross-build exposure there.
+6. Gate as always: fingerprints byte-identical on every leg.
+
+**Not closed by Stage 4, and not the tag's business:**
+- CMSIS-vs-split-radix parity runs under emulation on the Cortex-M55 QEMU
+  leg, as it has since that leg landed (main's `test_fft_backend.cpp`
+  already compared `basic_real_fft<float>` — CMSIS under the define — to
+  the split-radix reference); what #35 adds is that the two engines are
+  typed rows in one binary (`fft_backend_parity/cmsis` beside
+  `/split_radix`) and that the named split-radix routing row runs there.
+  The remaining gap: QEMU only, never a host, never hardware.
+- The vDSP same-binary microbenchmark (above, "Host microbenchmark").
+
+### The ratchet, and one thing it caught
+
+Measured locally before the PR with the CI toolchain (arm-none-eabi-gcc
+13.2.1, qemu 8.2.2, the same counting plugin as `bench.yml`; the baseline
+binaries rebuilt from `8350f13` reproduce their recorded counts to within
+the +35 / +75 instructions `bench/README.md` already records for the DONE
+line):
+
+| Key | `rfft_f32_512` | `rfft_f32_2048` | Q15 / Q31 scenarios |
+|---|---|---|---|
+| m55 (CMSIS), commits 1–4 as first pushed | 58,667,632 (**+12.00 %**) | 61,148,069 (**+11.47 %**) | +0.00 % |
+| m55 (CMSIS), final (harness factory) | 52,382,329 (−2) | 54,858,158 (+38) | +5 each |
+| m33 | 100,935,605 (−0.01 %) | 115,460,510 (−0.00 %) | Q15 −2,043, Q31 +5 |
+| m55-ooura | 89,268,128 (−0.01 %) | 102,783,071 (−0.00 %) | +5 each |
+| m4f | 97,138,550 (+6) | 111,278,422 (+6) | +5 each |
+| m4-softfp | 1,864,929,145 (+4) | 2,294,359,239 (−1,020) | +5 each |
+
+The +12 % was not in the transform: both float checksums were identical to
+the baseline binaries', the CMSIS archive was byte-identical, and the
+wrapper's copy-back loops were identical instruction for instruction. It
+was the bench's own FNV-1a fold. With the CMSIS engine's constructor
+(vector allocation, `memset`, `arm_rfft_fast_init_f32`, the EH cleanup)
+inlined into `main` — the baseline had reached it through an out-of-line
+`make_floating_engine<float>` — GCC's register allocation of `main` changed
+and the fold loop went from 7 to 10 instructions per element (the 64-bit
+hash's low word spilled to `[sp, #28]`, the FNV prime `movw r0, #435`
+rematerialized every element): +6 per sample per iteration, exactly the
+delta. **The defect was the harness**, and the fix is not a re-record:
+`bench/icount/icount_main.cpp` constructs the transform under test through
+a non-inlined `make_fft()` in both `run()` bodies — the baseline's own shape
+— so the count is the transform plus a fixed fold. A first version had put a
+`noinline` attribute on the two accelerated engines' constructors instead
+(m55 +5 / +45); the hostile review measured the harness fix landing closer
+with nothing in the library, and the attribute costing 860 bytes of
+MinSizeRel `.text` on the one-construction m55 f32 probe, so shipping code
+carries no benchmark-shaped attribute and the split-radix constructor was
+never touched. The `.text` probes (MinSizeRel, `size -A`) all stay under
+their ceilings: m55 f32 106,725 (−932 vs the recorded 107,657), Q15 27,105
+(+8), Q31 26,553 (−40); m33 44,009 / 31,113 / 30,593; m55-ooura 39,281 /
+27,105 / 26,553; m4f 44,601 / 31,745 / 31,209; m4-softfp identical to the
+record. The harness lesson is in audit Part 13.
+
+### Test layout after Stage 4
+
+- `tests/test_fft_backend.cpp`: typed over `::testing::Types<split_radix_f
+  [, accelerate_real_fft_f32 | cmsis_real_fft_f32]>`; parity at 512 / 2048,
+  alignment stability and tonal accuracy at 512 / 2048 / 4096, per engine,
+  against the split-radix engine called directly; a `static_assert` that
+  the default float engine is one of the rows.
+- `tests/test_fft_engine.cpp` (new): the engine-parameter contract as
+  compile-time facts on every leg (above).
+- `tests/test_fft_routing.cpp`: memcmp class-vs-engine for `double`, for
+  the named split-radix float engine on every leg, and for the selected
+  float default.
+- `tests/test_fft_rt.cpp`: `ShareabilityIsTheHeadersNumber` per
+  instantiation, with the compiler-checked half.
+- `tests/test_fft_parity_ooura.cpp`: untouched, green on every leg — the
+  proof that no float or double bit moved through the refactor.
+- `tests/test_fft_abi_tag.cpp` + `tests/abi/` (hosted, non-Windows): the
+  two-image loader test of the tag (above).
 
 ## Size and instruction counts, per target
 
@@ -921,13 +1272,19 @@ is a few percent faster, the double forward a few tenths of a percent
 slower: the same statements, one compiler, differently inlined), which is
 what the instruction counts on the Cortex-M keys also say. Both binaries
 print the same output checksums (`f32=-4753.16699`, `f64=-1903.0533955268113`).
-`TODO(stage 4)`: Ooura-port vs vDSP same-binary on Apple Silicon. Of the
+`TODO(after stage 4, needs a Mac)`: split-radix vs vDSP same-binary
+*microbenchmark* on Apple Silicon. Stage 4 made the same-binary comparison
+possible (`basic_real_fft<float, detail::split_radix_rdft<float>>` beside
+the vDSP default in one binary, which is how `test_fft_backend.cpp` now runs
+parity on the macOS leg), but the number itself is a wall-clock measurement
+on a Mac that this repo's linux development environment cannot make. Of the
 consumers' "~3× faster / ~3× fewer instructions vs autovectorized Ooura"
 claims, the M55 one is replaced in `fft.h` and the README by the bench's own
 whole-scenario figure (C / CMSIS 1.81× / 1.97× on the `m55` key, above); the
 Apple one is stated there as what it is, MuTap's transform-only measurement
 on the vendored C (tap/MuTap#31), and is not re-measured in this repo until
-the same-binary comparison exists.
+someone runs `tap_dsp_bench_fft` twice on a Mac (`-DTAP_DSP_FFT_ACCELERATE`
+ON and OFF) and records the machine.
 
 ## Provenance and licensing
 
@@ -1211,3 +1568,4 @@ byte-identical.
 | tap/DspTap#27 (`b08f6c6` on `main`) | 3b | Q15, Q31 | the profiles exist: `basic_real_fft<std::int16_t \| std::int32_t, Scaling>` returning an exponent, `scaling::fixed` / `scaling::block_floating`, the numbers in the table above | none (no consumer on fixed point) |
 | tap/DspTap#31 (`bbfa48d` on `main`) | 2b | `double`, `float` | **no output bit**: `basic_real_fft` routes to `detail::split_radix_rdft` instead of the vendored C (bit-identical, both precisions); tables built in the constructor (no first-call cost); `forward(const float*, float*)` / `inverse(const float*, float*)` on the double engine `[[deprecated]]` (D5); fp-contraction policy stated (D9: no export) | MuTap fingerprint harness: 14 rows byte-identical, float rows included; `test_float32`, `test_g168`, `test_nn_suppressor` unchanged; DspTap icount baselines re-recorded to the port's counts (`bench/README.md`) |
 | tap/DspTap#32 (`8350f13` on `main`) | 2c | none numerically | **no output bit and no contract point**: the vendored C leaves the shipping tree (`fftsg.c` and `fftsg_float.c` to `tests/reference/ooura/`, D6); `tap::dsp` is a pure INTERFACE target and `tap_dsp_fft` exists only under `TAP_DSP_FFT_CMSIS`; the `extern "C"` `rdft`/`cdft`/`rdft_f`/`cdft_f` declarations leave `fft.h` (a consumer that took them from there no longer links — none did: MuTap and MuTap-Max were grepped); the capi's `dsptap_fft_backend()` returns `"split_radix"` where it returned `"ooura"`; the Q15/Q31 ratchet scenarios are seeded and the `.text` ceilings set | MuTap fingerprint harness (scratch build of MuTap `0f6a7f0` with this tree as the submodule, `-DMUTAP_WERROR=ON`): 14 rows byte-identical to the current pin `b08f6c6`; DspTap icount at +0.00 % on every float key |
+| tap/DspTap#35 | 4 | none numerically | **no output bit** (the Ooura gate and the class-vs-engine memcmp are green on every leg; fixed-point icount checksums identical): `basic_real_fft`'s second template argument is the engine for the floating profiles (default `default_real_fft_engine_t<Sample>`); `k_min_size` / `k_max_size` / `supports_size` / `k_is_shareable` added; construction requires `supports_size(size)` (`TAP_EXPECTS`, debug) — the one narrowing is the CMSIS engine's 32 … 4096, which was already the library's behaviour (undefined outside it); `basic_real_fft`, `basic_pvoc`, `basic_log_mel` and the aliases move into `inline namespace fft_split_radix | fft_cmsis | fft_vdsp` (mangled names change: every consumer image is rebuilt on its bump, and two images with different defaults no longer share symbols); backends move to `fft/backends/`; the Q31 engine's transforms are `const`. Fingerprint A/B of this tree vs `main` (`tools/fingerprint`, 12 lines, review 35b): identical at g++ default flags, at `-O3 -DNDEBUG`, at `-O3 -DNDEBUG -march=x86-64-v3`, and on the Cortex-M33 leg | none yet (MuTap's bump: fingerprints must be byte-identical; its own embedders adopt the tag in `tap::mu` — checklist above) |

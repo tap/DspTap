@@ -106,9 +106,9 @@ namespace {
     // The DSPTAP_FFT_PROFILE_* a (sample type, scaling policy) pair reports. Exhaustive on
     // purpose: an instantiation that is not mapped here fails to compile instead of reporting a
     // neighbour's profile.
-    template <typename Sample, typename Scaling>
+    template <typename Sample, typename Policy>
     constexpr int profile_of() {
-        constexpr bool bfp = std::is_same_v<Scaling, tap::dsp::scaling::block_floating>;
+        constexpr bool bfp = std::is_same_v<Policy, tap::dsp::scaling::block_floating>;
         if constexpr (std::is_same_v<Sample, double>) {
             static_assert(!bfp, "the floating profiles have no scaling policy");
             return DSPTAP_FFT_PROFILE_DOUBLE;
@@ -128,20 +128,26 @@ namespace {
         }
     }
 
-    template <typename Sample, typename Scaling = tap::dsp::scaling::fixed>
+    // Policy is basic_real_fft's own second argument: the selected engine for the floating
+    // profiles (so fft_impl<float> holds exactly tap::dsp::real_fft32, the type pvoc and
+    // log_mel in this same library hold — not the pre-Stage-4 <float, scaling::fixed> spelling,
+    // a second type with identical code; 35a/F3) and the scaling policy for the fixed-point
+    // ones. profile_of<> reads the policy: block_floating names the BFP profiles.
+    template <typename Sample, typename Policy = tap::dsp::detail::default_real_fft_policy_t<Sample>>
     struct fft_impl final : dsptap_fft_s {
+        using fft_type                      = tap::dsp::basic_real_fft<Sample, Policy>;
         static constexpr bool k_fixed_point = tap::dsp::sample_traits<Sample>::k_is_fixed_point;
 
         explicit fft_impl(std::size_t n)
             : fft(n)
             , buf(n, Sample(0)) {}
         int  size() const noexcept override { return static_cast<int>(fft.size()); }
-        int  profile() const noexcept override { return profile_of<Sample, Scaling>(); }
+        int  profile() const noexcept override { return profile_of<Sample, Policy>(); }
         bool is_fixed_point() const noexcept override { return k_fixed_point; }
         int  sample_bytes() const noexcept override { return static_cast<int>(sizeof(Sample)); }
         int  fixed_scaling_exponent() const noexcept override {
             if constexpr (k_fixed_point) {
-                return tap::dsp::basic_real_fft<Sample, Scaling>::fixed_scaling_exponent(fft.size());
+                return fft_type::fixed_scaling_exponent(fft.size());
             }
             else {
                 return 0;
@@ -234,28 +240,24 @@ namespace {
             }
         }
 
-        tap::dsp::basic_real_fft<Sample, Scaling> fft;
-        std::vector<Sample>                       buf;
+        fft_type            fft;
+        std::vector<Sample> buf;
     };
 
-    // The fixed-point profiles' size bound, read from the header (fft/fixed_point.h asserts it
-    // in the constructor, which a noexcept C entry point cannot turn into NULL): the same
-    // constant for all four fixed-point instantiations, checked so.
-    using q15_fft = tap::dsp::basic_real_fft<std::int16_t, tap::dsp::scaling::fixed>;
-    using q31_fft = tap::dsp::basic_real_fft<std::int32_t, tap::dsp::scaling::fixed>;
-    static_assert(
-        q15_fft::engine::k_max_size == q31_fft::engine::k_max_size
-            && q15_fft::engine::k_max_size
-                   == tap::dsp::basic_real_fft<std::int16_t, tap::dsp::scaling::block_floating>::engine::k_max_size
-            && q15_fft::engine::k_max_size
-                   == tap::dsp::basic_real_fft<std::int32_t, tap::dsp::scaling::block_floating>::engine::k_max_size,
-        "the four fixed-point profiles share one size bound");
-    static_assert(q15_fft::engine::k_min_size == 4, "dsptap_fft_create's lower bound is the header's");
-    constexpr int k_fixed_point_max_size = static_cast<int>(q15_fft::engine::k_max_size);
-
-    bool is_fixed_point_profile(int profile) noexcept {
-        return profile == DSPTAP_FFT_PROFILE_Q15 || profile == DSPTAP_FFT_PROFILE_Q31
-               || profile == DSPTAP_FFT_PROFILE_Q15_BFP || profile == DSPTAP_FFT_PROFILE_Q31_BFP;
+    // The size gate, per profile, is the header's own: basic_real_fft<...>::supports_size(n),
+    // the power-of-two interval [k_min_size, k_max_size] of the engine that profile runs on
+    // (fft.h, Stage 4). The header's constructor states the same range as a precondition
+    // (TAP_EXPECTS, a debug assertion that a noexcept C entry point could not turn into NULL
+    // and that evaluates to nothing in a release build), so this call is the release-mode
+    // check the header names as mandatory wherever N comes from outside: the floating
+    // profiles' range is the selected engine's (split-radix 4 … 2^30, vDSP 4 … 2^20, CMSIS
+    // 32 … 4096), the fixed-point profiles' 4 … 65536.
+    template <typename Impl>
+    dsptap_fft_s* make_fft_if_supported(int size) {
+        if (size <= 0 || !Impl::fft_type::supports_size(static_cast<std::size_t>(size))) {
+            return nullptr;
+        }
+        return new Impl(static_cast<std::size_t>(size));
     }
 
     // The double boundary stages through float buffers sized here, once: process() walks the
@@ -318,27 +320,21 @@ extern "C" {
 // -- fft --------------------------------------------------------------------------------------
 
 dsptap_fft dsptap_fft_create(int size, int profile) DSPTAP_NOEXCEPT {
-    if (size < 4 || (size & (size - 1)) != 0) {
-        return nullptr;
-    }
-    if (is_fixed_point_profile(profile) && size > k_fixed_point_max_size) {
-        return nullptr; // the header's documented maximum for the fixed-point profiles
-    }
-    const auto n = static_cast<std::size_t>(size);
     try {
+        // Each profile is gated by its own class's supports_size (make_fft_if_supported).
         switch (profile) {
         case DSPTAP_FFT_PROFILE_DOUBLE:
-            return new fft_impl<double>(n);
+            return make_fft_if_supported<fft_impl<double>>(size);
         case DSPTAP_FFT_PROFILE_FLOAT:
-            return new fft_impl<float>(n);
+            return make_fft_if_supported<fft_impl<float>>(size);
         case DSPTAP_FFT_PROFILE_Q15:
-            return new fft_impl<std::int16_t>(n);
+            return make_fft_if_supported<fft_impl<std::int16_t>>(size);
         case DSPTAP_FFT_PROFILE_Q31:
-            return new fft_impl<std::int32_t>(n);
+            return make_fft_if_supported<fft_impl<std::int32_t>>(size);
         case DSPTAP_FFT_PROFILE_Q15_BFP:
-            return new fft_impl<std::int16_t, tap::dsp::scaling::block_floating>(n);
+            return make_fft_if_supported<fft_impl<std::int16_t, tap::dsp::scaling::block_floating>>(size);
         case DSPTAP_FFT_PROFILE_Q31_BFP:
-            return new fft_impl<std::int32_t, tap::dsp::scaling::block_floating>(n);
+            return make_fft_if_supported<fft_impl<std::int32_t, tap::dsp::scaling::block_floating>>(size);
         default: // anything else is a bad argument
             return nullptr;
         }

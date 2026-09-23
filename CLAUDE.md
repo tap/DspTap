@@ -38,10 +38,16 @@ instruments (`analysis/`). See `README.md` for each asset's contract summary.
   fixed-scaling and a block-floating policy (`fft.h`, `fft/fixed_point.h`,
   `docs/fft-design.md`), each floor a measured number against the double profile. The floating
   profiles run the C++20 split-radix engine (`fft/split_radix.h`), bit-identical to the vendored
-  Ooura C it replaced; since Stage 2c the C is not part of what ships — the reference copy under
-  `tests/reference/ooura/` exists for the bit-identity gate (`tests/test_fft_parity_ooura.cpp`)
-  alone and goes once both consumers pin a tree past 2c (Decision D6); `third_party/ooura/readme.txt`
-  stays as the license record.
+  Ooura C it replaced; since Stage 4 the engine is a template parameter
+  (`basic_real_fft<Sample, Policy = detail::default_real_fft_policy_t<Sample>>`: the engine for
+  `float`/`double`, defaulting to `default_real_fft_engine_t<Sample>`, the scaling policy for
+  Q15/Q31; the accelerated engines under `fft/backends/`, each stating its size range and
+  shareability as contract numbers), and the build's selection opens an inline-namespace ABI
+  tag on `tap::dsp` (`fft_split_radix` / `fft_cmsis` / `fft_vdsp`) that every class embedding
+  the FFT by value lives in; since Stage 2c the C is not part of what ships — the reference copy
+  under `tests/reference/ooura/` exists for the bit-identity gate (`tests/test_fft_parity_ooura.cpp`)
+  alone and goes once both consumers pin a tree past 2c (Decision D6);
+  `third_party/ooura/readme.txt` stays as the license record.
 - **Real-time safe by construction.** Geometry fixed at construction, every buffer allocated
   there; processing is `noexcept` and allocation-free. Numerically fragile recursions (e.g. the
   order-48 Levinson–Durbin inside `pvoc`) run in double even in the float profile — documented

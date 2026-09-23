@@ -56,9 +56,13 @@
 // dispatch); this one is the general value-semantics check that the engine's
 // tables travel with the object, including through operator=.
 //
-// Stage 4 extension points, per Part 9: the std::span overloads equal the
-// pointer overloads, and Engine::is_shareable is what the header says. Neither
-// exists yet, so neither is asserted here.
+// Stage 4 (Part 9): k_is_shareable is what the header says — asserted below
+// per instantiation, together with the compiler-checked half (a shareable
+// engine's transforms are callable on a const engine, a non-shareable one's
+// are not; test_fft_engine.cpp holds the per-engine numbers). The std::span
+// overloads Part 9 also listed do not exist: Stage 4 added no overload to
+// the transform surface (the pointer forms are the contract every consumer
+// holds), so there is nothing to equate and nothing is asserted about them.
 
 #include <atomic>
 #include <cstddef>
@@ -74,6 +78,7 @@
 
 #include "support/signals.h"
 #include "tap/dsp/fft.h"
+#include "tap/dsp/fft/split_radix.h"
 
 // ----------------------------------------------------------------------------
 // Counting replacements for the replaceable global allocation functions
@@ -215,11 +220,13 @@ void operator delete[](void* p, std::align_val_t, const std::nothrow_t&) noexcep
 namespace {
 
     // The suite is typed over the FFT class itself, so the two scaling
-    // policies of each fixed-point profile are distinct rows.
+    // policies of each fixed-point profile are distinct rows (the second
+    // argument is the engine for the floating rows and the policy for the
+    // fixed-point ones; fft.h, "Two parameter lists in one").
     template <typename Fft>
     struct sample_of;
-    template <typename Sample, typename Scaling>
-    struct sample_of<tap::dsp::basic_real_fft<Sample, Scaling>> {
+    template <typename Sample, typename Policy>
+    struct sample_of<tap::dsp::basic_real_fft<Sample, Policy>> {
         using type = Sample;
     };
     template <typename Fft>
@@ -251,6 +258,48 @@ namespace {
     static_assert(noexcept(tap::dsp::real_fft_q31_bfp::fixed_scaling_exponent(4)));
 
     // ------------------------------------------------------------------------
+    // k_is_shareable, per instantiation, as the header states it (Stage 4):
+    // the split-radix engine and Q31 true, the two scratch-carrying
+    // accelerated engines and Q15 false. The float default's value follows
+    // the engine the build selected, so it is derived, not spelled.
+    // ------------------------------------------------------------------------
+    template <typename Fft>
+    constexpr bool expected_shareable() {
+        using sample = sample_of_t<Fft>;
+        if constexpr (std::is_same_v<sample, double>) {
+            return true;
+        }
+        else if constexpr (std::is_same_v<sample, float>) {
+            return std::is_same_v<typename Fft::engine, tap::dsp::detail::split_radix_rdft<float>>;
+        }
+        else {
+            return std::is_same_v<sample, std::int32_t>; // Q31 true, Q15 false
+        }
+    }
+
+    /// The compiler-checked half of the trait: the engine's transforms are
+    /// callable on a const engine exactly when the trait says shareable.
+    template <typename Fft>
+    constexpr bool k_engine_transforms_are_const = requires(const typename Fft::engine& e, sample_of_t<Fft>* a) {
+        e.forward_inplace(a);
+        e.inverse_inplace(a);
+    };
+
+    template <typename Fft>
+    constexpr bool shareability_is_the_headers_number() {
+        static_assert(std::is_same_v<decltype(Fft::k_is_shareable), const bool>);
+        static_assert(Fft::k_is_shareable == expected_shareable<Fft>());
+        static_assert(k_engine_transforms_are_const<Fft> == Fft::k_is_shareable);
+        return true;
+    }
+    static_assert(shareability_is_the_headers_number<tap::dsp::real_fft32>());
+    static_assert(shareability_is_the_headers_number<tap::dsp::real_fft>());
+    static_assert(shareability_is_the_headers_number<tap::dsp::real_fft_q15>());
+    static_assert(shareability_is_the_headers_number<tap::dsp::real_fft_q31>());
+    static_assert(shareability_is_the_headers_number<tap::dsp::real_fft_q15_bfp>());
+    static_assert(shareability_is_the_headers_number<tap::dsp::real_fft_q31_bfp>());
+
+    // ------------------------------------------------------------------------
     // The allocation guard.
     // ------------------------------------------------------------------------
     class allocation_guard {
@@ -274,10 +323,15 @@ namespace {
                                        tap::dsp::real_fft_q31, tap::dsp::real_fft_q15_bfp, tap::dsp::real_fft_q31_bfp>;
     TYPED_TEST_SUITE(fft_rt_test, fft_types);
 
-    // Already proved by the namespace-scope static_asserts above; this exists
-    // so the promise has a row in the test listing per profile.
+    // Already proved by the namespace-scope static_asserts above; these exist
+    // so each promise has a row in the test listing per profile.
     TYPED_TEST(fft_rt_test, TransformsAreNoexcept) {
         EXPECT_TRUE(transforms_are_noexcept<TypeParam>());
+    }
+
+    TYPED_TEST(fft_rt_test, ShareabilityIsTheHeadersNumber) {
+        EXPECT_TRUE(shareability_is_the_headers_number<TypeParam>());
+        EXPECT_EQ(TypeParam::k_is_shareable, expected_shareable<TypeParam>());
     }
 
     // The guard itself must see allocations, or every test below passes for

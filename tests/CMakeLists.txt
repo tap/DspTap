@@ -115,10 +115,14 @@ endfunction()
 #     apiece, pinning target-independent design numbers;
 #   - MultitoneAnalysis: the double joint-fit instrument floor, same reason.
 # Everything else — every float32 suite, the double real_fft contract suite,
-# every float-tracks-double oracle check, the FFT backend suites (CMSIS-DSP
-# Helium against the split-radix engine on the M55) and the Stage 2b routing
-# proof (test_fft_routing.cpp: basic_real_fft is the engine byte for byte
-# where no backend is selected), fir_kernels over float/Q15/Q31, decimate,
+# every float-tracks-double oracle check, the FFT engine suites
+# (test_fft_backend.cpp, typed over the engines the leg can build: the
+# split-radix engine everywhere and CMSIS-DSP Helium beside it on the M55;
+# test_fft_engine.cpp, the Stage 4 engine-parameter contract — default
+# selection, ABI tag, per-engine size ranges, shareability) and the routing
+# proof (test_fft_routing.cpp: basic_real_fft is its engine byte for byte,
+# for the split-radix engine named explicitly on every leg and for the
+# selected default), fir_kernels over float/Q15/Q31, decimate,
 # sample_traits, quantize, the cheap Kaiser tests, SineAnalysis, and whatever
 # a later PR appends — runs on target.
 # ------------------------------------------------------------------------------
@@ -129,6 +133,7 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_fft.cpp
         test_fft_arith.cpp
         test_fft_backend.cpp
+        test_fft_engine.cpp
         test_fft_fixed.cpp
         test_fft_routing.cpp
         test_fir_kernels.cpp
@@ -360,4 +365,47 @@ if(NOT TAP_DSP_BARE_METAL)
 endif()
 # ==============================================================================
 # END Stage 6 addition
+# ==============================================================================
+
+# ==============================================================================
+# BEGIN Stage 4 addition (docs/audit-fft-and-code-smells.md, D4; audit F4): the
+# two-image test of the ABI tag. One translation unit, tests/abi/abi_tag_image.cpp,
+# built into two loadable modules — image A with the configured build's own
+# defines (tap::dsp: fft_split_radix on linux, fft_vdsp on macOS), image B
+# with TAP_DSP_FFT_CMSIS and tests/abi/stub/ first on the include path, so
+# fft.h selects a stub engine with a different object layout (tag fft_cmsis)
+# — and a gtest host (test_fft_abi_tag.cpp) that dlopens both with
+# RTLD_GLOBAL and asks each image what its embedders see. Image B must NOT
+# link tap::dsp: the target's INTERFACE definitions would add the host's own
+# backend define (TAP_DSP_FFT_ACCELERATE on macOS) beside TAP_DSP_FFT_CMSIS
+# and fft.h rejects the pair; it takes the include directory directly, like
+# the parity targets. Hosted, non-Windows only: dlopen and MODULE libraries,
+# and the coalescing under test has no path on Windows (nothing is exported
+# without __declspec); the QEMU legs have no loader. Keep this block at the
+# end of the file.
+# ==============================================================================
+if(NOT TAP_DSP_BARE_METAL AND NOT WIN32)
+    add_library(tap_dsp_abi_image_a MODULE abi/abi_tag_image.cpp)
+    target_link_libraries(tap_dsp_abi_image_a PRIVATE tap::dsp tap_dsp_warnings)
+
+    add_library(tap_dsp_abi_image_b MODULE abi/abi_tag_image.cpp)
+    target_include_directories(tap_dsp_abi_image_b BEFORE PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/abi/stub)
+    target_include_directories(tap_dsp_abi_image_b PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_compile_features(tap_dsp_abi_image_b PRIVATE cxx_std_20)
+    target_compile_definitions(tap_dsp_abi_image_b PRIVATE TAP_DSP_FFT_CMSIS)
+    target_link_libraries(tap_dsp_abi_image_b PRIVATE tap_dsp_warnings)
+
+    tap_dsp_add_gtest_executable(tap_dsp_fft_abi_tag
+        SOURCES test_fft_abi_tag.cpp)
+    add_dependencies(tap_dsp_fft_abi_tag tap_dsp_abi_image_a tap_dsp_abi_image_b)
+    target_compile_definitions(tap_dsp_fft_abi_tag PRIVATE
+        "TAP_DSP_ABI_IMAGE_A=\"$<TARGET_FILE:tap_dsp_abi_image_a>\""
+        "TAP_DSP_ABI_IMAGE_B=\"$<TARGET_FILE:tap_dsp_abi_image_b>\"")
+    target_link_libraries(tap_dsp_fft_abi_tag PRIVATE
+        tap::dsp
+        tap_dsp_warnings
+        ${CMAKE_DL_LIBS})
+endif()
+# ==============================================================================
+# END Stage 4 addition
 # ==============================================================================

@@ -328,6 +328,47 @@ same-binary on macOS; CMSIS compile-only on M55 (it cannot run on a host, and no
 CMSIS-vs-Ooura parity anywhere today; that gap is recorded, not closed, by this stage). The
 `m55` and `m55-ooura` baseline keys are what make a backend regression visible.
 
+**Landed** (wave 4, tap/DspTap#35; design record in `docs/fft-design.md`, "Stage 4").
+Deviations from the text above, each recorded there:
+- **Tag names.** `fft_split_radix` / `fft_cmsis` / `fft_vdsp`, not `fft_ooura` / … : the plan's
+  name predates 2c, when the default became the split-radix engine. Opened as
+  `namespace tap::dsp::inline TAP_DSP_FFT_ABI` in `fft.h`, `pvoc.h` and `log_mel.h`.
+- **Second parameter, two meanings.** `basic_real_fft<Sample, Policy>`: the engine for the
+  floating profiles (default `default_real_fft_engine_t<Sample>`, one selection point in
+  `fft.h`), the Scaling policy for the fixed-point ones, so no spelling in MuTap or the capi
+  changes; `basic_real_fft<float | double, scaling::fixed>` (the pre-Stage-4 spelling; no
+  in-tree code writes it since the #35 fix pass) resolves to the selected engine and is a
+  distinct type from the one-argument form, tolerated for one consumer cycle (D4).
+- **The fixed-point profiles carry the tag** (a partial specialization lives beside its
+  primary) although their layout does not depend on the selection; cost stated in the design
+  note (a harmless coalescing prevented; a link error instead of a silent merge).
+- **`is_shareable` is `k_is_shareable`** (house `k_` prefix), and shareable implies const: a
+  shareable engine's transforms are `const` (Q31's became `const` behind `requires`-constrained
+  overloads), `static_assert`ed by the class, the converse a convention the tests pin; the
+  class's transforms stay non-const (N11).
+- **CMSIS parity is not compile-only on the M55: it runs there**, under QEMU, as it has since
+  that leg landed (main's backend test already compared the CMSIS default to the split-radix
+  reference); what #35 adds is the two engines as typed rows in one binary
+  (`fft_backend_parity/cmsis` beside `/split_radix`) and the named split-radix routing row on
+  that leg. Nowhere on a host and nowhere on hardware; recorded, not closed.
+- **Construction "checks" the range as the house precondition** (`TAP_EXPECTS`: debug
+  assertion, nothing in release, STYLE.md §4), with `supports_size(n)` as the constexpr,
+  release-mode predicate pinned by `static_assert`s on every leg; the CMSIS init status is
+  checked the same way and the `uint16_t` narrowing is guarded. Not a release-mode check:
+  out of range in release remains a precondition violation (decided, 35a/F1; no defined
+  fallback in the transforms), and `supports_size` is the mandatory gate wherever N comes
+  from configuration — the capi applies it per profile since the fix pass, MuTap's config
+  path is on the bump checklist in `docs/fft-design.md` (with the real embedder list:
+  `partitioned_fdaf`, `partitioned_fdkf`, `pem_afc` + `Core`, `residual_suppressor`,
+  `nn_suppressor`; `aec_chain` inherits the tag through its template arguments; no forward
+  declarations of the tagged classes anywhere).
+- **No `std::span` overloads** (Part 9 listed them as a Stage 4 assertion): none were added,
+  so none are asserted.
+- **The Apple same-binary *microbenchmark*** still needs a Mac; the same-binary parity *test*
+  exists (the macOS leg's typed backend suite).
+- **`TAP_EXPECTS` and the two duplicated `fft.h` paragraphs** (Stage 6 items that live inside
+  `fft.h`) landed here; nothing else of Stage 6.
+
 ### Stage 5 — The packed-spectrum view, DspTap only
 `fft/spectrum.h`: a non-owning view whose docstring carries the numeric definition
 (`bin[k] = a[2k] + i a[2k+1]`, DC at `a[0]`, Nyquist at `a[1]`, `W = exp(+2πi/N)`, inverse
@@ -348,7 +389,9 @@ consolidation with the fingerprint harness: association order must be preserved,
 log_mel's numpy pin only bites above 1e-6. Do **not** delete `TAP_DSP_CHANNEL_PARALLEL` /
 `TAP_DSP_CP_MIN_CHANNELS` until SampleRateTap and RatioTap (not on disk) have been grepped;
 README says they are consumed there. `TAP_EXPECTS` lands here for `fft.h`'s power-of-two
-precondition only; a repo-wide precondition policy is its own plan. The capi's pre-existing
+precondition only; a repo-wide precondition policy is its own plan. (Landed at Stage 4
+instead, #35, together with the size-range precondition and the two duplicated `fft.h`
+paragraphs: `include/tap/dsp/detail/expects.h`, a debug assertion per STYLE.md §4.) The capi's pre-existing
 defects from Part 2 (`void*` handles, exceptions crossing `extern "C"` in the old entry points,
 allocation in the decimator's process path) are owned here too.
 
@@ -422,7 +465,7 @@ allocation in the decimator's process path) are owned here too.
 | 3a | traits battery incl. double; decimate re-pinned Q15-vs-double | pin bump, suite green | re-pin |
 | 3b | Part 9 fixed-point battery on hosts and all four QEMU legs; fixed-point scenarios seeded; `.text` ceilings | none | delete header |
 | 3c | instruments typed; capi/notebook executed | none | per item |
-| 4 | typed engine tests; macOS same-binary parity | fingerprint identical | re-pin |
+| 4 | typed engine tests; macOS same-binary parity — **landed** (#35): typed over the engines the leg builds, CMSIS beside split-radix on the M55, vDSP beside it on macOS; icount +0.00 % on every key without a re-record | fingerprint identical (on the bump; MuTap's own embedders adopt the tag in `tap::mu`) | re-pin |
 | 5 | pinned pvoc/log_mel tests | per-header fingerprint + icount 0% | per header |
 | 6 | fingerprint on Hann/pi change | pin bump | per item |
 
@@ -1053,6 +1096,8 @@ opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
   outside that range (the existing battery started at 64 and never saw it; N = 4 hard-faults).
   Owned by Stage 4: the engine reports its supported range, construction checks it, and the
   backend's docstring states it as a contract number. Until then the oracle carries the range.
+  Done at #35 (`fft/backends/cmsis.h`: `k_min_size = 32`, `k_max_size = 4096`, the init
+  status checked; the oracle reads the class's range).
 - **Contraction and the single-TU fingerprint (wave 4, Stage 6).** `tools/fingerprint`
   compiles pvoc, log_mel and psola into one TU, so they share one float FFT instantiation.
   Under g++'s GNU-mode default `-ffp-contract=fast` on FMA hardware, contraction happens after
@@ -1064,6 +1109,38 @@ opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
   do not contract across statements, and the QEMU builds (GCC, VFMA) were identical as well.
   The same holds for any consumer TU that combines primitives; MuTap's harness today includes
   only `fft.h` and `nn.h`, which Stage 6 leaves untouched.
+- **Wave-4 amendments (Stage 4, tap/DspTap#35).** (1) The ABI tag is named for what ships:
+  `fft_split_radix` / `fft_cmsis` / `fft_vdsp` (`fft_ooura` predated 2c). (2) The engine
+  argument alone already separates `basic_real_fft<float>`'s own weak symbols between two
+  differently-built images; the tag is what separates the *embedders'* (`basic_pvoc`,
+  `basic_log_mel`, MuTap's `partitioned_fdaf` …), which is the F4 hazard as stated; measured
+  with `arm-none-eabi-nm` on one TU built for the M55 with and without `TAP_DSP_FFT_CMSIS`: 50 of
+  50 weak symbol names shared before, 0 of 65 after; and in one process (`tests/test_fft_abi_tag.cpp`,
+  two images from one TU, `RTLD_GLOBAL`) an untagged embedder in the second image ran the
+  first image's code (layout seen 80 vs real 184) while the tagged one was immune. MuTap's
+  embedders live in `tap::mu` and must open the same inline namespace on their bump (checklist
+  in the design note). (3) The fixed-point profiles carry the tag because a
+  partial specialization lives beside its primary; their layout does not depend on the
+  selection, so the tag costs a duplicate instantiation per differently-built image and buys
+  nothing they needed. (4) **The ratchet counts the harness's own fold, and the fold's register
+  allocation is a function of everything inlined into `main`.** Moving the CMSIS engine's
+  construction from an out-of-line `make_floating_engine<float>` to an inlined constructor
+  moved the `m55` float keys by +12.00 % / +11.47 % with the transform byte-identical (checksums
+  equal, CMSIS archive identical, wrapper loops identical instruction for instruction): GCC
+  spilled the fold's 64-bit hash and rematerialized the FNV prime, +6 instructions per sample.
+  **The harness was the defect**: the fold's codegen depended on what was inlined before it,
+  and the recorded baselines had reached the CMSIS constructor through an out-of-line
+  `make_floating_engine<float>`. Resolved at #35 without a re-record by making
+  `bench/icount/icount_main.cpp` construct the transform under test through a non-inlined
+  `make_fft()` in both `run()` bodies — the baseline's shape — so the count is the transform
+  plus a fixed fold: m55 −2 / +38 instructions against the float baselines, +5 (the call) on
+  every fixed-point scenario, every key inside the band. A first version had instead put a
+  `noinline` attribute on the two accelerated engines' constructors; the hostile review
+  measured the harness fix landing closer with nothing in the library, and the attribute
+  costing 860 bytes of MinSizeRel `.text` on the m55 f32 probe; shipping code carries no
+  benchmark-shaped attribute.
+  (5) "CMSIS compile-only on M55" (Stage 4 text, P24) understated it: the CMSIS rows run under
+  QEMU on that leg beside the split-radix rows; still nowhere on a host or on hardware.
 - **Stage 2b's MuTap gate "icount ratchet at 0% delta on m33 and hexagon (0% is the gate,
   because nothing numeric changed)" was a prediction that did not hold** (wave 3; recorded at
   the Stage 2c fix pass, tap/DspTap#32). Measured on the MuTap bump to DspTap `ae0c027`
@@ -1097,9 +1174,18 @@ consumers; the inverse has its own per-stage scaling; CMSIS compatibility of the
 convention is decided in 3b.
 
 **D4. Engine as a template parameter with a build-selected default, plus an inline-namespace
-ABI tag derived from the selection.** The default alone leaves the layout-by-define hazard in
-every class that embeds the FFT by value; the tag closes it. Alternative kept on record: no
-default, consumers name the engine.
+ABI tag derived from the selection. Landed (#35).** The default alone leaves the layout-by-define
+hazard in every class that embeds the FFT by value; the tag closes it — for DspTap's own
+embedders at #35, for MuTap's on its bump. Tag names `fft_split_radix` / `fft_cmsis` /
+`fft_vdsp`; the second template argument keeps meaning "scaling policy" on the fixed-point
+profiles, which therefore carry the tag too (recorded in Part 13). **Expiry, D5-style (35a/F3):**
+`basic_real_fft<float | double, scaling::fixed>`, the pre-Stage-4 spelling, resolves to the
+selected engine as a second type with identical code (+2,949 B x86-64 / +1,995 B M55 of duplicate
+wrappers when both are instantiated); no in-tree writer remains after the #35 fix pass (the
+capi's seam uses `detail::default_real_fft_policy_t`), and the resolution is tolerated for one
+consumer cycle — until MuTap and MuTap-Max pin a tree containing #35 — then
+`detail::floating_engine_of<Sample, scaling::fixed>` goes and the spelling becomes a
+`static_assert`. Alternative kept on record: no default, consumers name the engine.
 
 **D5. Float-I/O-on-double overloads: `[[deprecated]]` for one consumer cycle, then deleted.**
 Not gated on AmbiTap, which is not on disk and keeps its own wrapper per README.

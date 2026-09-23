@@ -102,9 +102,12 @@ typedef struct dsptap_decimator_s* dsptap_decimator;
 /// portable int32 kernel on every host (fft/fixed_point.h): its output for a given input is
 /// the same bit pattern everywhere, whatever dsptap_fft_backend() says about float32.
 ///
-/// Size: the floating profiles take any power of two >= 4; the four fixed-point profiles take
-/// a power of two in [4, 65536] (fft/fixed_point.h, k_min_size / k_max_size, asserted by the
-/// header's constructor), and dsptap_fft_create returns NULL above that bound rather than
+/// Size: dsptap_fft_create returns NULL unless basic_real_fft<profile>::supports_size(size),
+/// the power-of-two interval [k_min_size, k_max_size] of the engine the profile runs on (fft.h,
+/// Stage 4): the floating profiles' range is the selected engine's — split-radix 4 … 2^30, vDSP
+/// 4 … 2^20, CMSIS-DSP 32 … 4096 — and the four fixed-point profiles' is [4, 65536]
+/// (fft/fixed_point.h). The header's constructor states the same range as a debug-assertion
+/// precondition; this entry point is the release-mode gate, so it returns NULL rather than
 /// hand out a handle the header does not support.
 #define DSPTAP_FFT_PROFILE_DOUBLE 0
 #define DSPTAP_FFT_PROFILE_FLOAT 1
@@ -115,8 +118,8 @@ typedef struct dsptap_decimator_s* dsptap_decimator;
 
 /// Create a real FFT of `size` points in the given profile. All workspace is allocated here; the
 /// transforms below are allocation-free.
-/// @param size     a power of two >= 4; for the fixed-point profiles at most 65536 (see the
-///                 profile codes)
+/// @param size     a power of two inside the profile's engine range (see the profile codes:
+///                 4 … 2^30 split-radix, 4 … 2^20 vDSP, 32 … 4096 CMSIS, 4 … 65536 fixed point)
 /// @param profile  one of the DSPTAP_FFT_PROFILE_* codes
 /// @return the handle, or NULL on a bad size, an unknown profile, or allocation failure
 DSPTAP_API dsptap_fft dsptap_fft_create(int size, int profile) DSPTAP_NOEXCEPT;

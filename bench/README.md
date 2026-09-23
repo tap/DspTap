@@ -342,6 +342,48 @@ python3 scripts/icount.py --merge a.json b.json    # fold per-key files into one
 | 4 (engine as a parameter) | a backend regression on the deployed `m55` profile, or the `m55-ooura` fallback quietly getting slower |
 | 6 (hygiene) | the hygiene pass slowing the hot path unnoticed |
 
+**Stage 4 (engine parameter + ABI tag), tap/DspTap#35: what the ratchet
+caught, and a harness defect fixed without a re-record.** Measured locally
+with the CI toolchain (arm-none-eabi-gcc 13.2.1, qemu 8.2.2, the same
+plugin), and reproduced to the instruction by the hostile review. After the
+backends moved out of `fft.h` and every engine took its size in its
+constructor, the `m55` key read `rfft_f32_512` 58,667,632 vs 52,382,331
+(+12.00 %) and `rfft_f32_2048` 61,148,069 vs 54,858,120 (+11.47 %), with
+every fixed-point scenario at +0.00 % and both float checksums identical to
+the baseline binaries'. The CMSIS archive was byte-identical and the
+wrapper's loops identical instruction for instruction. **The defect was the
+harness.** The count includes the bench's own FNV-1a fold, and the fold's
+codegen depended on what was inlined before it in `run()`: the recorded
+baselines were taken when the CMSIS engine's construction reached the
+workload through an out-of-line `make_floating_engine<float>`; with the
+constructor inlined into `run()` (vector allocation, memset,
+`arm_rfft_fast_init_f32`, EH cleanup) GCC's register allocation changed and
+the fold went from 7 to 10 instructions per element (the 64-bit hash's low
+word spilled, the FNV prime rematerialized), i.e. +6 per sample per
+iteration, exactly the delta. A first version of the fix put a `noinline`
+attribute on the two accelerated engines' constructors in shipping code
+(m55 +5 / +45); the review measured that the harness fix alone lands
+closer and costs nothing in the library, and that the attribute added 860
+bytes of MinSizeRel `.text` to the one-construction m55 f32 probe. So:
+`bench/icount/icount_main.cpp` constructs the transform under test through
+a non-inlined `make_fft()` in both `run()` bodies — the baseline's own
+shape — and shipping code carries no benchmark-shaped attribute. With that
+and nothing else (all five keys, `rfft_f32_512` / `rfft_f32_2048` /
+`rfft_q15_512` / `rfft_q31_512` / `rfft_q31_2048`, delta vs baseline):
+m55 −2 / +38 / +5 / +5 / +5; m33 −10,236 (−0.01 %) / −5,116 (−0.00 %) /
+−2,043 / +5 / +5; m55-ooura −8,193 (−0.01 %) / −1,025 (−0.00 %) / +5 / +5 /
++5; m4f +6 / +6 / +5 / +5 / +5; m4-softfp +4 / −1,020 / +5 / +5 / +5. The
++5 on every fixed-point scenario and on the M4 float scenarios is the
+factory call itself. No baseline moves. `.text` probes (MinSizeRel, `size
+-A`), all under their ceilings and none re-recorded: m55 f32 **106,725**
+(−932 vs the recorded 107,657), Q15 27,105 (+8), Q31 26,553 (−40); m33
+44,009 / 31,113 / 30,593 (+8 / +8 / −40); m55-ooura 39,281 / 27,105 /
+26,553 (0 / +8 / −40); m4f 44,601 / 31,745 / 31,209 (0 / +64 / 0);
+m4-softfp identical to the record. Lesson, recorded in
+`docs/audit-fft-and-code-smells.md` Part 13: a workload that constructs its
+engine in the function it transforms in measures its own register
+allocation as much as the transform; this harness no longer does.
+
 ## Provenance
 
 `icount/icount_main.cpp`, `scripts/icount.py` and

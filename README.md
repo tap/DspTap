@@ -13,23 +13,55 @@ RatioTap:
 `include/tap/dsp/fft.h` is one real-FFT contract — the packing, the
 `W = exp(+2πi/N)` sign convention, the unnormalized in-place inverse, the
 numbers in the tables below — over four sample types, with the engine behind
-each profile chosen once, at construction, by the sample type and the build:
+each floating profile a **template parameter** since Stage 4 of the audit
+(`basic_real_fft<Sample, Policy = detail::default_real_fft_policy_t<Sample>>`,
+where the second argument is the engine for `float` / `double` — defaulting
+to `default_real_fft_engine_t<Sample>`, chosen once by the sample type and
+the build — and the scaling policy for Q15 / Q31; any engine can be named
+explicitly beside the default in the same binary), and each engine stating
+its size range and shareability as contract numbers:
 
-| Engine | Profiles | Selected by | What it is |
-|---|---|---|---|
-| split-radix (`fft/split_radix.h`) | `double`; `float` unless a backend is on | default | the C++20 transliteration of Ooura's `rdft`, **bit-identical** to the C it replaced (both precisions; `tests/test_fft_parity_ooura.cpp`, against the reference copy under `tests/reference/ooura/`, which is not part of what ships), tables built in the constructor |
-| CMSIS-DSP Helium | `float` | `TAP_DSP_FFT_CMSIS` (default ON for the bare-metal Cortex-M55 profile) | Arm's radix-4/8 MVE real FFT, re-presented in the same contract to float epsilon; on the `m55` icount key the vendored C (to which the split-radix engine is bit-identical) executes 1.81× (N = 512) / 1.97× (N = 2048) the instructions of the CMSIS build over the whole ratchet scenario, transform plus the class's copy loop, 2/N scaling and checksum ([run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811), `bench/README.md`); MuTap's transform-only figure on the C was ~3×, not re-measured here |
-| Apple vDSP | `float` | `TAP_DSP_FFT_ACCELERATE` (default ON on Apple) | `vDSP_fft_zrip`, same contract to float epsilon; ~3× faster per transform on Apple Silicon is MuTap's transform-only measurement on the vendored C (tap/MuTap#31), not re-measured in this repo (the same-binary comparison is Stage 4) |
-| int32 radix-4 (`fft/fixed_point.h`) | Q15, Q31 | the sample type | one kernel over Q1.30 twiddles under two scaling policies, returning an exponent |
+| Engine | Profiles | Selected by | Size range | Shareable | What it is |
+|---|---|---|---|---|---|
+| split-radix (`fft/split_radix.h`) | `double`; `float` unless a backend is on | default | 4 … 2^30 | yes | the C++20 transliteration of Ooura's `rdft`, **bit-identical** to the C it replaced (both precisions; `tests/test_fft_parity_ooura.cpp`, against the reference copy under `tests/reference/ooura/`, which is not part of what ships), tables built in the constructor |
+| CMSIS-DSP Helium (`fft/backends/cmsis.h`) | `float` | `TAP_DSP_FFT_CMSIS` (default ON for the bare-metal Cortex-M55 profile) | **32 … 4096** (CMSIS-DSP's own init table; the constructor checks the init status since Stage 4 — outside this range the library never initialized, and N = 4 hard-faulted) | no | Arm's radix-4/8 MVE real FFT, re-presented in the same contract to float epsilon; on the `m55` icount key the vendored C (to which the split-radix engine is bit-identical) executes 1.81× (N = 512) / 1.97× (N = 2048) the instructions of the CMSIS build over the whole ratchet scenario, transform plus the class's copy loop, 2/N scaling and checksum ([run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811), `bench/README.md`); MuTap's transform-only figure on the C was ~3×, not re-measured here |
+| Apple vDSP (`fft/backends/accelerate.h`) | `float` | `TAP_DSP_FFT_ACCELERATE` (default ON on Apple) | 4 … 2^20 | no | `vDSP_fft_zrip`, same contract to float epsilon; ~3× faster per transform on Apple Silicon is MuTap's transform-only measurement on the vendored C (tap/MuTap#31), not re-measured in this repo (the same-binary parity *test* exists since Stage 4; the microbenchmark needs a Mac) |
+| int32 radix-4 (`fft/fixed_point.h`) | Q15, Q31 | the sample type (the second template argument is the scaling policy here) | 4 … 65536 | Q31 yes, Q15 no | one kernel over Q1.30 twiddles under two scaling policies, returning an exponent |
 
 The two float32 backends are mutually exclusive, apply to `float` only (double
 is always the split-radix engine, the golden model), and conjugate imaginary
 bins and rescale so every intermediate spectrum matches the default build to
 single-precision rounding — so the whole double-precision test battery stays a
 valid oracle for the accelerated float paths. `tests/test_fft_backend.cpp`
-pins each backend to the split-radix float engine bin-for-bin at the certified
-geometries (N = 512, 2048); `tests/test_fft_routing.cpp` pins `basic_real_fft`
-to the engine byte for byte where no backend is on.
+is typed over the engines the host can build and pins each to the split-radix
+float engine bin-for-bin at the certified geometries (N = 512, 2048) **in one
+binary** — vDSP beside split-radix on the macOS leg, CMSIS beside it on the
+M55 leg; `tests/test_fft_routing.cpp` pins `basic_real_fft` to the split-radix
+engine byte for byte on every leg (named explicitly) and to the selected
+default.
+
+**Engine parameter and ABI tag (Stage 4 of the audit, tap/DspTap#35).** The
+second template argument is the engine for `float` / `double` and the scaling
+policy for Q15 / Q31, so every spelling keeps compiling: `real_fft32` is
+`basic_real_fft<float, default_real_fft_engine_t<float>>`; an explicit
+`basic_real_fft<float, detail::split_radix_rdft<float>>` runs the split-radix
+engine on a build whose default is vDSP or CMSIS; `basic_real_fft<float,
+scaling::fixed>`, the pre-Stage-4 spelling, still names the default engine
+(as a distinct type). The class re-exports the engine's `k_min_size` /
+`k_max_size` / `k_is_shareable`, offers `supports_size(n)`, and requires
+`supports_size(size)` at construction (`TAP_EXPECTS`: a debug assertion,
+STYLE.md §4; `supports_size` is the release-mode query). The build's
+selection also opens an inline namespace on `tap::dsp` — `fft_split_radix`,
+`fft_cmsis` or `fft_vdsp` — that `basic_real_fft`, `pvoc` and `log_mel` are
+defined in: lookup is unchanged, but the mangled names of the classes whose
+layout follows the selected engine now carry it, so two images built with
+different defaults cannot coalesce each other's weak symbols (audit F4;
+measured: 50/50 weak symbol names shared between the two builds before,
+0/65 after, and in one process an embedder outside the tag ran the other
+image's code while the same embedder inside it did not —
+`tests/test_fft_abi_tag.cpp`; `docs/fft-design.md`, "Stage 4"). A consumer class that embeds the FFT by
+value closes the same exposure by opening the same namespace in its own
+(`namespace tap::mu::inline TAP_DSP_FFT_ABI` for MuTap, on its bump).
 
 **Migration note for consumers (Stage 2b of the audit).** What changed: the
 words. `basic_real_fft<double>` and `basic_real_fft<float>` now hold a
@@ -119,9 +151,11 @@ Key contract points (full detail in the header docstring):
 - **Normalization**: `*_inplace` inverse is unnormalized (multiply by `2/N`);
   the out-of-place `inverse()` applies the `2/N` for you.
 - Transforms are `noexcept` and allocation-free after construction — real-time
-  safe. Size must be a power of two, `≥ 4`, fixed at construction (the
-  fixed-point profiles state `≤ 65536` as well; Q15 allocates an int32 work
-  buffer of N at construction, Q31 transforms in place).
+  safe. Size must be a power of two inside the engine's range (the table
+  above; `supports_size(n)`), fixed at construction (Q15 allocates an int32
+  work buffer of N at construction, Q31 transforms in place).
+- One transform at a time per object unless `k_is_shareable` says otherwise
+  for the engine in use (split-radix and Q31: yes; vDSP, CMSIS and Q15: no).
 
 ## `tap::dsp::yin` — YIN pitch detector
 
