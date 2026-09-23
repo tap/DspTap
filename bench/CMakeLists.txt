@@ -13,29 +13,13 @@
 # throughout, never by CMAKE_CROSSCOMPILING: a Linux-arm64 cross build is
 # host-class and gets the double scenario; the Cortex-M legs are not.
 #
-# TAP_DSP_BENCH_ENGINE selects the engine everything here measures
-# (bench_common.h): basic_real_fft (what ships: the split-radix engine, or
-# CMSIS / vDSP behind the class for float where the build says so; the
-# default) or reference_c (the vendored C called directly). From Stage 2b
-# until 2c the float icount scenarios and the float size probe are also built
-# against the C under a `_c` suffix, so every bench run at the default reports
-# both — unless this variable is already reference_c, in which case the
-# bare-keyed binaries are the C and the `_c` pairs are not built (same rule in
-# icount/).
-set(TAP_DSP_BENCH_ENGINE basic_real_fft CACHE STRING
-    "FFT engine the benchmark scenarios measure (basic_real_fft or reference_c)")
-# Said in every configure log, because the value reference_c kept its
-# spelling across the flip with a new meaning: a build directory configured
-# before Stage 2b carries it as the old default (then: the class as built)
-# and would otherwise measure the C on the gated keys without a word.
-if(TAP_DSP_BENCH_ENGINE STREQUAL "reference_c")
-    message(STATUS "TAP_DSP_BENCH_ENGINE=reference_c: the bare-keyed bench binaries measure the vendored C "
-                   "directly and no `_c` pair is built; a cache from before Stage 2b holds this value as its "
-                   "old default, so reconfigure with -UTAP_DSP_BENCH_ENGINE to measure what ships")
-else()
-    message(STATUS "TAP_DSP_BENCH_ENGINE=${TAP_DSP_BENCH_ENGINE}: the bare-keyed bench binaries measure what ships "
-                   "(basic_real_fft as built); the `_c` pairs measure the vendored C")
-endif()
+# Everything here measures tap::dsp::basic_real_fft as built (bench_common.h):
+# the split-radix engine, or CMSIS / vDSP behind the class for float where the
+# build says so, and the int32 kernel for the fixed-point profiles. From
+# Stage 2b until 2c a TAP_DSP_BENCH_ENGINE cache variable could also point the
+# bench at the vendored C, and the float scenarios and probe were built a
+# second time against it under a `_c` suffix; Stage 2c retired the C from the
+# shipping tree and that mechanism with it (README.md).
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Generic")
     set(_tap_dsp_bench_host_class OFF)
@@ -45,8 +29,6 @@ endif()
 
 if(_tap_dsp_bench_host_class)
     add_executable(tap_dsp_bench_fft bench_fft.cpp)
-    target_compile_definitions(tap_dsp_bench_fft PRIVATE
-        TAP_DSP_BENCH_ENGINE=${TAP_DSP_BENCH_ENGINE})
     target_include_directories(tap_dsp_bench_fft PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(tap_dsp_bench_fft PRIVATE
         tap::dsp
@@ -55,32 +37,28 @@ endif()
 
 add_subdirectory(icount)
 
-# Size probes: name:precision:n:engine, the same profiles as the icount
-# scenarios at N = 512 (the ceilings are stated per profile, not per N). The
-# float probe builds twice, what ships and the vendored C (`_c`), so bench.yml
-# reports the C's .text beside the shipping probe's until Stage 2c retires
-# the C; the ceiling applies to the bare probe (bench/README.md, "Sizes").
-# The `_c` probe is skipped when the engine is already reference_c, exactly
-# as icount/ skips the `_c` scenarios: the probe would be the C compared to
-# itself.
-set(_tap_dsp_size_probes rfft_f32_512:0:512:${TAP_DSP_BENCH_ENGINE})
-if(NOT TAP_DSP_BENCH_ENGINE STREQUAL "reference_c")
-    list(APPEND _tap_dsp_size_probes rfft_f32_512_c:0:512:reference_c)
-endif()
+# Size probes: name:precision:n, the same profiles as the icount scenarios at
+# N = 512 (the ceilings are stated per profile, not per N); precision codes as
+# in icount_main.cpp (0 float, 1 double, 2 Q15, 3 Q31). The float probe is the
+# Part 4 `.text` assertion for the float instantiation; the two fixed-point
+# probes are Stage 3b's. Each key in bench.yml carries a ceiling per probe
+# (bench/README.md, "Sizes").
+set(_tap_dsp_size_probes
+    rfft_f32_512:0:512
+    rfft_q15_512:2:512
+    rfft_q31_512:3:512)
 if(_tap_dsp_bench_host_class)
-    list(APPEND _tap_dsp_size_probes rfft_f64_512:1:512:${TAP_DSP_BENCH_ENGINE})
+    list(APPEND _tap_dsp_size_probes rfft_f64_512:1:512)
 endif()
 foreach(_probe IN LISTS _tap_dsp_size_probes)
     string(REPLACE ":" ";" _parts "${_probe}")
     list(GET _parts 0 _name)
     list(GET _parts 1 _precision)
     list(GET _parts 2 _n)
-    list(GET _parts 3 _engine)
     add_executable(tap_dsp_size_probe_${_name} size_probe.cpp)
     target_compile_definitions(tap_dsp_size_probe_${_name} PRIVATE
         TAP_DSP_SC_PRECISION=${_precision}
-        TAP_DSP_SC_N=${_n}
-        TAP_DSP_BENCH_ENGINE=${_engine})
+        TAP_DSP_SC_N=${_n})
     target_include_directories(tap_dsp_size_probe_${_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(tap_dsp_size_probe_${_name} PRIVATE
         tap::dsp

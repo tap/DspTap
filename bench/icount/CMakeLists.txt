@@ -3,11 +3,17 @@
 # are what scripts/icount.py compares. The scenario name (after the
 # tap_dsp_icount_ prefix) is the key in bench/baselines.json.
 #
-# Entries are name:precision:n — precision 0 = float, 1 = double (see
-# icount_main.cpp). Adapted from MuTap's bench/icount/CMakeLists.txt.
+# Entries are name:precision:n — precision 0 = float, 1 = double, 2 = Q15,
+# 3 = Q31 (see icount_main.cpp). The float pair is Stage 1b's; the three
+# fixed-point scenarios are the ones Stage 3b specified (audit Part 11),
+# seeded at Stage 2c, and run on every leg: fixed point is a profile on the
+# soft-float M4 too. Adapted from MuTap's bench/icount/CMakeLists.txt.
 set(_tap_dsp_icount_scenarios
     rfft_f32_512:0:512
-    rfft_f32_2048:0:2048)
+    rfft_f32_2048:0:2048
+    rfft_q15_512:2:512
+    rfft_q31_512:3:512
+    rfft_q31_2048:3:2048)
 
 # The double scenario is host-class only: on the bare-metal Cortex-M legs
 # double is soft-float, which is a correctness check elsewhere in the repo but
@@ -16,15 +22,14 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Generic")
     list(APPEND _tap_dsp_icount_scenarios rfft_f64_512:1:512)
 endif()
 
-# One scenario binary: tap_dsp_icount_<key>, measuring <engine>
-# (bench_common.h: basic_real_fft or reference_c) over precision/n.
-function(tap_dsp_add_icount_scenario _key _precision _n _engine)
+# One scenario binary: tap_dsp_icount_<key>, measuring basic_real_fft as
+# built (bench_common.h) over precision/n.
+function(tap_dsp_add_icount_scenario _key _precision _n)
     add_executable(tap_dsp_icount_${_key} icount_main.cpp)
     target_compile_definitions(tap_dsp_icount_${_key} PRIVATE
         TAP_DSP_SC_NAME="${_key}"
         TAP_DSP_SC_PRECISION=${_precision}
-        TAP_DSP_SC_N=${_n}
-        TAP_DSP_BENCH_ENGINE=${_engine})
+        TAP_DSP_SC_N=${_n})
     target_include_directories(tap_dsp_icount_${_key} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
     target_link_libraries(tap_dsp_icount_${_key} PRIVATE
         tap::dsp
@@ -43,24 +48,15 @@ function(tap_dsp_add_icount_scenario _key _precision _n _engine)
     endif()
 endfunction()
 
+# Every scenario is a gated binary keyed by its bare name. (From Stage 2a
+# until 2c a second loop here built each float scenario again against the
+# vendored Ooura C under an informational `_port` / `_c` suffix, so the job
+# could print the C/port ratio and whether the two checksums agreed; Stage 2c
+# retired the C from the shipping tree and the pair with it.)
 foreach(_sc IN LISTS _tap_dsp_icount_scenarios)
     string(REPLACE ":" ";" _parts "${_sc}")
     list(GET _parts 0 _name)
     list(GET _parts 1 _precision)
     list(GET _parts 2 _n)
-    # The gated binary: the engine the cache variable selects (basic_real_fft,
-    # what ships, unless overridden), keyed by the bare scenario name.
-    tap_dsp_add_icount_scenario(${_name} ${_precision} ${_n} ${TAP_DSP_BENCH_ENGINE})
-    # Stage 2b until 2c: every float scenario also builds against the vendored
-    # C called directly (TAP_DSP_BENCH_ENGINE=reference_c), key suffix `_c`.
-    # The suffix is scripts/icount.py's INFORMATIONAL_SUFFIX: the binary is
-    # counted and printed with its ratio to the gated sibling and whether the
-    # two output checksums agree, never gated and never written to
-    # bench/baselines.json. Until 2b the same mechanism ran the other way
-    # (`_port`: the port beside the C while the C shipped); the flip
-    # re-recorded the bare keys to the port and the C became the informational
-    # side. Stage 2c deletes the C and this pair with it.
-    if(_precision EQUAL 0 AND NOT TAP_DSP_BENCH_ENGINE STREQUAL "reference_c")
-        tap_dsp_add_icount_scenario(${_name}_c ${_precision} ${_n} reference_c)
-    endif()
+    tap_dsp_add_icount_scenario(${_name} ${_precision} ${_n})
 endforeach()

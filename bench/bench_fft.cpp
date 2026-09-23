@@ -9,15 +9,14 @@
 // and date with any number that goes into docs/fft-design.md. The gate is the
 // instruction-count ratchet in icount/.
 //
-// Same scenarios and engine selector as the ratchet (bench_common.h):
-// rfft_f32_512, rfft_f32_2048, rfft_f64_512. Each rep runs a batch of
-// out-of-place forward() calls and, separately, a batch of inverse() calls
-// (the class's scaled inverse), and the minimum over reps is reported per
-// transform. TAP_DSP_BENCH_ENGINE selects what is timed: basic_real_fft
-// (what ships; the split-radix engine since Stage 2b) or, until Stage 2c
-// retires it, reference_c (the vendored C called directly), so the port and
-// the C can be timed side by side on one machine; after 2c the recorded C
-// numbers in docs/fft-design.md are the comparison.
+// Same floating scenarios as the ratchet (bench_common.h): rfft_f32_512,
+// rfft_f32_2048, rfft_f64_512. Each rep runs a batch of out-of-place
+// forward() calls and, separately, a batch of inverse() calls (the class's
+// scaled inverse), and the minimum over reps is reported per transform.
+// What is timed is basic_real_fft as built (the split-radix engine since
+// Stage 2b, or the platform backend behind it); the vendored C it replaced
+// left the shipping tree at Stage 2c, so the recorded C numbers in
+// docs/fft-design.md are the comparison from here on.
 #include <chrono>
 #include <cstddef>
 #include <cstdint>

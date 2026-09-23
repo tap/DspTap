@@ -40,45 +40,40 @@ comes from QEMU on the legs.
 One binary per scenario, selected by compile definitions (bare metal has no
 argv), all built from `icount/icount_main.cpp`:
 
-| scenario | profile | N | engine | targets | gated |
+| scenario | profile | N | what is measured | targets | gated |
 |---|---|---|---|---|---|
-| `rfft_f32_512` | float | 512 | `TAP_DSP_BENCH_ENGINE` (`basic_real_fft`, what ships: the split-radix engine since Stage 2b; CMSIS behind it on `m55`) | all legs | yes |
+| `rfft_f32_512` | float | 512 | `basic_real_fft<float>` as built: the split-radix engine since Stage 2b; CMSIS-DSP Helium behind it on `m55` | all legs | yes |
 | `rfft_f32_2048` | float | 2048 | as above | all legs | yes |
-| `rfft_f64_512` | double | 512 | as above | host-class only: soft-float double is not a profile, so the bare-metal legs neither build nor baseline it | no key counts it |
-| `rfft_f32_512_c` | float | 512 | `reference_c`, the vendored Ooura C called directly | all legs | **no** — informational until Stage 2c retires the C |
-| `rfft_f32_2048_c` | float | 2048 | `reference_c` | all legs | **no** — informational until Stage 2c |
+| `rfft_f64_512` | double | 512 | `basic_real_fft<double>`: the split-radix engine | host-class only: soft-float double is not a profile, so the bare-metal legs neither build nor baseline it | no key counts it |
+| `rfft_q15_512` | Q15 (`std::int16_t`, `scaling::fixed`) | 512 | `basic_real_fft<std::int16_t>`: the int32 fixed-point kernel, Q15 I/O | all legs (fixed point is a profile on the soft-float M4 too) | yes, since Stage 2c |
+| `rfft_q31_512` | Q31 (`std::int32_t`, `scaling::fixed`) | 512 | `basic_real_fft<std::int32_t>` | all legs | yes, since Stage 2c |
+| `rfft_q31_2048` | Q31 | 2048 | as above | all legs | yes, since Stage 2c |
 
-Stage 3b's `rfft_q15_512`, `rfft_q31_512` and `rfft_q31_2048` (Part 11) are
-a follow-up after the Stage 2b flip merges.
+The three fixed-point scenarios are the ones Stage 3b specified (Part 11),
+seeded at Stage 2c, so every later `SMMULR`, Helium or table-layout change
+to the Q15/Q31 kernel has a number to beat. They run under `scaling::fixed`
+only: its count is data-independent (no headroom scan), which is what a
+ratchet wants; block floating point is measured by the battery's pins, not
+here.
 
-The `_c` scenarios exist from Stage 2b until Stage 2c retires the C: each
-float scenario builds twice (`bench/icount/CMakeLists.txt`), and
-`scripts/icount.py` treats the `_c` suffix (`INFORMATIONAL_SUFFIX`) as
-informational — the binary is counted and printed after the gated
-scenarios, beside its shipping sibling, with the ratio C/shipping and whether
-the two `DONE` checksums agree — but it never enters the verdict: a `_c`
-binary that times out, faults or does not print `ok=1` is reported as
-`informational binary failed: <reason>` and the run continues to the gated
-scenarios' verdict; `--update` never writes it to `baselines.json`; a
-baseline that names it is reported and ignored; and `--record` files it
-under a separate top-level `informational` key that `--merge` skips
-(`--merge` also drops a `_c` key found under a real target, so a hand-edited
-file cannot seed one). That is what keeps the C-vs-port comparison honest in
-every job log until the C is gone: the gated bare key measures what ships,
-and the `_c` sibling is the C it replaced, with the checksum line saying
-whether the two are still bit-identical at the bench's default flags. On the
-`m55` key the shipping sibling is the CMSIS-DSP Helium backend, so the ratio
-there is C-vs-CMSIS; the C-vs-port ratio on the M55 is the `m55-ooura` key's.
-(From Stage 2a until 2b the same mechanism ran the other way round, as
-`_port`: the port beside the shipping C. The flip re-recorded the bare keys to
-the port's counts — see the table below — and swapped the sides.)
+The bench measures only what ships. From Stage 2a until Stage 2c a second
+binary per float scenario (`_port`, then `_c` after the flip; the
+`INFORMATIONAL_SUFFIX` of `scripts/icount.py`) counted the vendored Ooura C
+beside the shipping engine and the job log printed the ratio and whether
+the two `DONE` checksums agreed, never gating on it; that is how Stage 2b
+was judged (the tables below keep the record). Stage 2c moved the C out of
+the shipping tree — the reference copy under `tests/reference/ooura/`
+serves the bit-identity gate alone — and retired the selector
+(`TAP_DSP_BENCH_ENGINE`), the adapter and the `_c` pairs. The `DONE` line
+still prints `engine=basic_real_fft`, the constant the shipping class always
+printed, so the recorded counts (which include the print) did not move.
 
-Each scenario constructs one transform (`tap::dsp::basic_real_fft<Sample>`,
-or for the `_c` scenarios the vendored C behind an adapter presenting the same
-out-of-place surface with the same copy loop and 2/N arithmetic,
-`bench_common.h`), then runs a forward + inverse loop over a four-block xorshift corpus for 2^20 samples per
+Each scenario constructs one transform (`tap::dsp::basic_real_fft<Sample>`),
+then runs a forward + inverse loop over a four-block xorshift corpus for 2^20 samples per
 direction (2048 iterations at N = 512, 512 at N = 2048). Every output word
-of every iteration — the spectrum and the scaled inverse — goes through an
+of every iteration — the spectrum and the scaled inverse, or for the
+fixed-point scenarios the spectrum, the unnormalized inverse and the
+exponent each transform returned — goes through an
 integer FNV-1a-64 fold over its bit pattern (`bench_common.h`), printed at
 the end:
 
@@ -91,14 +86,20 @@ same value, and a 1-ulp change in any single output changes it (verified by
 nudging one spectrum bin at one iteration with `nextafterf`: `0x662dd085b5b88325`
 becomes `0x259510dc8721cba8`). A floating running sum cannot promise that — it
 absorbs differences below the accumulator's ulp — which is why the checksum
-is an integer hash: it is the fingerprint the job compares between the C
+is an integer hash: it was the fingerprint the job compared between the C
 and the port on the QEMU legs, where the host parity TU does not run (the
 checksum above is the same value the C printed before the flip: the port is
-bit-identical). `ok` is a sanity check that the last iteration round-trips
-its input within 1e-3 in the scenario's own precision; `backend=` names what
-the build routed `basic_real_fft<float>` through (`split_radix`, `cmsis` on
-the `m55` key, `accelerate` on Apple), or `ooura_c` for the `_c` scenarios,
-independently of the engine value.
+bit-identical), and it is what a same-key checksum change means today: an
+output bit moved. `ok` is a sanity check that the last iteration
+round-trips its input — within 1e-3 in the floating scenarios' own
+precision; within eight output LSB referred to the input, i.e.
+|out · 2^s − x| ≤ 8 · 2^s with s = e_fwd + e_inv + 1 − log₂N, in the
+fixed-point ones (the contract's round-trip identity, `fft.h`; eight is the
+header's pinned Q31 single-transform worst case rounded to a power of two,
+against 0.52 / 3.6 LSB measured in this workload for Q15 / Q31); `backend=`
+names what the build routed `basic_real_fft` through: `split_radix`,
+`cmsis` on the `m55` key, `accelerate` on Apple, `fixed_point` for Q15 /
+Q31.
 
 Why these numbers: on the host (x86-64, GCC 13 `-O2`, callgrind) the three
 scenarios execute 109 M, 125 M and 108 M instructions.
@@ -115,33 +116,11 @@ hold. No `<random>` (a toolchain's libstdc++ would move the count), no
 allocation in the loop, and no double anywhere in the float scenarios (the
 M4 soft-float leg would otherwise measure libgcc).
 
-`TAP_DSP_BENCH_ENGINE` (`bench_common.h`, a CMake cache variable of the same
-name) selects the engine the bare-keyed binaries measure: `basic_real_fft`
-(the default) — the class as built, which is the split-radix engine
-(`include/tap/dsp/fft/split_radix.h`) or, on the `m55` key, the CMSIS-DSP
-Helium backend behind the same class — or `reference_c`, the vendored Ooura C
-called directly (`rdft` / `rdft_f`), printed as `engine=reference_c
-backend=ooura_c`. At the default the `_c` binaries above (and the `_c` size
-probe) are also built, against the C, so every bench run from Stage 2b until
-2c reports both counts and their ratio; when the variable is already
-`reference_c` the bare-keyed binaries *are* the C and the `_c` pairs are not
-built (`bench/icount/CMakeLists.txt`, `bench/CMakeLists.txt`: the C compared
-to itself measures nothing). A build directory configured before Stage 2b
-still carries `reference_c` in its cache (the old default, which then meant
-the class as built): reconfigure with `-UTAP_DSP_BENCH_ENGINE` or a fresh
-directory. Since the 2b review the choice is no longer silent: configure
-prints `TAP_DSP_BENCH_ENGINE=<value>` with what the bare keys measure and,
-for `reference_c`, the stale-cache warning (`bench/CMakeLists.txt`). The
-value was deliberately not respelled (e.g. `vendored_c`) to make a stale
-cache fail `bench_common.h`'s `static_assert`: a respelling would move the
-`_c` binaries' printed `engine=` string and with it their informational
-counts by a handful of instructions against the +28 … +34 recorded below,
-and rename identifiers across the bench, for a hazard only a local build
-directory from before 2b can meet (CI configures fresh); the selector and
-the C both go at 2c. Before the flip the
-port/C ratio these pairs printed was what Stage 2b was judged on (the port
-within ±3 % of the C on every QEMU leg, audit Part 3); the outcome is in the
-table below.
+A build directory configured before Stage 2c may still carry the retired
+`TAP_DSP_BENCH_ENGINE` cache variable; it is read by nothing now and a fresh
+configure ignores it. The port/C ratio the retired pairs printed was what
+Stage 2b was judged on (the port within ±3 % of the C on every QEMU leg,
+audit Part 3); the outcome is in the table below.
 
 ## Baselines and targets
 
@@ -180,14 +159,14 @@ shape is fixed so the record stays greppable:
 | m55-ooura | rfft_f32_2048 | — | 107,806,480 | — | **seeded** from the first push-to-main run after #21 merged (vendored Ooura C, `TAP_DSP_BENCH_ENGINE=reference_c`; m55 = CMSIS-DSP Helium, m55-ooura = the Ooura fallback) | [run 35281280300](https://github.com/tap/DspTap/actions/runs/35281280300) | df482d1 | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
 | m55-ooura | rfft_f32_512 | — | 94,561,954 | — | **seeded** from the first push-to-main run after #21 merged (vendored Ooura C, `TAP_DSP_BENCH_ENGINE=reference_c`; m55 = CMSIS-DSP Helium, m55-ooura = the Ooura fallback) | [run 35281280300](https://github.com/tap/DspTap/actions/runs/35281280300) | df482d1 | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
 
-| m33 | rfft_f32_2048 | 116,385,409 | 115,465,626 | -0.79 % | **re-recorded at the Stage 2b flip** (tap/DspTap#31): the bare key now measures the split-radix engine that ships through `basic_real_fft`; the C it replaced is the `_c` informational sibling of the same run (output checksums identical on every key). Per Part 11 / D11 the exact new count is recorded, never absorbed: m55-ooura sat outside the +-3% band (IMPROVED), the M4 and M33 keys inside it, and all four move together | [run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811) (workflow_dispatch on the PR branch at `b078a80`; the PR's compare-mode run confirms +0.00 %) | **pending** — the #31 squash SHA on `main`, which does not exist until the squash; the MuTap bump that pins it fills this cell (#31's after-merge list) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
-| m33 | rfft_f32_512 | 102,248,169 | 100,945,841 | -1.27 % | **re-recorded at the Stage 2b flip** (tap/DspTap#31): the bare key now measures the split-radix engine that ships through `basic_real_fft`; the C it replaced is the `_c` informational sibling of the same run (output checksums identical on every key). Per Part 11 / D11 the exact new count is recorded, never absorbed: m55-ooura sat outside the +-3% band (IMPROVED), the M4 and M33 keys inside it, and all four move together | [run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811) (workflow_dispatch on the PR branch at `b078a80`; the PR's compare-mode run confirms +0.00 %) | **pending** — the #31 squash SHA on `main`, which does not exist until the squash; the MuTap bump that pins it fills this cell (#31's after-merge list) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
-| m4-softfp | rfft_f32_2048 | 2,296,984,479 | 2,294,360,259 | -0.11 % | **re-recorded at the Stage 2b flip** (tap/DspTap#31): the bare key now measures the split-radix engine that ships through `basic_real_fft`; the C it replaced is the `_c` informational sibling of the same run (output checksums identical on every key). Per Part 11 / D11 the exact new count is recorded, never absorbed: m55-ooura sat outside the +-3% band (IMPROVED), the M4 and M33 keys inside it, and all four move together | [run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811) (workflow_dispatch on the PR branch at `b078a80`; the PR's compare-mode run confirms +0.00 %) | **pending** — the #31 squash SHA on `main`, which does not exist until the squash; the MuTap bump that pins it fills this cell (#31's after-merge list) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
-| m4-softfp | rfft_f32_512 | 1,868,441,244 | 1,864,929,141 | -0.19 % | **re-recorded at the Stage 2b flip** (tap/DspTap#31): the bare key now measures the split-radix engine that ships through `basic_real_fft`; the C it replaced is the `_c` informational sibling of the same run (output checksums identical on every key). Per Part 11 / D11 the exact new count is recorded, never absorbed: m55-ooura sat outside the +-3% band (IMPROVED), the M4 and M33 keys inside it, and all four move together | [run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811) (workflow_dispatch on the PR branch at `b078a80`; the PR's compare-mode run confirms +0.00 %) | **pending** — the #31 squash SHA on `main`, which does not exist until the squash; the MuTap bump that pins it fills this cell (#31's after-merge list) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
-| m4f | rfft_f32_2048 | 111,859,257 | 111,278,416 | -0.52 % | **re-recorded at the Stage 2b flip** (tap/DspTap#31): the bare key now measures the split-radix engine that ships through `basic_real_fft`; the C it replaced is the `_c` informational sibling of the same run (output checksums identical on every key). Per Part 11 / D11 the exact new count is recorded, never absorbed: m55-ooura sat outside the +-3% band (IMPROVED), the M4 and M33 keys inside it, and all four move together | [run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811) (workflow_dispatch on the PR branch at `b078a80`; the PR's compare-mode run confirms +0.00 %) | **pending** — the #31 squash SHA on `main`, which does not exist until the squash; the MuTap bump that pins it fills this cell (#31's after-merge list) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
-| m4f | rfft_f32_512 | 98,090,666 | 97,138,544 | -0.97 % | **re-recorded at the Stage 2b flip** (tap/DspTap#31): the bare key now measures the split-radix engine that ships through `basic_real_fft`; the C it replaced is the `_c` informational sibling of the same run (output checksums identical on every key). Per Part 11 / D11 the exact new count is recorded, never absorbed: m55-ooura sat outside the +-3% band (IMPROVED), the M4 and M33 keys inside it, and all four move together | [run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811) (workflow_dispatch on the PR branch at `b078a80`; the PR's compare-mode run confirms +0.00 %) | **pending** — the #31 squash SHA on `main`, which does not exist until the squash; the MuTap bump that pins it fills this cell (#31's after-merge list) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
-| m55-ooura | rfft_f32_2048 | 107,806,480 | 102,784,096 | -4.66 % | **re-recorded at the Stage 2b flip** (tap/DspTap#31): the bare key now measures the split-radix engine that ships through `basic_real_fft`; the C it replaced is the `_c` informational sibling of the same run (output checksums identical on every key). Per Part 11 / D11 the exact new count is recorded, never absorbed: m55-ooura sat outside the +-3% band (IMPROVED), the M4 and M33 keys inside it, and all four move together | [run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811) (workflow_dispatch on the PR branch at `b078a80`; the PR's compare-mode run confirms +0.00 %) | **pending** — the #31 squash SHA on `main`, which does not exist until the squash; the MuTap bump that pins it fills this cell (#31's after-merge list) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
-| m55-ooura | rfft_f32_512 | 94,561,954 | 89,276,321 | -5.59 % | **re-recorded at the Stage 2b flip** (tap/DspTap#31): the bare key now measures the split-radix engine that ships through `basic_real_fft`; the C it replaced is the `_c` informational sibling of the same run (output checksums identical on every key). Per Part 11 / D11 the exact new count is recorded, never absorbed: m55-ooura sat outside the +-3% band (IMPROVED), the M4 and M33 keys inside it, and all four move together | [run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811) (workflow_dispatch on the PR branch at `b078a80`; the PR's compare-mode run confirms +0.00 %) | **pending** — the #31 squash SHA on `main`, which does not exist until the squash; the MuTap bump that pins it fills this cell (#31's after-merge list) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m33 | rfft_f32_2048 | 116,385,409 | 115,465,626 | -0.79 % | **re-recorded at the Stage 2b flip** (tap/DspTap#31): the bare key now measures the split-radix engine that ships through `basic_real_fft`; the C it replaced is the `_c` informational sibling of the same run (output checksums identical on every key). Per Part 11 / D11 the exact new count is recorded, never absorbed: m55-ooura sat outside the +-3% band (IMPROVED), the M4 and M33 keys inside it, and all four move together | [run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811) (workflow_dispatch on the PR branch at `b078a80`; the PR's compare-mode run confirms +0.00 %) | `bbfa48d` (the #31 squash on `main`, filled in by tap/DspTap Stage 2c per #31's after-merge list) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m33 | rfft_f32_512 | 102,248,169 | 100,945,841 | -1.27 % | **re-recorded at the Stage 2b flip** (tap/DspTap#31): the bare key now measures the split-radix engine that ships through `basic_real_fft`; the C it replaced is the `_c` informational sibling of the same run (output checksums identical on every key). Per Part 11 / D11 the exact new count is recorded, never absorbed: m55-ooura sat outside the +-3% band (IMPROVED), the M4 and M33 keys inside it, and all four move together | [run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811) (workflow_dispatch on the PR branch at `b078a80`; the PR's compare-mode run confirms +0.00 %) | `bbfa48d` (the #31 squash on `main`, filled in by tap/DspTap Stage 2c per #31's after-merge list) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m4-softfp | rfft_f32_2048 | 2,296,984,479 | 2,294,360,259 | -0.11 % | **re-recorded at the Stage 2b flip** (tap/DspTap#31): the bare key now measures the split-radix engine that ships through `basic_real_fft`; the C it replaced is the `_c` informational sibling of the same run (output checksums identical on every key). Per Part 11 / D11 the exact new count is recorded, never absorbed: m55-ooura sat outside the +-3% band (IMPROVED), the M4 and M33 keys inside it, and all four move together | [run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811) (workflow_dispatch on the PR branch at `b078a80`; the PR's compare-mode run confirms +0.00 %) | `bbfa48d` (the #31 squash on `main`, filled in by tap/DspTap Stage 2c per #31's after-merge list) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m4-softfp | rfft_f32_512 | 1,868,441,244 | 1,864,929,141 | -0.19 % | **re-recorded at the Stage 2b flip** (tap/DspTap#31): the bare key now measures the split-radix engine that ships through `basic_real_fft`; the C it replaced is the `_c` informational sibling of the same run (output checksums identical on every key). Per Part 11 / D11 the exact new count is recorded, never absorbed: m55-ooura sat outside the +-3% band (IMPROVED), the M4 and M33 keys inside it, and all four move together | [run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811) (workflow_dispatch on the PR branch at `b078a80`; the PR's compare-mode run confirms +0.00 %) | `bbfa48d` (the #31 squash on `main`, filled in by tap/DspTap Stage 2c per #31's after-merge list) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m4f | rfft_f32_2048 | 111,859,257 | 111,278,416 | -0.52 % | **re-recorded at the Stage 2b flip** (tap/DspTap#31): the bare key now measures the split-radix engine that ships through `basic_real_fft`; the C it replaced is the `_c` informational sibling of the same run (output checksums identical on every key). Per Part 11 / D11 the exact new count is recorded, never absorbed: m55-ooura sat outside the +-3% band (IMPROVED), the M4 and M33 keys inside it, and all four move together | [run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811) (workflow_dispatch on the PR branch at `b078a80`; the PR's compare-mode run confirms +0.00 %) | `bbfa48d` (the #31 squash on `main`, filled in by tap/DspTap Stage 2c per #31's after-merge list) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m4f | rfft_f32_512 | 98,090,666 | 97,138,544 | -0.97 % | **re-recorded at the Stage 2b flip** (tap/DspTap#31): the bare key now measures the split-radix engine that ships through `basic_real_fft`; the C it replaced is the `_c` informational sibling of the same run (output checksums identical on every key). Per Part 11 / D11 the exact new count is recorded, never absorbed: m55-ooura sat outside the +-3% band (IMPROVED), the M4 and M33 keys inside it, and all four move together | [run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811) (workflow_dispatch on the PR branch at `b078a80`; the PR's compare-mode run confirms +0.00 %) | `bbfa48d` (the #31 squash on `main`, filled in by tap/DspTap Stage 2c per #31's after-merge list) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m55-ooura | rfft_f32_2048 | 107,806,480 | 102,784,096 | -4.66 % | **re-recorded at the Stage 2b flip** (tap/DspTap#31): the bare key now measures the split-radix engine that ships through `basic_real_fft`; the C it replaced is the `_c` informational sibling of the same run (output checksums identical on every key). Per Part 11 / D11 the exact new count is recorded, never absorbed: m55-ooura sat outside the +-3% band (IMPROVED), the M4 and M33 keys inside it, and all four move together | [run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811) (workflow_dispatch on the PR branch at `b078a80`; the PR's compare-mode run confirms +0.00 %) | `bbfa48d` (the #31 squash on `main`, filled in by tap/DspTap Stage 2c per #31's after-merge list) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m55-ooura | rfft_f32_512 | 94,561,954 | 89,276,321 | -5.59 % | **re-recorded at the Stage 2b flip** (tap/DspTap#31): the bare key now measures the split-radix engine that ships through `basic_real_fft`; the C it replaced is the `_c` informational sibling of the same run (output checksums identical on every key). Per Part 11 / D11 the exact new count is recorded, never absorbed: m55-ooura sat outside the +-3% band (IMPROVED), the M4 and M33 keys inside it, and all four move together | [run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811) (workflow_dispatch on the PR branch at `b078a80`; the PR's compare-mode run confirms +0.00 %) | `bbfa48d` (the #31 squash on `main`, filled in by tap/DspTap Stage 2c per #31's after-merge list) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
 | m55 | rfft_f32_2048 | 54,858,120 | 54,858,120 | +0.00 % | **not re-recorded**: CMSIS-DSP Helium is untouched by the flip; the same run measured 54,858,195 (+75 instructions, +0.00 %: the wrapper lost its two unused Ooura workspace vectors and the DONE line's `engine=` string grew by three characters) | run 35844483811, compare mode | — | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
 | m55 | rfft_f32_512 | 52,382,331 | 52,382,331 | +0.00 % | as above; measured 52,382,366 (+35 instructions, +0.00 %) | run 35844483811, compare mode | — | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
 
@@ -282,24 +261,26 @@ python3 scripts/icount.py --merge a.json b.json    # fold per-key files into one
   regression (a correctness fix that costs instructions) is written down;
   there is no silent absorb. A key is never emptied to "reset" it — the
   workflow fails a pull request that does.
-- **Size runs in the same job, MinSizeRel.** The job builds
-  `tap_dsp_size_probe_rfft_f32_512` (`bench/size_probe.cpp`: one profile,
-  no stdio) a second time with `-DCMAKE_BUILD_TYPE=MinSizeRel` — the build
-  type the test legs and Part 10 item 4 use, so a ceiling here and a size in
-  `ci.yml` describe the same object — and reads the `.text` row of
-  `arm-none-eabi-size -A` (Berkeley format folds `.rodata` and NOLOAD
-  sections into "text"). Each key carries a `text_ceiling` in `bench.yml`;
-  `0` means not yet recorded and the step only prints. The ceilings are a
-  **promised item for wave 2**: the seeding commit sets them from the same
-  `main` run that seeds the counts, and they are updated the same way as the
-  counts, in the table above. From Stage 2b until 2c the step also builds
-  `tap_dsp_size_probe_rfft_f32_512_c` (the vendored C) and prints its `.text`
-  and the shipping/C ratio beside the shipping probe's, informational: the
-  ceiling applies to the shipping probe, and the C probe's numbers go into
-  `docs/fft-design.md` from the job log. The step runs with `pipefail`
-  and fails on a `size` that fails or prints no numeric `.text` row, for
-  either probe: a measurement that cannot be taken is an error, not a
-  `0.0000` ratio.
+- **Size runs in the same job, MinSizeRel.** The job builds the three
+  shipping size probes — `tap_dsp_size_probe_rfft_f32_512`,
+  `tap_dsp_size_probe_rfft_q15_512`, `tap_dsp_size_probe_rfft_q31_512`
+  (`bench/size_probe.cpp`: one profile, no stdio) — with
+  `-DCMAKE_BUILD_TYPE=MinSizeRel` — the build type the test legs and Part 10
+  item 4 use, so a ceiling here and a size in `ci.yml` describe the same
+  object — and reads the `.text` row of `arm-none-eabi-size -A` (Berkeley
+  format folds `.rodata` and NOLOAD sections into "text"). Each key carries
+  one ceiling per probe in `bench.yml` (`text_ceiling_f32`, the Part 4
+  assertion for the float instantiation — CMSIS-DSP on the `m55` key;
+  `text_ceiling_q15`; `text_ceiling_q31`); `0` means not yet recorded and
+  the step only prints. **Ceiling policy:** a ceiling is the `.text` figure
+  measured on the run that recorded it, plus 3 % (the family's number,
+  one-sided here: only exceeding it fails), rounded up to the next multiple
+  of 64 bytes; it is re-recorded the way a count is — a written commit with
+  a row in the sizes table below (before, after, reason, run) — when a
+  change legitimately moves the figure, and never widened to absorb one. The
+  step runs with `pipefail` and fails on a `size` that fails or prints no
+  numeric `.text` row, for any probe: a measurement that cannot be taken is
+  an error, not an empty figure.
 - **Wall clock is never a gate.** `bench_fft` is the local tool for the
   desktop and Apple vDSP claims; its numbers go into `docs/fft-design.md`
   with machine and date.
@@ -310,8 +291,8 @@ python3 scripts/icount.py --merge a.json b.json    # fold per-key files into one
 |---|---|
 | 2a (port beside the C, nothing routed) | nothing: the `_port` scenarios were informational, and the bare keys measured the unchanged C at 0 % |
 | 2b (routing flip to the port; done) | a port that vectorizes worse than the C; the C-vs-port ratio printed from 2a on was the gate, and the bare keys were re-recorded to the port's exact counts (table above) |
-| 2b → 2c (the C as the `_c` informational sibling) | nothing gated; the job log keeps showing C/shipping and whether the checksums still agree |
-| 3b (fixed point) | nothing yet — it seeds; every later `SMMULR`, Helium or table-layout change to the Q15/Q31 kernel then has a number to beat |
+| 2b → 2c (the C as the `_c` informational sibling; done) | nothing gated; the job log showed C/shipping and whether the checksums still agreed, until 2c retired the C |
+| 2c / 3b (fixed point; the Q15/Q31 scenarios seeded at 2c) | the seed itself gates nothing; every later `SMMULR`, Helium or table-layout change to the Q15/Q31 kernel has a number to beat |
 | 4 (engine as a parameter) | a backend regression on the deployed `m55` profile, or the `m55-ooura` fallback quietly getting slower |
 | 6 (hygiene) | the hygiene pass slowing the hot path unnoticed |
 
