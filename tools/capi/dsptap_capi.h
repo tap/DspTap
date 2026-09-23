@@ -3,12 +3,19 @@
 ///        bindings and the verification notebooks (notebooks/ drive it via ctypes).
 ///
 ///        Conventions: plain C types only; the caller owns all arrays and sizes them. Handle-based
-///        functions return 0 on success and -1 on any error (bad argument, bad handle), except
-///        where a function documents a non-negative return of its own (the FFT's raw transforms
-///        return the exponent). No global state. Everything runs the double-precision golden
-///        profile — the notebooks verify the same code the consuming libraries compile — except
-///        where a function documents a profile selector (the FFT), so the notebooks can measure
-///        the embedded profiles as well.
+///        functions return 0 on success and -1 on any error (bad argument, bad handle); a value
+///        a function has to hand back (an exponent, a count) goes through an out-parameter or is
+///        documented as a non-negative count where that predates this note (dsptap_yin_track,
+///        dsptap_log_mel_process, dsptap_decimator_process). No global state. Everything runs the
+///        double-precision golden profile — the notebooks verify the same code the consuming
+///        libraries compile — except where a function documents a profile selector (the FFT), so
+///        the notebooks can measure the embedded profiles as well.
+///
+///        Changelog (contract-visible): 2026-09-23, Stage 3c — DSPTAP_FFT_PROFILE_Q15 / _Q31
+///        un-reserved, _Q15_BFP / _Q31_BFP appended, dsptap_fft_fixed_scaling_exponent and the
+///        four *_exp transforms added. dsptap_fft_forward_inplace_raw / _inverse_inplace_raw keep
+///        their 0 / -1 contract and return -1 for a fixed-point handle, whose exponent only the
+///        *_exp variants carry.
 // SPDX-License-Identifier: MIT
 // Copyright 2026 Timothy Place and the DspTap contributors.
 
@@ -67,6 +74,11 @@ typedef void* dsptap_decimator;
 /// no exponent and report e == 0 wherever one is returned. The fixed-point kernel is the
 /// portable int32 kernel on every host (fft/fixed_point.h): its output for a given input is
 /// the same bit pattern everywhere, whatever dsptap_fft_backend() says about float32.
+///
+/// Size: the floating profiles take any power of two >= 4; the four fixed-point profiles take
+/// a power of two in [4, 65536] (fft/fixed_point.h, k_min_size / k_max_size, asserted by the
+/// header's constructor), and dsptap_fft_create returns NULL above that bound rather than
+/// hand out a handle the header does not support.
 #define DSPTAP_FFT_PROFILE_DOUBLE 0
 #define DSPTAP_FFT_PROFILE_FLOAT 1
 #define DSPTAP_FFT_PROFILE_Q15 2
@@ -74,9 +86,12 @@ typedef void* dsptap_decimator;
 #define DSPTAP_FFT_PROFILE_Q15_BFP 4
 #define DSPTAP_FFT_PROFILE_Q31_BFP 5
 
-/// Create a real FFT of `size` points (a power of two >= 4) in the given profile, or NULL on a
-/// bad size, an unavailable profile, or allocation failure. All workspace is allocated here; the
+/// Create a real FFT of `size` points in the given profile. All workspace is allocated here; the
 /// transforms below are allocation-free.
+/// @param size     a power of two >= 4; for the fixed-point profiles at most 65536 (see the
+///                 profile codes)
+/// @param profile  one of the DSPTAP_FFT_PROFILE_* codes
+/// @return the handle, or NULL on a bad size, an unknown profile, or allocation failure
 DSPTAP_API dsptap_fft dsptap_fft_create(int size, int profile) DSPTAP_NOEXCEPT;
 DSPTAP_API void       dsptap_fft_destroy(dsptap_fft h) DSPTAP_NOEXCEPT;
 DSPTAP_API int        dsptap_fft_size(dsptap_fft h) DSPTAP_NOEXCEPT;
@@ -94,7 +109,9 @@ DSPTAP_API const char* dsptap_fft_backend(void) DSPTAP_NOEXCEPT;
 /// The exponent contract's constant for this handle's size: basic_real_fft<Sample,
 /// Scaling>::fixed_scaling_exponent(size) — the exponent every transform of a Q15 / Q31 handle
 /// returns (log2 size, log2 size + 1) and the upper bound of what a Q15_BFP / Q31_BFP handle
-/// returns. 0 for DOUBLE and FLOAT (no exponent), -1 on a bad handle.
+/// returns.
+/// @param h  the handle
+/// @return the constant; 0 for DOUBLE and FLOAT (no exponent); -1 on a NULL handle
 DSPTAP_API int dsptap_fft_fixed_scaling_exponent(dsptap_fft h) DSPTAP_NOEXCEPT;
 
 /// Forward transform of size() real samples into the packed spectrum, in double regardless of
@@ -128,9 +145,12 @@ DSPTAP_API int dsptap_fft_forward(dsptap_fft h, const double* in, double* out) D
 ///     into [-1, 1) yourself (e.g. by 2^-e_fwd) or use the raw path, whose round trip identity
 ///     is stated above. dsptap_fft_inverse_exp is the same call with e written out.
 DSPTAP_API int dsptap_fft_inverse(dsptap_fft h, const double* in, double* out) DSPTAP_NOEXCEPT;
-/// dsptap_fft_forward / dsptap_fft_inverse with the transform's exponent written to *exponent
-/// (0 for DOUBLE and FLOAT; the fixed-point e otherwise). -1 on a NULL handle, array or
-/// exponent pointer.
+/// dsptap_fft_forward / dsptap_fft_inverse with the transform's exponent written out.
+/// @param h         the handle
+/// @param in        size() doubles (samples for the forward, a packed spectrum for the inverse)
+/// @param out       size() doubles; may alias `in`
+/// @param exponent  receives e: 0 for DOUBLE and FLOAT, the fixed-point e otherwise
+/// @return 0, or -1 on a NULL handle, array or exponent pointer
 DSPTAP_API int dsptap_fft_forward_exp(dsptap_fft h, const double* in, double* out, int* exponent) DSPTAP_NOEXCEPT;
 DSPTAP_API int dsptap_fft_inverse_exp(dsptap_fft h, const double* in, double* out, int* exponent) DSPTAP_NOEXCEPT;
 
@@ -143,16 +163,23 @@ DSPTAP_API int dsptap_fft_inverse_exp(dsptap_fft h, const double* in, double* ou
 /// is UNSCALED, exactly as in fft.h: multiply by 2/size for a floating round trip; for a
 /// fixed-point round trip apply the exponent identity stated at the profile codes.
 ///
-/// Return value: the transform's exponent e (>= 0), or -1 on a NULL handle or buffer. For
-/// DOUBLE and FLOAT e is always 0, which is the value these functions returned before the
-/// fixed-point profiles existed, so a caller written against that ABI sees no change; a caller
-/// that tests `!= 0` for failure on a fixed-point handle is wrong and should test `< 0` or use
-/// the _exp variants below, which keep the 0 / -1 status convention and return e separately.
-/// Under block floating point a discarded exponent is a silent scale error (fft.h).
+/// These two are the ABI's original raw transforms and keep the file-level convention: for a
+/// DOUBLE or FLOAT handle they transform `data` and return 0, exactly as before the fixed-point
+/// profiles existed. For a fixed-point handle they do nothing and return -1: the transform's
+/// exponent is part of its result and these signatures have nowhere to put it (fft.h: under
+/// block floating point a discarded exponent is a silent scale error), so a fixed-point caller
+/// must use the *_exp variants below. A caller that follows the 0 / -1 convention therefore can
+/// never receive a 2^-e-scaled buffer and a success status.
+/// @param h     the handle
+/// @param data  size() native samples, aligned for the type; transformed in place
+/// @return 0 on success; -1 on a NULL handle or buffer, and for any fixed-point handle
 DSPTAP_API int dsptap_fft_forward_inplace_raw(dsptap_fft h, void* data) DSPTAP_NOEXCEPT;
 DSPTAP_API int dsptap_fft_inverse_inplace_raw(dsptap_fft h, void* data) DSPTAP_NOEXCEPT;
-/// The raw transforms with the exponent written to *exponent and the usual 0 / -1 status
-/// returned (-1 also on a NULL exponent pointer). The path a binding should use.
+/// The raw transforms for every profile, with the exponent written out: the path a binding uses.
+/// @param h         the handle
+/// @param data      size() native samples, aligned for the type; transformed in place
+/// @param exponent  receives e: 0 for DOUBLE and FLOAT, the fixed-point e otherwise
+/// @return 0, or -1 on a NULL handle, buffer or exponent pointer
 DSPTAP_API int dsptap_fft_forward_inplace_raw_exp(dsptap_fft h, void* data, int* exponent) DSPTAP_NOEXCEPT;
 DSPTAP_API int dsptap_fft_inverse_inplace_raw_exp(dsptap_fft h, void* data, int* exponent) DSPTAP_NOEXCEPT;
 

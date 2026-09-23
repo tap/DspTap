@@ -29,8 +29,9 @@ namespace {
     // stage through a native buffer, quantizing at the boundary by the substrate's round_sat and
     // reading back as fractions times 2^e, so every transform stays allocation-free. The raw
     // entry points hand the native buffer straight to the header's in-place transforms, with no
-    // conversion, so the notebooks measure the profile's own arithmetic; they return the
-    // exponent, which is 0 for the floating profiles.
+    // conversion, so the notebooks measure the profile's own arithmetic; the seam returns the
+    // exponent (0 for the floating profiles) and the C entry points decide how to present it
+    // (the *_exp variants write it out; the legacy raw pair refuses fixed-point handles).
     template <typename>
     inline constexpr bool k_always_false = false;
 
@@ -60,15 +61,16 @@ namespace {
     }
 
     struct fft_base {
-        virtual ~fft_base()                                         = default;
-        virtual int size() const noexcept                           = 0;
-        virtual int profile() const noexcept                        = 0;
-        virtual int sample_bytes() const noexcept                   = 0;
-        virtual int fixed_scaling_exponent() const noexcept         = 0;
-        virtual int forward(const double* in, double* out) noexcept = 0; ///< returns e
-        virtual int inverse(const double* in, double* out) noexcept = 0; ///< returns e
-        virtual int forward_inplace_raw(void* data) noexcept        = 0; ///< returns e
-        virtual int inverse_inplace_raw(void* data) noexcept        = 0; ///< returns e
+        virtual ~fft_base()                                          = default;
+        virtual int  size() const noexcept                           = 0;
+        virtual int  profile() const noexcept                        = 0;
+        virtual bool is_fixed_point() const noexcept                 = 0;
+        virtual int  sample_bytes() const noexcept                   = 0;
+        virtual int  fixed_scaling_exponent() const noexcept         = 0;
+        virtual int  forward(const double* in, double* out) noexcept = 0; ///< returns e
+        virtual int  inverse(const double* in, double* out) noexcept = 0; ///< returns e
+        virtual int  forward_inplace_raw(void* data) noexcept        = 0; ///< returns e
+        virtual int  inverse_inplace_raw(void* data) noexcept        = 0; ///< returns e
     };
     template <typename Sample, typename Scaling = tap::dsp::scaling::fixed>
     struct fft_impl final : fft_base {
@@ -77,10 +79,11 @@ namespace {
         explicit fft_impl(std::size_t n)
             : fft(n)
             , buf(n, Sample(0)) {}
-        int size() const noexcept override { return static_cast<int>(fft.size()); }
-        int profile() const noexcept override { return profile_of<Sample, Scaling>(); }
-        int sample_bytes() const noexcept override { return static_cast<int>(sizeof(Sample)); }
-        int fixed_scaling_exponent() const noexcept override {
+        int  size() const noexcept override { return static_cast<int>(fft.size()); }
+        int  profile() const noexcept override { return profile_of<Sample, Scaling>(); }
+        bool is_fixed_point() const noexcept override { return k_fixed_point; }
+        int  sample_bytes() const noexcept override { return static_cast<int>(sizeof(Sample)); }
+        int  fixed_scaling_exponent() const noexcept override {
             if constexpr (k_fixed_point) {
                 return tap::dsp::basic_real_fft<Sample, Scaling>::fixed_scaling_exponent(fft.size());
             }
@@ -182,6 +185,26 @@ namespace {
         return static_cast<fft_base*>(h);
     }
 
+    // The fixed-point profiles' size bound, read from the header (fft/fixed_point.h asserts it
+    // in the constructor, which a noexcept C entry point cannot turn into NULL): the same
+    // constant for all four fixed-point instantiations, checked so.
+    using q15_fft = tap::dsp::basic_real_fft<std::int16_t, tap::dsp::scaling::fixed>;
+    using q31_fft = tap::dsp::basic_real_fft<std::int32_t, tap::dsp::scaling::fixed>;
+    static_assert(
+        q15_fft::engine::k_max_size == q31_fft::engine::k_max_size
+            && q15_fft::engine::k_max_size
+                   == tap::dsp::basic_real_fft<std::int16_t, tap::dsp::scaling::block_floating>::engine::k_max_size
+            && q15_fft::engine::k_max_size
+                   == tap::dsp::basic_real_fft<std::int32_t, tap::dsp::scaling::block_floating>::engine::k_max_size,
+        "the four fixed-point profiles share one size bound");
+    static_assert(q15_fft::engine::k_min_size == 4, "dsptap_fft_create's lower bound is the header's");
+    constexpr int k_fixed_point_max_size = static_cast<int>(q15_fft::engine::k_max_size);
+
+    bool is_fixed_point_profile(int profile) noexcept {
+        return profile == DSPTAP_FFT_PROFILE_Q15 || profile == DSPTAP_FFT_PROFILE_Q31
+               || profile == DSPTAP_FFT_PROFILE_Q15_BFP || profile == DSPTAP_FFT_PROFILE_Q31_BFP;
+    }
+
     tap::dsp::yin* as_yin(dsptap_yin h) {
         return static_cast<tap::dsp::yin*>(h);
     }
@@ -247,6 +270,9 @@ extern "C" {
 dsptap_fft dsptap_fft_create(int size, int profile) DSPTAP_NOEXCEPT {
     if (size < 4 || (size & (size - 1)) != 0) {
         return nullptr;
+    }
+    if (is_fixed_point_profile(profile) && size > k_fixed_point_max_size) {
+        return nullptr; // the header's documented maximum for the fixed-point profiles
     }
     try {
         // Erase the BASE pointer, so as_fft() recovers exactly what was stored (a derived pointer
@@ -348,17 +374,19 @@ int dsptap_fft_inverse_exp(dsptap_fft h, const double* in, double* out, int* exp
 }
 
 int dsptap_fft_forward_inplace_raw(dsptap_fft h, void* data) DSPTAP_NOEXCEPT {
-    if (h == nullptr || data == nullptr) {
-        return -1;
+    if (h == nullptr || data == nullptr || as_fft(h)->is_fixed_point()) {
+        return -1; // a fixed-point transform's exponent has nowhere to go here: use the _exp variant
     }
-    return as_fft(h)->forward_inplace_raw(data); // e >= 0
+    (void)as_fft(h)->forward_inplace_raw(data); // e == 0 for the floating profiles
+    return 0;
 }
 
 int dsptap_fft_inverse_inplace_raw(dsptap_fft h, void* data) DSPTAP_NOEXCEPT {
-    if (h == nullptr || data == nullptr) {
+    if (h == nullptr || data == nullptr || as_fft(h)->is_fixed_point()) {
         return -1;
     }
-    return as_fft(h)->inverse_inplace_raw(data);
+    (void)as_fft(h)->inverse_inplace_raw(data);
+    return 0;
 }
 
 int dsptap_fft_forward_inplace_raw_exp(dsptap_fft h, void* data, int* exponent) DSPTAP_NOEXCEPT {

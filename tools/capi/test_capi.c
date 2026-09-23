@@ -212,13 +212,24 @@ static void check_profile(int profile, const char* name, int n) {
     printf("  %-8s n=%d  raw round trip e_fwd=%d e_inv=%d  max |x - out * 2^k| %.3e (tol %.3e)\n", name, n, e_fwd,
            e_inv, rt_err, rt_tol);
 
-    // The status-returning raw functions return the same exponent (0 for the floating profiles,
-    // which is what they returned before the fixed-point profiles existed).
+    // The legacy raw pair keeps the 0 / -1 convention: the floating profiles transform and
+    // return 0 (what they returned before the fixed-point profiles existed); a fixed-point
+    // handle is refused with -1 and its buffer left untouched, since these signatures cannot
+    // carry the exponent.
     fill_raw(raw, profile, bytes, x, xq, n);
-    const int status = dsptap_fft_forward_inplace_raw(h, raw);
-    CHECK(status == e_fwd);
+    void* before = malloc((size_t)n * (size_t)bytes);
+    memcpy(before, raw, (size_t)n * (size_t)bytes);
+    const int status     = dsptap_fft_forward_inplace_raw(h, raw);
     const int status_inv = dsptap_fft_inverse_inplace_raw(h, raw);
-    CHECK(status_inv == e_inv);
+    if (is_fixed_point(profile)) {
+        CHECK(status == -1 && status_inv == -1);
+        CHECK(memcmp(before, raw, (size_t)n * (size_t)bytes) == 0);
+    }
+    else {
+        CHECK(status == 0 && status_inv == 0);
+        CHECK(memcmp(before, raw, (size_t)n * (size_t)bytes) != 0);
+    }
+    free(before);
 
     free(raw);
     free(out2);
@@ -236,8 +247,23 @@ int main(void) {
     // Bad arguments: NULL on failure, -1 from every handle function, never a crash.
     CHECK(dsptap_fft_create(3, DSPTAP_FFT_PROFILE_DOUBLE) == NULL);
     CHECK(dsptap_fft_create(0, DSPTAP_FFT_PROFILE_Q15) == NULL);
-    CHECK(dsptap_fft_create(512, 6) == NULL);
+    CHECK(dsptap_fft_create(512, DSPTAP_FFT_PROFILE_Q31_BFP + 1) == NULL); // the first unassigned code
     CHECK(dsptap_fft_create(512, -1) == NULL);
+    // The fixed-point profiles' size bound (fft/fixed_point.h: 4 <= N <= 65536): NULL above it
+    // for all four codes, a handle at it; the floating profiles are not bounded there.
+    for (size_t p = 0; p < sizeof(k_profiles) / sizeof(k_profiles[0]); ++p) {
+        dsptap_fft at    = dsptap_fft_create(65536, k_profiles[p]);
+        dsptap_fft above = dsptap_fft_create(131072, k_profiles[p]);
+        CHECK(at != NULL);
+        if (is_fixed_point(k_profiles[p])) {
+            CHECK(above == NULL);
+        }
+        else {
+            CHECK(above != NULL);
+        }
+        dsptap_fft_destroy(at);
+        dsptap_fft_destroy(above);
+    }
     CHECK(dsptap_fft_size(NULL) == -1);
     CHECK(dsptap_fft_num_bins(NULL) == -1);
     CHECK(dsptap_fft_profile(NULL) == -1);
