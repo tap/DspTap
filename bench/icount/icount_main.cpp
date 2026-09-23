@@ -89,6 +89,29 @@ namespace {
         bool          round_trips;
     };
 
+// The transform under test is constructed through a function the compiler
+// may not inline into run(). The count includes the checksum fold, and the
+// fold's register allocation is a function of everything else inlined into
+// the same function: the recorded baselines were taken when the CMSIS
+// engine's construction reached the workload through an out-of-line
+// make_floating_engine<float>, and inlining that construction into run()
+// spilled the fold's 64-bit hash and rematerialized the FNV prime on every
+// element (+12 % on the m55 float keys with the transform byte-identical;
+// bench/README.md, Stage 4). The factory keeps the baseline shape whatever
+// the class's constructor does, so the count is the transform plus a fixed
+// fold. Measured on the m55 key: -2 / +38 instructions against the recorded
+// float baselines and +5 (the call) on each fixed-point scenario.
+#if defined(__GNUC__) || defined(__clang__)
+#define TAP_DSP_BENCH_NOINLINE [[gnu::noinline]]
+#elif defined(_MSC_VER)
+#define TAP_DSP_BENCH_NOINLINE __declspec(noinline)
+#else
+#define TAP_DSP_BENCH_NOINLINE
+#endif
+    TAP_DSP_BENCH_NOINLINE tap::dsp::bench::fft_under_test<sample> make_fft() {
+        return tap::dsp::bench::fft_under_test<sample>(k_n);
+    }
+
 // The two workloads are selected by the preprocessor, not by if constexpr
 // over one function: the floating run() below is textually the Stage 1b/2b
 // workload, and keeping it so is what keeps the recorded float counts at
@@ -99,7 +122,7 @@ namespace {
     constexpr sample k_round_trip_tolerance = static_cast<sample>(1e-3);
 
     outcome run() {
-        tap::dsp::bench::fft_under_test<sample> fft(k_n);
+        tap::dsp::bench::fft_under_test<sample> fft = make_fft();
 
         std::vector<sample>         corpus(k_corpus_blocks * k_n);
         std::vector<sample>         spectrum(k_n);
@@ -143,7 +166,7 @@ namespace {
     // after the block it scales; no 2/N anywhere, the exponents carry the
     // scale, and the round-trip check is the contract's identity in int64.
     outcome run() {
-        tap::dsp::bench::fft_under_test<sample> fft(k_n);
+        tap::dsp::bench::fft_under_test<sample> fft = make_fft();
 
         std::vector<sample>         corpus(k_corpus_blocks * k_n);
         std::vector<sample>         spectrum(k_n);

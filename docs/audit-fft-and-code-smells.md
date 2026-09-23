@@ -1114,11 +1114,17 @@ opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
   moved the `m55` float keys by +12.00 % / +11.47 % with the transform byte-identical (checksums
   equal, CMSIS archive identical, wrapper loops identical instruction for instruction): GCC
   spilled the fold's 64-bit hash and rematerialized the FNV prime, +6 instructions per sample.
-  Resolved without a re-record by keeping the two accelerated engines' constructors out of
-  line (`TAP_DSP_NOINLINE`, `detail/attributes.h`): +5 / +45 instructions over the baselines.
-  A scenario that constructed its engine in a separate function from the one it transforms in
-  would not have seen it; when the bench is next re-recorded for a real reason, `run()` should
-  construct through a non-inlined factory so the count is the transform plus a fixed fold.
+  **The harness was the defect**: the fold's codegen depended on what was inlined before it,
+  and the recorded baselines had reached the CMSIS constructor through an out-of-line
+  `make_floating_engine<float>`. Resolved at #35 without a re-record by making
+  `bench/icount/icount_main.cpp` construct the transform under test through a non-inlined
+  `make_fft()` in both `run()` bodies — the baseline's shape — so the count is the transform
+  plus a fixed fold: m55 −2 / +38 instructions against the float baselines, +5 (the call) on
+  every fixed-point scenario, every key inside the band. A first version had instead put a
+  `noinline` attribute on the two accelerated engines' constructors; the hostile review
+  measured the harness fix landing closer with nothing in the library, and the attribute
+  costing 860 bytes of MinSizeRel `.text` on the m55 f32 probe; shipping code carries no
+  benchmark-shaped attribute.
   (5) "CMSIS compile-only on M55" (Stage 4 text, P24) understated it: the CMSIS rows run under
   QEMU on that leg beside the split-radix rows; still nowhere on a host or on hardware.
 - **Stage 2b's MuTap gate "icount ratchet at 0% delta on m33 and hexagon (0% is the gate,

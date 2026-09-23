@@ -915,12 +915,12 @@ line):
 
 | Key | `rfft_f32_512` | `rfft_f32_2048` | Q15 / Q31 scenarios |
 |---|---|---|---|
-| m55 (CMSIS), commits 1–4 | 58,667,632 (**+12.00 %**) | 61,148,069 (**+11.47 %**) | +0.00 % |
-| m55 (CMSIS), final | 52,382,336 (+0.00 %, +5) | 54,858,165 (+0.00 %, +45) | +0.00 % |
-| m33 | 100,833,200 (−0.11 %) | 115,396,505 (−0.06 %) | Q15 −2,048 instructions (−0.00 %), Q31 +0.00 % |
-| m55-ooura | 89,046,940 (−0.26 %) | 102,644,827 (−0.14 %) | +0.00 % |
-| m4f | 97,126,257 (−0.01 %) | 111,270,737 (−0.01 %) | +0.00 % |
-| m4-softfp | 1,864,904,564 (−0.00 %) | 2,294,343,874 (−0.00 %) | +0.00 % |
+| m55 (CMSIS), commits 1–4 as first pushed | 58,667,632 (**+12.00 %**) | 61,148,069 (**+11.47 %**) | +0.00 % |
+| m55 (CMSIS), final (harness factory) | 52,382,329 (−2) | 54,858,158 (+38) | +5 each |
+| m33 | 100,935,605 (−0.01 %) | 115,460,510 (−0.00 %) | Q15 −2,043, Q31 +5 |
+| m55-ooura | 89,268,128 (−0.01 %) | 102,783,071 (−0.00 %) | +5 each |
+| m4f | 97,138,550 (+6) | 111,278,422 (+6) | +5 each |
+| m4-softfp | 1,864,929,145 (+4) | 2,294,359,239 (−1,020) | +5 each |
 
 The +12 % was not in the transform: both float checksums were identical to
 the baseline binaries', the CMSIS archive was byte-identical, and the
@@ -932,15 +932,17 @@ inlined into `main` — the baseline had reached it through an out-of-line
 and the fold loop went from 7 to 10 instructions per element (the 64-bit
 hash's low word spilled to `[sp, #28]`, the FNV prime `movw r0, #435`
 rematerialized every element): +6 per sample per iteration, exactly the
-delta. The fix is not a re-record: the two accelerated engines'
-constructors are kept out of line (`TAP_DSP_NOINLINE`,
-`include/tap/dsp/detail/attributes.h`), with the reason stated where it
-applies — a setup-time constructor that allocates scratch, calls a vendor
-library and (vDSP) may throw should not take part in the register allocation
-of a caller that also transforms. The split-radix constructor is left to the
-compiler: its four keys are inside the band and their baselines include
-whatever it did. The `.text` probes (MinSizeRel, `size -A`) all stay under
-their ceilings: m55 f32 107,585 (−72 vs the recorded 107,657), Q15 27,105
+delta. **The defect was the harness**, and the fix is not a re-record:
+`bench/icount/icount_main.cpp` constructs the transform under test through
+a non-inlined `make_fft()` in both `run()` bodies — the baseline's own shape
+— so the count is the transform plus a fixed fold. A first version had put a
+`noinline` attribute on the two accelerated engines' constructors instead
+(m55 +5 / +45); the hostile review measured the harness fix landing closer
+with nothing in the library, and the attribute costing 860 bytes of
+MinSizeRel `.text` on the one-construction m55 f32 probe, so shipping code
+carries no benchmark-shaped attribute and the split-radix constructor was
+never touched. The `.text` probes (MinSizeRel, `size -A`) all stay under
+their ceilings: m55 f32 106,725 (−932 vs the recorded 107,657), Q15 27,105
 (+8), Q31 26,553 (−40); m33 44,009 / 31,113 / 30,593; m55-ooura 39,281 /
 27,105 / 26,553; m4f 44,601 / 31,745 / 31,209; m4-softfp identical to the
 record. The harness lesson is in audit Part 13.

@@ -20,7 +20,6 @@
 #include <vector>
 
 #include "arm_math.h"
-#include "tap/dsp/detail/attributes.h"
 #include "tap/dsp/detail/expects.h"
 
 namespace tap::dsp::detail {
@@ -61,7 +60,7 @@ namespace tap::dsp::detail {
         static constexpr bool        k_is_shareable = false;
 
         /// @pre n is a power of two in [k_min_size, k_max_size] (TAP_EXPECTS).
-        TAP_DSP_NOINLINE explicit cmsis_real_fft_f32(std::size_t n)
+        explicit cmsis_real_fft_f32(std::size_t n)
             : m_scratch(n, 0.0f)
             , m_n(static_cast<int>(n)) {
             TAP_EXPECTS(n >= k_min_size && n <= k_max_size && (n & (n - 1)) == 0);
