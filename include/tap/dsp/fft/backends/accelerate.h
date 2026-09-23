@@ -23,6 +23,7 @@
 
 #include <Accelerate/Accelerate.h>
 
+#include "tap/dsp/detail/attributes.h"
 #include "tap/dsp/detail/expects.h"
 
 namespace tap::dsp::detail {
@@ -86,7 +87,7 @@ namespace tap::dsp::detail {
 
         /// @pre n is a power of two in [k_min_size, k_max_size] (TAP_EXPECTS).
         /// @throws std::bad_alloc if vDSP cannot allocate its twiddle tables.
-        explicit accelerate_real_fft_f32(std::size_t n)
+        TAP_DSP_NOINLINE explicit accelerate_real_fft_f32(std::size_t n)
             : m_n(static_cast<int>(n))
             , m_log2n(static_cast<int>(std::lround(std::log2(static_cast<double>(n))))) {
             TAP_EXPECTS(n >= k_min_size && n <= k_max_size && (n & (n - 1)) == 0);
