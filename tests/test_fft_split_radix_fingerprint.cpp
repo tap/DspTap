@@ -26,9 +26,9 @@
 // engine's statements. MSVC: nothing is passed; /fp:precise does not
 // contract (tests/CMakeLists.txt).
 //
-// A platform the pin table does not name prints its values and does not
-// assert (the measurement mode this commit uses to collect the CI hosts'
-// values; the next commit pins them).
+// A platform the double pin table does not name fails after printing its
+// values: its libm is unmeasured, and a new platform is recorded — measured
+// against the C — not skipped.
 
 #include <cstddef>
 #include <cstdint>
@@ -72,6 +72,9 @@ namespace {
                         static_cast<unsigned long>(n), hi32(got.forward), lo32(got.forward), hi32(got.inverse),
                         lo32(got.inverse), platform != nullptr ? platform : "no pins for this platform");
             if (platform == nullptr) {
+                ADD_FAILURE() << precision << " n=" << n
+                              << ": no pins for this platform's C library; record the values printed above"
+                              << " (measured against the C, docs/fft-design.md) before relying on this build";
                 continue;
             }
             EXPECT_NE(pins[i].forward, 0u) << precision << " n=" << n << ": unmeasured on " << platform;

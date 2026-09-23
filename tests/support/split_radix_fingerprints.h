@@ -26,10 +26,10 @@
 // D10; split_radix.h rule 2), so a last-bit difference between two libms
 // moves the double outputs at every N that reads a non-trivial twiddle. It
 // moved the C's outputs identically: at 6f6f77f, the last main that carried
-// the reference C, the C computed the same three distinct double sets as the
-// port on the platforms measured locally (x86-64 glibc; newlib with a
+// the reference C, the C computed the same five distinct double sets as the
+// port on every platform measured (x86-64 glibc; newlib with a
 // single-precision or no FPU, i.e. the M4, M4F and M33 legs; newlib on the
-// M55's double-precision FPU). N = 4 and 16 agree everywhere (their twiddles
+// M55's double-precision FPU; x64 MSVC with the UCRT; arm64 macOS). N = 4 and 16 agree everywhere (their twiddles
 // are exact). The float instantiation rounds each double libm result to
 // float, and on every platform measured that absorbed the libm differences:
 // one float table serves all.
@@ -147,6 +147,24 @@ namespace tap::dsp::test {
         {0xe59fe4d3e6326eb3ull, 0x43318e1983699fd3ull}, // 256
         {0x58c61a3b29d4b55eull, 0x2d0482b12bc4e246ull}, // 4096
         {0, 0},                                         // 65536: not run
+    }};
+#elif defined(_MSC_VER) && defined(_M_X64)
+    inline constexpr const char*      k_double_pins_platform = "x64 MSVC, UCRT";
+    inline constexpr fingerprint_pins k_double_pins{{
+        {0xf014008109d04382ull, 0xa4e32575aed1c801ull}, // 4
+        {0xea32e166ad289557ull, 0x4a89b6e54a2b629eull}, // 16
+        {0xcabb356393c2dac7ull, 0x5c0eeb0579868a88ull}, // 256
+        {0x4e0db6e49731d286ull, 0xbcbcc885236c3585ull}, // 4096
+        {0xb02d408a57e2ebdeull, 0x288c58dad9580f4bull}, // 65536
+    }};
+#elif defined(__APPLE__) && defined(__aarch64__)
+    inline constexpr const char*      k_double_pins_platform = "arm64 macOS";
+    inline constexpr fingerprint_pins k_double_pins{{
+        {0xf014008109d04382ull, 0xa4e32575aed1c801ull}, // 4
+        {0xea32e166ad289557ull, 0x4a89b6e54a2b629eull}, // 16
+        {0x1a682072ef54d745ull, 0xa9e60433894b7013ull}, // 256
+        {0x7909ca3d02d78252ull, 0x4a9a5c439158323dull}, // 4096
+        {0xbae4e82f8d79d549ull, 0xbfa3a82a87bbe16dull}, // 65536
     }};
 #else
     inline constexpr const char*      k_double_pins_platform = nullptr;
