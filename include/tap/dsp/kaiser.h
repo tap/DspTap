@@ -23,10 +23,12 @@
 // ANCHOR_END: kai_design_note
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <numbers>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace tap::dsp {
@@ -68,12 +70,12 @@ namespace tap::dsp {
     // ANCHOR: kai_estimate
     /// Kaiser/harris FIR length estimate, expressed per polyphase branch.
     ///
-    /// \param attenDb        target stopband attenuation in dB
-    /// \param transWidthNorm transition width normalized to the *input* sample rate
-    ///                       (e.g. 8 kHz transition at 48 kHz -> 8000/48000)
-    /// \return estimated taps per polyphase phase: N = (A - 8) / (2.285 * 2*pi * df)
+    /// @param atten_db         target stopband attenuation in dB
+    /// @param trans_width_norm transition width normalized to the *input* sample rate
+    ///                         (e.g. 8 kHz transition at 48 kHz -> 8000/48000)
+    /// @return estimated taps per polyphase phase: N = (A - 8) / (2.285 * 2*pi * df)
     inline std::size_t estimate_taps(double atten_db, double trans_width_norm) noexcept {
-        // Clamp pathological inputs (attenDb < 8, non-positive width): the raw
+        // Clamp pathological inputs (atten_db < 8, non-positive width): the raw
         // formula goes negative/infinite there and casting that to size_t is UB.
         if (!(trans_width_norm > 0.0)) {
             return 4;
@@ -98,13 +100,13 @@ namespace tap::dsp {
     /// Designs the Kaiser-windowed sinc prototype lowpass for an L-phase
     /// interpolation bank.
     ///
-    /// \param h          output, length L*T (the full oversampled prototype)
-    /// \param numPhases  L; the prototype is sampled on a grid of 1/L input samples
-    /// \param cutoffNorm cutoff normalized to the input Nyquist, i.e. 2*fc/fs in
-    ///                   (0, 1]; for a near-unity interpolator centered between a
-    ///                   20 kHz passband and 28 kHz stopband at 48 kHz this is
-    ///                   (20000+28000)/48000 = 1.0 (cutoff at input Nyquist)
-    /// \param beta       Kaiser shape parameter (see kaiserBeta)
+    /// @param h           output, length L*T (the full oversampled prototype)
+    /// @param num_phases  L; the prototype is sampled on a grid of 1/L input samples
+    /// @param cutoff_norm cutoff normalized to the input Nyquist, i.e. 2*fc/fs in
+    ///                    (0, 1]; for a near-unity interpolator centered between a
+    ///                    20 kHz passband and 28 kHz stopband at 48 kHz this is
+    ///                    (20000+28000)/48000 = 1.0 (cutoff at input Nyquist)
+    /// @param beta        Kaiser shape parameter (see kaiser_beta)
     ///
     /// The result is normalized so that sum(h) == L, giving each polyphase branch a
     /// DC gain of ~1 (deviation bounded by the stopband leakage).
@@ -128,40 +130,48 @@ namespace tap::dsp {
     }
     // ANCHOR_END: kai_prototype
 
-    /// Solves the dense n x n system m * out = rhs in place (Gaussian elimination
-    /// with partial pivoting; row-major m). Small systems only — the compensated
+    /// Solves the dense n x n system m * out = rhs by Gaussian elimination with
+    /// partial pivoting (row-major m). Small systems only — the compensated
     /// design below solves at most 15 unknowns, and the analysis instruments'
     /// joint tone fits stay under ~50.
+    ///
+    /// m and rhs are the workspace: they are overwritten (rows exchanged and
+    /// eliminated in place), and out receives the solution. noexcept and
+    /// allocation-free: the pivot rows are exchanged in m and rhs themselves
+    /// rather than through a permutation vector (until Stage 6 an index vector
+    /// was allocated here, so a bad_alloc inside this noexcept function was
+    /// std::terminate). The exchange reorders storage only: every quotient,
+    /// product and difference is the one the permutation-vector form computed,
+    /// in the same order, so out is bit-identical to it.
+    /// @pre m.size() >= n * n, rhs.size() >= n, out.size() >= n; m nonsingular.
     inline void solve_dense(std::span<double> m, std::span<double> rhs, std::span<double> out, std::size_t n) noexcept {
-        std::vector<std::size_t> order(n);
-        for (std::size_t i = 0; i < n; ++i) {
-            order[i] = i;
-        }
         for (std::size_t col = 0; col < n; ++col) {
             std::size_t piv = col;
             for (std::size_t r = col + 1; r < n; ++r) {
-                if (std::abs(m[order[r] * n + col]) > std::abs(m[order[piv] * n + col])) {
+                if (std::abs(m[r * n + col]) > std::abs(m[piv * n + col])) {
                     piv = r;
                 }
             }
-            std::swap(order[col], order[piv]);
-            const std::size_t p = order[col];
+            if (piv != col) {
+                std::swap_ranges(m.begin() + static_cast<std::ptrdiff_t>(col * n),
+                                 m.begin() + static_cast<std::ptrdiff_t>(col * n + n),
+                                 m.begin() + static_cast<std::ptrdiff_t>(piv * n));
+                std::swap(rhs[col], rhs[piv]);
+            }
             for (std::size_t r = col + 1; r < n; ++r) {
-                const std::size_t rr = order[r];
-                const double      f  = m[rr * n + col] / m[p * n + col];
+                const double f = m[r * n + col] / m[col * n + col];
                 for (std::size_t q = col; q < n; ++q) {
-                    m[rr * n + q] -= f * m[p * n + q];
+                    m[r * n + q] -= f * m[col * n + q];
                 }
-                rhs[rr] -= f * rhs[p];
+                rhs[r] -= f * rhs[col];
             }
         }
         for (std::size_t col = n; col-- > 0;) {
-            const std::size_t p = order[col];
-            double            v = rhs[p];
+            double v = rhs[col];
             for (std::size_t q = col + 1; q < n; ++q) {
-                v -= m[p * n + q] * out[q];
+                v -= m[col * n + q] * out[q];
             }
-            out[col] = v / m[p * n + col];
+            out[col] = v / m[col * n + col];
         }
     }
 
@@ -186,16 +196,16 @@ namespace tap::dsp {
     /// sized by the M33 instruction-count ledger in SampleRateTap's
     /// docs/PERFORMANCE.md.)
     ///
-    /// \param h            output, length L*T for the TOTAL taps per phase T; the
-    ///                     sinc design uses T-1 taps and the rect supplies the
-    ///                     +1 (composite length L*(T-1)+L-1, one zero of padding)
-    /// \param numPhases    L
-    /// \param cutoffNorm   as designPrototype
-    /// \param beta         Kaiser shape parameter for the T-1-tap base design
-    /// \param passbandNorm passband edge / sample rate (flatness is corrected and
-    ///                     verified up to here)
+    /// @param h             output, length L*T for the TOTAL taps per phase T; the
+    ///                      sinc design uses T-1 taps and the rect supplies the
+    ///                      +1 (composite length L*(T-1)+L-1, one zero of padding)
+    /// @param num_phases    L
+    /// @param cutoff_norm   as design_prototype
+    /// @param beta          Kaiser shape parameter for the T-1-tap base design
+    /// @param passband_norm passband edge / sample rate (flatness is corrected and
+    ///                      verified up to here)
     ///
-    /// Costs a few ms more than designPrototype (three kernel builds plus ~100
+    /// Costs a few ms more than design_prototype (three kernel builds plus ~100
     /// direct-DFT probes); still constructor-only, off the audio path. Allocates
     /// workspace; may throw std::bad_alloc.
     // ANCHOR_END: pw_comp_design
@@ -250,7 +260,7 @@ namespace tap::dsp {
             // Tilted ideal kernel: sum of the brickwall sinc at integer shifts.
             // Centered at n/2 (not (n-1)/2): the even-length rect below shifts
             // the composite by (L-1)/2, and n/2 + (L-1)/2 == (L*total - 1)/2 —
-            // the exact center designPrototype uses, so a consuming bank's
+            // the exact center design_prototype uses, so a consuming bank's
             // phase/delay convention is identical for both designs. (Getting
             // this wrong is a half-fine-sample delay error: ~-72 dB at 1 kHz,
             // worse by 6 dB per octave — SampleRateTap's fractional-delay
@@ -323,7 +333,10 @@ namespace tap::dsp {
             }
         };
 
-        for (int pass = 0; pass < 1; ++pass) {
+        // The one correction pass (the doc comment above says why one): fit,
+        // build, probe, fold the measured deviation into the target; then the
+        // final fit and build below. (Written as a one-trip loop until Stage 6.)
+        {
             fit_cosine_series();
             build();
             // Probe the built passband by direct DFT (cos projection about the
@@ -351,7 +364,7 @@ namespace tap::dsp {
                 if (f > passband_norm) {
                     continue;
                 }
-                // probe[j] sits at f = passbandNorm*(j+1)/kProbe, i.e. x = j+1
+                // probe[j] sits at f = passband_norm*(j+1)/k_probe, i.e. x = j+1
                 const double x = f / passband_norm * k_probe - 1.0;
                 double       d;
                 if (x <= 0.0) {
