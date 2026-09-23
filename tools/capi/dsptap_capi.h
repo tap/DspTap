@@ -3,10 +3,12 @@
 ///        bindings and the verification notebooks (notebooks/ drive it via ctypes).
 ///
 ///        Conventions: plain C types only; the caller owns all arrays and sizes them. Handle-based
-///        functions return 0 on success and -1 on any error (bad argument, bad handle). No global
-///        state. Everything runs the double-precision golden profile — the notebooks verify the
-///        same code the consuming libraries compile — except where a function documents a profile
-///        selector (the FFT), so the notebooks can measure the embedded profiles as well.
+///        functions return 0 on success and -1 on any error (bad argument, bad handle), except
+///        where a function documents a non-negative return of its own (the FFT's raw transforms
+///        return the exponent). No global state. Everything runs the double-precision golden
+///        profile — the notebooks verify the same code the consuming libraries compile — except
+///        where a function documents a profile selector (the FFT), so the notebooks can measure
+///        the embedded profiles as well.
 // SPDX-License-Identifier: MIT
 // Copyright 2026 Timothy Place and the DspTap contributors.
 
@@ -43,15 +45,34 @@ typedef void* dsptap_decimator;
 
 /// -- fft ------------------------------------------------------------------------------------
 
-/// Numeric profile of a real FFT handle: which tap::dsp::basic_real_fft<Sample> instantiation
-/// it runs. DOUBLE is the golden model; FLOAT is the embedded profile (Ooura, or the platform
-/// backend the build selected — see dsptap_fft_backend). Q15 and Q31 are reserved for the
-/// fixed-point profiles of Stage 3 (docs/audit-fft-and-code-smells.md, Stage 3c wires them
-/// here); until then dsptap_fft_create returns NULL for them.
+/// Numeric profile of a real FFT handle: which tap::dsp::basic_real_fft<Sample, Scaling>
+/// instantiation it runs. DOUBLE is the golden model; FLOAT is the embedded floating profile
+/// (Ooura, or the platform backend the build selected — see dsptap_fft_backend). Q15 and Q31
+/// are the fixed-point profiles (std::int16_t in Q0.15, std::int32_t in Q0.31) under
+/// tap::dsp::scaling::fixed; Q15_BFP and Q31_BFP the same two under
+/// tap::dsp::scaling::block_floating (Stage 3b/3c of docs/audit-fft-and-code-smells.md). The
+/// values are part of the ABI: existing ones never move, new ones are appended.
+///
+/// THE EXPONENT (fft.h, the fixed-point contract, restated here because every fixed-point entry
+/// point below is defined in its terms). A fixed-point transform leaves its buffer scaled by
+/// 2^-e and returns e: read the buffer as fractions of full scale (x / 2^15 for Q15, x / 2^31
+/// for Q31) and let G be the DOUBLE profile on the same input read the same way — after a
+/// forward, G's forward result == buffer * 2^e; after an inverse, G's UNNORMALIZED inverse
+/// result == buffer * 2^e (up to the kernel's rounding noise; same packing, same exp(+i) sign).
+/// Under fixed scaling e is the constant dsptap_fft_fixed_scaling_exponent(): log2 N for Q15
+/// (forward output exactly X / N) and log2 N + 1 for Q31 (X / 2N); under block floating point
+/// 0 <= e <= that constant, chosen per block from the data's headroom. The fixed-point inverse
+/// applies NO 2/N (the exponent carries the scale): a raw round trip reconstructs
+/// x == out * 2^(e_fwd + e_inv + 1 - log2 N) under both policies. The floating profiles have
+/// no exponent and report e == 0 wherever one is returned. The fixed-point kernel is the
+/// portable int32 kernel on every host (fft/fixed_point.h): its output for a given input is
+/// the same bit pattern everywhere, whatever dsptap_fft_backend() says about float32.
 #define DSPTAP_FFT_PROFILE_DOUBLE 0
 #define DSPTAP_FFT_PROFILE_FLOAT 1
 #define DSPTAP_FFT_PROFILE_Q15 2
 #define DSPTAP_FFT_PROFILE_Q31 3
+#define DSPTAP_FFT_PROFILE_Q15_BFP 4
+#define DSPTAP_FFT_PROFILE_Q31_BFP 5
 
 /// Create a real FFT of `size` points (a power of two >= 4) in the given profile, or NULL on a
 /// bad size, an unavailable profile, or allocation failure. All workspace is allocated here; the
@@ -63,39 +84,77 @@ DSPTAP_API int        dsptap_fft_size(dsptap_fft h) DSPTAP_NOEXCEPT;
 DSPTAP_API int dsptap_fft_num_bins(dsptap_fft h) DSPTAP_NOEXCEPT;
 /// The DSPTAP_FFT_PROFILE_* the handle was created with.
 DSPTAP_API int dsptap_fft_profile(dsptap_fft h) DSPTAP_NOEXCEPT;
-/// sizeof the profile's native sample (8 for DOUBLE, 4 for FLOAT) — the element width of the
-/// buffers the *_inplace_raw transforms take.
+/// sizeof the profile's native sample (8 for DOUBLE, 4 for FLOAT, 2 for Q15 / Q15_BFP, 4 for
+/// Q31 / Q31_BFP) — the element width of the buffers the *_inplace_raw transforms take.
 DSPTAP_API int dsptap_fft_sample_bytes(dsptap_fft h) DSPTAP_NOEXCEPT;
 /// The float32 engine this build compiled: "ooura", "accelerate" (Apple vDSP) or "cmsis"
-/// (CMSIS-DSP Helium). The double profile is always Ooura.
+/// (CMSIS-DSP Helium). The double profile is always Ooura; the four fixed-point profiles are
+/// always the portable int32 kernel (fft/fixed_point.h), on every host.
 DSPTAP_API const char* dsptap_fft_backend(void) DSPTAP_NOEXCEPT;
+/// The exponent contract's constant for this handle's size: basic_real_fft<Sample,
+/// Scaling>::fixed_scaling_exponent(size) — the exponent every transform of a Q15 / Q31 handle
+/// returns (log2 size, log2 size + 1) and the upper bound of what a Q15_BFP / Q31_BFP handle
+/// returns. 0 for DOUBLE and FLOAT (no exponent), -1 on a bad handle.
+DSPTAP_API int dsptap_fft_fixed_scaling_exponent(dsptap_fft h) DSPTAP_NOEXCEPT;
 
 /// Forward transform of size() real samples into the packed spectrum, in double regardless of
-/// profile (the FLOAT profile converts at the boundary, so `in` is rounded to float32 first and
-/// the result is widened back). `out` may alias `in`. Packing and sign convention are the
-/// header's contract (fft.h): out[0] = DC, out[1] = Nyquist (both real), out[2k] + i*out[2k+1]
-/// = bin k for 1 <= k < size/2, with W = exp(+2*pi*i/size) — CONJUGATE to the engineering
-/// convention numpy.fft.rfft uses.
+/// profile. `out` may alias `in`. Packing and sign convention are the header's contract
+/// (fft.h): out[0] = DC, out[1] = Nyquist (both real), out[2k] + i*out[2k+1] = bin k for
+/// 1 <= k < size/2, with W = exp(+2*pi*i/size) — CONJUGATE to the engineering convention
+/// numpy.fft.rfft uses.
 ///
-/// Fixed point (Stage 3c, forward-looking so it extends rather than reinterprets): the Q15 and
-/// Q31 profiles convert at this boundary as x / 2^15 and x / 2^31 (full scale = 1.0) on the way
-/// in and the inverse on the way out, with the profile's fixed scaling policy; the block-
-/// floating-point policy and its per-transform exponent arrive through a separate create
-/// variant and a separate raw-path entry point, not through a change to these signatures.
+/// Per profile, at this double boundary:
+///   - DOUBLE: the golden model, no conversion.
+///   - FLOAT:  `in` is rounded to float32 first and the result widened back.
+///   - Q15 / Q31 / Q15_BFP / Q31_BFP: `in` is read as fractions of full scale and QUANTIZED to
+///     the profile's Q format by the substrate's round_sat (sample_traits.h: round half away
+///     from zero, saturating at +-full scale, so |in| <= 1 - LSB is the saturation-free input
+///     range); the transform runs on that native buffer and returns e; `out` is the native
+///     result read as fractions and multiplied by 2^e. So `out` is directly comparable to the
+///     DOUBLE profile's output on the same quantized input: out == G.forward(x_q) up to the
+///     kernel's noise, in the DOUBLE profile's units, whatever the policy and whatever e was.
+///     dsptap_fft_forward_exp is the same call with e written out.
 DSPTAP_API int dsptap_fft_forward(dsptap_fft h, const double* in, double* out) DSPTAP_NOEXCEPT;
-/// Inverse of dsptap_fft_forward, scaled by 2/size like basic_real_fft::inverse() so
-/// forward -> inverse reproduces the input. `out` may alias `in`.
+/// Inverse at the double boundary. `out` may alias `in`.
+///   - DOUBLE / FLOAT: scaled by 2/size like basic_real_fft::inverse(), so forward -> inverse
+///     reproduces the input.
+///   - Q15 / Q31 / Q15_BFP / Q31_BFP: `in` (a packed spectrum in fractions of full scale) is
+///     quantized to the Q format as for the forward, the fixed-point inverse runs, and `out` is
+///     the native result read as fractions times 2^e. That is the UNNORMALIZED inverse: NO 2/N
+///     is applied (fft.h: the fixed-point inverse() carries no 2/N; the exponent is the scale),
+///     so `out` == G.inverse_inplace(a_q), the DOUBLE profile's raw inverse of the same quantized
+///     spectrum. Note that a forward result scaled by 2^e can exceed full scale, so the
+///     forward -> inverse round trip in double is not this function's job: scale the spectrum
+///     into [-1, 1) yourself (e.g. by 2^-e_fwd) or use the raw path, whose round trip identity
+///     is stated above. dsptap_fft_inverse_exp is the same call with e written out.
 DSPTAP_API int dsptap_fft_inverse(dsptap_fft h, const double* in, double* out) DSPTAP_NOEXCEPT;
+/// dsptap_fft_forward / dsptap_fft_inverse with the transform's exponent written to *exponent
+/// (0 for DOUBLE and FLOAT; the fixed-point e otherwise). -1 on a NULL handle, array or
+/// exponent pointer.
+DSPTAP_API int dsptap_fft_forward_exp(dsptap_fft h, const double* in, double* out, int* exponent) DSPTAP_NOEXCEPT;
+DSPTAP_API int dsptap_fft_inverse_exp(dsptap_fft h, const double* in, double* out, int* exponent) DSPTAP_NOEXCEPT;
 
 /// In-place transforms on the profile's NATIVE sample type: `data` points at size() samples of
-/// dsptap_fft_sample_bytes() each (double for DOUBLE, float for FLOAT), in the same packing,
-/// and must be aligned for that type (a double* or float* the caller obtained as such; not an
-/// offset into a byte buffer). These are the header's forward_inplace()/inverse_inplace() with
-/// no conversion at all, so the notebooks measure the embedded profile's own arithmetic rather
-/// than a double round trip. The inverse is UNSCALED (multiply by 2/size for a round trip),
-/// exactly as in fft.h.
+/// dsptap_fft_sample_bytes() each (double for DOUBLE, float for FLOAT, int16_t for Q15 /
+/// Q15_BFP, int32_t for Q31 / Q31_BFP), in the same packing, and must be aligned for that type
+/// (a pointer the caller obtained as such; not an offset into a byte buffer). These are the
+/// header's forward_inplace()/inverse_inplace() with no conversion at all, so the notebooks
+/// measure the embedded profile's own arithmetic rather than a double round trip. The inverse
+/// is UNSCALED, exactly as in fft.h: multiply by 2/size for a floating round trip; for a
+/// fixed-point round trip apply the exponent identity stated at the profile codes.
+///
+/// Return value: the transform's exponent e (>= 0), or -1 on a NULL handle or buffer. For
+/// DOUBLE and FLOAT e is always 0, which is the value these functions returned before the
+/// fixed-point profiles existed, so a caller written against that ABI sees no change; a caller
+/// that tests `!= 0` for failure on a fixed-point handle is wrong and should test `< 0` or use
+/// the _exp variants below, which keep the 0 / -1 status convention and return e separately.
+/// Under block floating point a discarded exponent is a silent scale error (fft.h).
 DSPTAP_API int dsptap_fft_forward_inplace_raw(dsptap_fft h, void* data) DSPTAP_NOEXCEPT;
 DSPTAP_API int dsptap_fft_inverse_inplace_raw(dsptap_fft h, void* data) DSPTAP_NOEXCEPT;
+/// The raw transforms with the exponent written to *exponent and the usual 0 / -1 status
+/// returned (-1 also on a NULL exponent pointer). The path a binding should use.
+DSPTAP_API int dsptap_fft_forward_inplace_raw_exp(dsptap_fft h, void* data, int* exponent) DSPTAP_NOEXCEPT;
+DSPTAP_API int dsptap_fft_inverse_inplace_raw_exp(dsptap_fft h, void* data, int* exponent) DSPTAP_NOEXCEPT;
 
 /// -- yin ------------------------------------------------------------------------------------
 

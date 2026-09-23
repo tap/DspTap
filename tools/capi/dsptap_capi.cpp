@@ -5,6 +5,7 @@
 
 #include "dsptap_capi.h"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -17,33 +18,41 @@
 #include "tap/dsp/log_mel.h"
 #include "tap/dsp/psola.h"
 #include "tap/dsp/pvoc.h"
+#include "tap/dsp/sample_traits.h"
 #include "tap/dsp/yin.h"
 
 namespace {
 
-    // One virtual seam over the FFT profiles. The double entry points run the double engine
-    // directly; the float profile stages through a float buffer allocated at construction so the
-    // transforms stay allocation-free. The raw entry points hand the native buffer straight to the
-    // header's in-place transforms, with no conversion, so the notebooks measure the profile's own
-    // arithmetic. Q15/Q31 join here at Stage 3c (docs/audit-fft-and-code-smells.md).
+    // One virtual seam over the six FFT profiles (four sample types, two scaling policies for
+    // the fixed-point ones). The double entry points run the double engine directly; the float
+    // profile stages through a float buffer allocated at construction; the fixed-point profiles
+    // stage through a native buffer, quantizing at the boundary by the substrate's round_sat and
+    // reading back as fractions times 2^e, so every transform stays allocation-free. The raw
+    // entry points hand the native buffer straight to the header's in-place transforms, with no
+    // conversion, so the notebooks measure the profile's own arithmetic; they return the
+    // exponent, which is 0 for the floating profiles.
     template <typename>
     inline constexpr bool k_always_false = false;
 
-    // The DSPTAP_FFT_PROFILE_* a sample type reports. Exhaustive on purpose: a new instantiation
-    // that is not mapped here fails to compile instead of reporting a neighbour's profile.
-    template <typename Sample>
+    // The DSPTAP_FFT_PROFILE_* a (sample type, scaling policy) pair reports. Exhaustive on
+    // purpose: an instantiation that is not mapped here fails to compile instead of reporting a
+    // neighbour's profile.
+    template <typename Sample, typename Scaling>
     constexpr int profile_of() {
+        constexpr bool bfp = std::is_same_v<Scaling, tap::dsp::scaling::block_floating>;
         if constexpr (std::is_same_v<Sample, double>) {
+            static_assert(!bfp, "the floating profiles have no scaling policy");
             return DSPTAP_FFT_PROFILE_DOUBLE;
         }
         else if constexpr (std::is_same_v<Sample, float>) {
+            static_assert(!bfp, "the floating profiles have no scaling policy");
             return DSPTAP_FFT_PROFILE_FLOAT;
         }
         else if constexpr (std::is_same_v<Sample, std::int16_t>) {
-            return DSPTAP_FFT_PROFILE_Q15;
+            return bfp ? DSPTAP_FFT_PROFILE_Q15_BFP : DSPTAP_FFT_PROFILE_Q15;
         }
         else if constexpr (std::is_same_v<Sample, std::int32_t>) {
-            return DSPTAP_FFT_PROFILE_Q31;
+            return bfp ? DSPTAP_FFT_PROFILE_Q31_BFP : DSPTAP_FFT_PROFILE_Q31;
         }
         else {
             static_assert(k_always_false<Sample>, "no DSPTAP_FFT_PROFILE_* for this sample type");
@@ -51,46 +60,90 @@ namespace {
     }
 
     struct fft_base {
-        virtual ~fft_base()                                          = default;
-        virtual int  size() const noexcept                           = 0;
-        virtual int  profile() const noexcept                        = 0;
-        virtual int  sample_bytes() const noexcept                   = 0;
-        virtual void forward(const double* in, double* out) noexcept = 0;
-        virtual void inverse(const double* in, double* out) noexcept = 0;
-        virtual void forward_inplace_raw(void* data) noexcept        = 0;
-        virtual void inverse_inplace_raw(void* data) noexcept        = 0;
+        virtual ~fft_base()                                         = default;
+        virtual int size() const noexcept                           = 0;
+        virtual int profile() const noexcept                        = 0;
+        virtual int sample_bytes() const noexcept                   = 0;
+        virtual int fixed_scaling_exponent() const noexcept         = 0;
+        virtual int forward(const double* in, double* out) noexcept = 0; ///< returns e
+        virtual int inverse(const double* in, double* out) noexcept = 0; ///< returns e
+        virtual int forward_inplace_raw(void* data) noexcept        = 0; ///< returns e
+        virtual int inverse_inplace_raw(void* data) noexcept        = 0; ///< returns e
     };
-    template <typename Sample>
+    template <typename Sample, typename Scaling = tap::dsp::scaling::fixed>
     struct fft_impl final : fft_base {
+        static constexpr bool k_fixed_point = tap::dsp::sample_traits<Sample>::k_is_fixed_point;
+
         explicit fft_impl(std::size_t n)
             : fft(n)
             , buf(n, Sample(0)) {}
-        int  size() const noexcept override { return static_cast<int>(fft.size()); }
-        int  profile() const noexcept override { return profile_of<Sample>(); }
-        int  sample_bytes() const noexcept override { return static_cast<int>(sizeof(Sample)); }
-        void forward(const double* in, double* out) noexcept override {
+        int size() const noexcept override { return static_cast<int>(fft.size()); }
+        int profile() const noexcept override { return profile_of<Sample, Scaling>(); }
+        int sample_bytes() const noexcept override { return static_cast<int>(sizeof(Sample)); }
+        int fixed_scaling_exponent() const noexcept override {
+            if constexpr (k_fixed_point) {
+                return tap::dsp::basic_real_fft<Sample, Scaling>::fixed_scaling_exponent(fft.size());
+            }
+            else {
+                return 0;
+            }
+        }
+        int forward(const double* in, double* out) noexcept override {
             if constexpr (std::is_same_v<Sample, double>) {
                 fft.forward(in, out);
+                return 0;
+            }
+            else if constexpr (k_fixed_point) {
+                quantize(in);
+                const int e = fft.forward_inplace(buf.data());
+                dequantize(out, e);
+                return e;
             }
             else {
                 narrow(in);
                 fft.forward_inplace(buf.data());
                 widen(out, Sample(1));
+                return 0;
             }
         }
-        void inverse(const double* in, double* out) noexcept override {
+        int inverse(const double* in, double* out) noexcept override {
             if constexpr (std::is_same_v<Sample, double>) {
                 fft.inverse(in, out);
+                return 0;
+            }
+            else if constexpr (k_fixed_point) {
+                quantize(in);
+                const int e = fft.inverse_inplace(buf.data()); // no 2/N: the exponent is the scale
+                dequantize(out, e);
+                return e;
             }
             else {
                 narrow(in);
                 fft.inverse_inplace(buf.data());
                 widen(out, Sample(2) / static_cast<Sample>(fft.size())); // inverse()'s scale, in Sample
+                return 0;
             }
         }
-        void forward_inplace_raw(void* data) noexcept override { fft.forward_inplace(static_cast<Sample*>(data)); }
-        void inverse_inplace_raw(void* data) noexcept override { fft.inverse_inplace(static_cast<Sample*>(data)); }
+        int forward_inplace_raw(void* data) noexcept override {
+            if constexpr (k_fixed_point) {
+                return fft.forward_inplace(static_cast<Sample*>(data));
+            }
+            else {
+                fft.forward_inplace(static_cast<Sample*>(data));
+                return 0;
+            }
+        }
+        int inverse_inplace_raw(void* data) noexcept override {
+            if constexpr (k_fixed_point) {
+                return fft.inverse_inplace(static_cast<Sample*>(data));
+            }
+            else {
+                fft.inverse_inplace(static_cast<Sample*>(data));
+                return 0;
+            }
+        }
 
+        // The floating boundary: plain casts.
         void narrow(const double* in) noexcept {
             for (std::size_t i = 0; i < buf.size(); ++i) {
                 buf[i] = static_cast<Sample>(in[i]);
@@ -101,9 +154,29 @@ namespace {
                 out[i] = static_cast<double>(buf[i] * scale);
             }
         }
+        // The fixed-point boundary: fractions of full scale to the Q format by the substrate's
+        // round_sat (half away from zero, saturating), and back as fractions times 2^e (an exact
+        // power-of-two scale on an exactly representable integer).
+        void quantize(const double* in) noexcept {
+            if constexpr (k_fixed_point) {
+                constexpr double scale =
+                    static_cast<double>(std::int64_t{1} << tap::dsp::sample_traits<Sample>::k_sample_frac_bits);
+                for (std::size_t i = 0; i < buf.size(); ++i) {
+                    buf[i] = tap::dsp::detail::round_sat<Sample>(in[i] * scale);
+                }
+            }
+        }
+        void dequantize(double* out, int exponent) noexcept {
+            if constexpr (k_fixed_point) {
+                const double scale = std::ldexp(1.0, exponent - tap::dsp::sample_traits<Sample>::k_sample_frac_bits);
+                for (std::size_t i = 0; i < buf.size(); ++i) {
+                    out[i] = static_cast<double>(buf[i]) * scale;
+                }
+            }
+        }
 
-        tap::dsp::basic_real_fft<Sample> fft;
-        std::vector<Sample>              buf;
+        tap::dsp::basic_real_fft<Sample, Scaling> fft;
+        std::vector<Sample>                       buf;
     };
     fft_base* as_fft(dsptap_fft h) noexcept {
         return static_cast<fft_base*>(h);
@@ -186,7 +259,19 @@ dsptap_fft dsptap_fft_create(int size, int profile) DSPTAP_NOEXCEPT {
         case DSPTAP_FFT_PROFILE_FLOAT:
             p = new fft_impl<float>(static_cast<std::size_t>(size));
             break;
-        default: // Q15/Q31 arrive at Stage 3c; anything else is a bad argument
+        case DSPTAP_FFT_PROFILE_Q15:
+            p = new fft_impl<std::int16_t>(static_cast<std::size_t>(size));
+            break;
+        case DSPTAP_FFT_PROFILE_Q31:
+            p = new fft_impl<std::int32_t>(static_cast<std::size_t>(size));
+            break;
+        case DSPTAP_FFT_PROFILE_Q15_BFP:
+            p = new fft_impl<std::int16_t, tap::dsp::scaling::block_floating>(static_cast<std::size_t>(size));
+            break;
+        case DSPTAP_FFT_PROFILE_Q31_BFP:
+            p = new fft_impl<std::int32_t, tap::dsp::scaling::block_floating>(static_cast<std::size_t>(size));
+            break;
+        default: // anything else is a bad argument
             break;
         }
         return p;
@@ -216,6 +301,10 @@ int dsptap_fft_sample_bytes(dsptap_fft h) DSPTAP_NOEXCEPT {
     return h == nullptr ? -1 : as_fft(h)->sample_bytes();
 }
 
+int dsptap_fft_fixed_scaling_exponent(dsptap_fft h) DSPTAP_NOEXCEPT {
+    return h == nullptr ? -1 : as_fft(h)->fixed_scaling_exponent();
+}
+
 const char* dsptap_fft_backend(void) DSPTAP_NOEXCEPT {
 #if defined(TAP_DSP_FFT_ACCELERATE)
     return "accelerate";
@@ -230,7 +319,7 @@ int dsptap_fft_forward(dsptap_fft h, const double* in, double* out) DSPTAP_NOEXC
     if (h == nullptr || in == nullptr || out == nullptr) {
         return -1;
     }
-    as_fft(h)->forward(in, out);
+    (void)as_fft(h)->forward(in, out); // out already carries 2^e
     return 0;
 }
 
@@ -238,7 +327,23 @@ int dsptap_fft_inverse(dsptap_fft h, const double* in, double* out) DSPTAP_NOEXC
     if (h == nullptr || in == nullptr || out == nullptr) {
         return -1;
     }
-    as_fft(h)->inverse(in, out);
+    (void)as_fft(h)->inverse(in, out);
+    return 0;
+}
+
+int dsptap_fft_forward_exp(dsptap_fft h, const double* in, double* out, int* exponent) DSPTAP_NOEXCEPT {
+    if (h == nullptr || in == nullptr || out == nullptr || exponent == nullptr) {
+        return -1;
+    }
+    *exponent = as_fft(h)->forward(in, out);
+    return 0;
+}
+
+int dsptap_fft_inverse_exp(dsptap_fft h, const double* in, double* out, int* exponent) DSPTAP_NOEXCEPT {
+    if (h == nullptr || in == nullptr || out == nullptr || exponent == nullptr) {
+        return -1;
+    }
+    *exponent = as_fft(h)->inverse(in, out);
     return 0;
 }
 
@@ -246,15 +351,29 @@ int dsptap_fft_forward_inplace_raw(dsptap_fft h, void* data) DSPTAP_NOEXCEPT {
     if (h == nullptr || data == nullptr) {
         return -1;
     }
-    as_fft(h)->forward_inplace_raw(data);
-    return 0;
+    return as_fft(h)->forward_inplace_raw(data); // e >= 0
 }
 
 int dsptap_fft_inverse_inplace_raw(dsptap_fft h, void* data) DSPTAP_NOEXCEPT {
     if (h == nullptr || data == nullptr) {
         return -1;
     }
-    as_fft(h)->inverse_inplace_raw(data);
+    return as_fft(h)->inverse_inplace_raw(data);
+}
+
+int dsptap_fft_forward_inplace_raw_exp(dsptap_fft h, void* data, int* exponent) DSPTAP_NOEXCEPT {
+    if (h == nullptr || data == nullptr || exponent == nullptr) {
+        return -1;
+    }
+    *exponent = as_fft(h)->forward_inplace_raw(data);
+    return 0;
+}
+
+int dsptap_fft_inverse_inplace_raw_exp(dsptap_fft h, void* data, int* exponent) DSPTAP_NOEXCEPT {
+    if (h == nullptr || data == nullptr || exponent == nullptr) {
+        return -1;
+    }
+    *exponent = as_fft(h)->inverse_inplace_raw(data);
     return 0;
 }
 
