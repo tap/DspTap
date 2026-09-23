@@ -19,14 +19,16 @@
 
 namespace tap::dsp::bench {
 
-    /// What every bench binary measures: tap::dsp::basic_real_fft<Sample,
-    /// Scaling> as built — the split-radix engine (include/tap/dsp/fft/
-    /// split_radix.h) for double and, where no backend define is active, for
-    /// float; the accelerated backend behind the same class where the build
-    /// routes float32 through one (TAP_DSP_FFT_CMSIS on the `m55` key, vDSP
-    /// on Apple); the int32 fixed-point kernel (fft/fixed_point.h) for the
-    /// Q15 and Q31 profiles. The printed `backend=` field (backend_name
-    /// below) says which.
+    /// What every bench binary measures: tap::dsp::basic_real_fft<Sample> as
+    /// built, i.e. over the engine the build selected as that profile's
+    /// default (Stage 4: default_real_fft_engine_t<Sample> for the floating
+    /// profiles) — the split-radix engine (include/tap/dsp/fft/split_radix.h)
+    /// for double and, where no backend define is active, for float; the
+    /// accelerated engine behind the same class where the build routes
+    /// float32 through one (TAP_DSP_FFT_CMSIS on the `m55` key, vDSP on
+    /// Apple); the int32 fixed-point kernel (fft/fixed_point.h) for the Q15
+    /// and Q31 profiles. The printed `backend=` field (backend_name below)
+    /// says which.
     ///
     /// From Stage 2a until Stage 2c this header also carried an engine
     /// selector (TAP_DSP_BENCH_ENGINE) and an adapter that presented the
@@ -38,8 +40,13 @@ namespace tap::dsp::bench {
     /// alone) and the pair with it: the bench measures only what ships. The
     /// engine name below is kept as the constant it always printed for the
     /// shipping class, so the DONE line — and with it the recorded counts,
-    /// which include the print — did not move at 2c. Once Stage 4 makes the
-    /// engine an explicit class parameter this becomes that parameter's name.
+    /// which include the print — did not move at 2c, nor at Stage 4: the
+    /// engine became an explicit class parameter there, but the printed
+    /// field stays the class's name (the `backend=` field already names the
+    /// engine the default resolved to: split_radix / cmsis / accelerate /
+    /// fixed_point) because the recorded baselines include the print and a
+    /// longer string is a counted change (the 2b re-record measured +75
+    /// instructions for three characters, bench/README.md).
     constexpr const char* k_engine_name = "basic_real_fft";
 
     /// The transform under test.

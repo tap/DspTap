@@ -342,6 +342,40 @@ python3 scripts/icount.py --merge a.json b.json    # fold per-key files into one
 | 4 (engine as a parameter) | a backend regression on the deployed `m55` profile, or the `m55-ooura` fallback quietly getting slower |
 | 6 (hygiene) | the hygiene pass slowing the hot path unnoticed |
 
+**Stage 4 (engine parameter + ABI tag), measured locally before the PR with the
+CI toolchain (arm-none-eabi-gcc 13.2.1, qemu 8.2.2, the same plugin), what
+the ratchet caught and how it was resolved without a re-record.** After the
+backends moved out of `fft.h` and every engine took its size in its
+constructor, the `m55` key read `rfft_f32_512` 58,667,632 vs 52,382,331
+(+12.00 %) and `rfft_f32_2048` 61,148,069 vs 54,858,120 (+11.47 %) with
+every fixed-point scenario at +0.00 % and both float checksums identical to
+the baseline binaries'. The CMSIS archive was byte-identical and the
+wrapper's loops identical instruction for instruction; the delta was the
+bench's own FNV-1a fold: with the CMSIS engine's constructor (vector
+allocation, memset, `arm_rfft_fast_init_f32`, EH cleanup) inlined into
+`main` — the baseline had reached it through an out-of-line
+`make_floating_engine<float>` — the fold went from 7 to 10 instructions per
+element (the hash's low word spilled, the FNV prime rematerialized), i.e.
++6 per sample per iteration. Keeping the two accelerated engines'
+constructors out of line (`TAP_DSP_NOINLINE`, `include/tap/dsp/detail/attributes.h`)
+restores the recorded codegen: 52,382,336 (+5) and 54,858,165 (+45). The
+split-radix keys, whose constructor was left alone: m33 −0.11 / −0.06 %,
+m55-ooura −0.26 / −0.14 %, m4f −0.01 / −0.01 %, m4-softfp −0.00 / −0.00 %
+(`rfft_f32_512` / `rfft_f32_2048`); fixed point +0.00 % on every key except
+m33 `rfft_q15_512` at −2,048 instructions (−0.00 %; the Q31 transforms are
+const behind constrained overloads since Stage 4, the Q15 path gained one
+fewer instruction per iteration). No baseline moves. `.text` probes
+(MinSizeRel, `size -A`): m55 f32 107,585 (−72 vs the recorded 107,657), Q15
+27,105 (+8), Q31 26,553 (−40); m33 44,009 / 31,113 / 30,593 (+8 / +8 / −40);
+m55-ooura 39,281 / 27,105 / 26,553 (0 / +8 / −40); m4f 44,601 / 31,745 /
+31,209 (0 / +64 / 0); m4-softfp identical — all under their ceilings, none
+re-recorded. Lesson for the harness, recorded in
+`docs/audit-fft-and-code-smells.md` Part 13: a count includes the fold, and
+the fold's register allocation is a function of everything else inlined
+into `main`, so a construction-path change can move a float key by 12 %
+with the transform untouched; a scenario that constructed its engine in a
+separate function would not have seen it.
+
 ## Provenance
 
 `icount/icount_main.cpp`, `scripts/icount.py` and
