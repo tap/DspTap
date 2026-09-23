@@ -95,8 +95,9 @@ namespace tap::dsp {
                 std::memcpy(&r, row + t, sizeof r);
                 acc = __smlald(static_cast<int16x2_t>(h), static_cast<int16x2_t>(r), acc);
             }
-            for (; t < taps; ++t) // odd-tap tail
+            for (; t < taps; ++t) { // odd-tap tail
                 acc = tr::mac(acc, hist[t], row[t]);
+            }
             return tr::finalize(acc);
         }
 #endif
@@ -144,8 +145,9 @@ namespace tap::dsp {
                 std::memcpy(&r, row + (taps - 2 - t), sizeof r);
                 acc = __smlaldx(static_cast<int16x2_t>(h), static_cast<int16x2_t>(r), acc);
             }
-            for (; t < taps; ++t) // odd-tap tail
+            for (; t < taps; ++t) { // odd-tap tail
                 acc = tr::mac(acc, hist[t], row[taps - 1 - t]);
+            }
             return tr::finalize(acc);
         }
 #endif
