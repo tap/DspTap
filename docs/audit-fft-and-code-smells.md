@@ -336,14 +336,16 @@ Deviations from the text above, each recorded there:
 - **Second parameter, two meanings.** `basic_real_fft<Sample, Policy>`: the engine for the
   floating profiles (default `default_real_fft_engine_t<Sample>`, one selection point in
   `fft.h`), the Scaling policy for the fixed-point ones, so no spelling in MuTap or the capi
-  changes; `basic_real_fft<float | double, scaling::fixed>` (the pre-Stage-4 spelling the capi
-  writes) resolves to the selected engine and is a distinct type from the one-argument form.
+  changes; `basic_real_fft<float | double, scaling::fixed>` (the pre-Stage-4 spelling; no
+  in-tree code writes it since the #35 fix pass) resolves to the selected engine and is a
+  distinct type from the one-argument form, tolerated for one consumer cycle (D4).
 - **The fixed-point profiles carry the tag** (a partial specialization lives beside its
   primary) although their layout does not depend on the selection; cost stated in the design
   note (a harmless coalescing prevented; a link error instead of a silent merge).
-- **`is_shareable` is `k_is_shareable`** (house `k_` prefix), and an engine's transforms are
-  `const` exactly when shareable (Q31's became `const` behind `requires`-constrained
-  overloads), `static_assert`ed by the class; the class's transforms stay non-const (N11).
+- **`is_shareable` is `k_is_shareable`** (house `k_` prefix), and shareable implies const: a
+  shareable engine's transforms are `const` (Q31's became `const` behind `requires`-constrained
+  overloads), `static_assert`ed by the class, the converse a convention the tests pin; the
+  class's transforms stay non-const (N11).
 - **CMSIS parity is not compile-only on the M55: it runs there**, under QEMU, as it has since
   that leg landed (main's backend test already compared the CMSIS default to the split-radix
   reference); what #35 adds is the two engines as typed rows in one binary

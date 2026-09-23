@@ -15,9 +15,10 @@ cited as "audit Part N" below), and each PR links its stage.*
 
 ## Purpose and scope
 
-`tap::dsp::basic_real_fft<Sample, Engine>` (`include/tap/dsp/fft.h`) is a
-four-profile real-FFT contract — `double` (the golden model) and `float` (the
-embedded profile) on an engine that is a template parameter since Stage 4
+`tap::dsp::basic_real_fft<Sample, Policy = detail::default_real_fft_policy_t<Sample>>`
+(`include/tap/dsp/fft.h`) is a four-profile real-FFT contract — `double` (the
+golden model) and `float` (the embedded profile) on an engine that is the
+second template argument since Stage 4
 (the C++20 split-radix engine by default; vDSP or CMSIS-Helium where the
 build selects them for `float`), and the Q15 / Q31 fixed-point profiles from
 `sample_traits.h` on an int32 radix-4 kernel. The contract is the packing, the

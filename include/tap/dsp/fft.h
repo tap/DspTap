@@ -382,8 +382,15 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     /// sides alike. That is an observation, not a guarantee: g++ on x86-64
     /// built with -march (FMA) is measured to fuse the two sides differently
     /// (float moves by a few ulp at N >= 1024; clang with the same flags is
-    /// identical) and is not claimed. Stronger, measured on tap/DspTap#34
-    /// (Stage 6, which touches neither fft.h nor fft/): under g++ -O3
+    /// identical) and is not claimed. That is the first experiment, the
+    /// engine-vs-reference-C gate: bit-identical at -ffp-contract=off on both
+    /// sides and, at default flags, on every CI platform including MSVC and
+    /// the four QEMU legs.
+    ///
+    /// The second experiment, stronger, measured on tap/DspTap#34 (Stage 6,
+    /// which touches neither fft.h nor fft/), is a fingerprint A/B of pvoc
+    /// and log_mel through this class, main vs branch, run on g++ and on the
+    /// M33 leg and NOT on MSVC or AppleClang: under g++ -O3
     /// -march=x86-64-v3 at the default -ffp-contract=fast, the output of
     /// basic_real_fft depends on the TRANSLATION-UNIT CONTEXT, not only on
     /// the flags — an edit to unrelated code in the same TU (log_mel.h's
@@ -394,14 +401,10 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     /// appending ~30 unrelated lines to the TU made the outputs identical
     /// again. The double codegen moved in that experiment too, so "double
     /// does not move under g++ with FMA" (the 2b measurement) is an
-    /// observation, not a guarantee. Two experiments, kept apart: the
-    /// engine-vs-reference-C gate is bit-identical at -ffp-contract=off on
-    /// both sides and, at default flags, on every CI platform including
-    /// MSVC and the four QEMU legs; the #34 fingerprint A/B (pvoc / log_mel
-    /// through this class, main vs branch) was run on g++ and on the M33
-    /// leg, and NOT on MSVC or AppleClang. Why no export: an
-    /// INTERFACE -ffp-contract=off would reach
-    /// every consumer translation unit that includes this header and would
+    /// observation, not a guarantee.
+    ///
+    /// Why no export: an INTERFACE -ffp-contract=off would reach every
+    /// consumer translation unit that includes this header and would
     /// pessimize the VFMA / FMA targets the float profile exists for (the
     /// M55, Apple arm64) for the whole of that code, in exchange for a
     /// cross-compiler bit reproducibility that libm's last-bit cos/sin
