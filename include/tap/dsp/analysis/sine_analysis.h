@@ -13,18 +13,28 @@
 // point takes a contiguous range of Sample — std::span<const Sample>,
 // std::vector<Sample>, a std::array — for Sample float, double, std::int16_t
 // or std::int32_t. Floating samples are read as they are, exactly as before
-// the instruments were typed (pinned bit for bit by test_analysis.cpp,
+// the instruments were typed (pinned bit for bit by test_analysis_typed.cpp,
 // `FloatingSpansAreBitIdenticalToThePreTemplateInstrument`); integer samples
 // are read as Q0.15 / Q0.31 fractions of full scale through
 // sample_traits<Sample>::k_sample_frac_bits, so a Q15 converter tail or a
 // fixed-point FFT's time-domain output is scored in the same units (1.0 =
 // full scale) as the floating profiles. The optional `exponent` is for data
 // that carries a scale exponent, i.e. the output of a fixed-point real FFT
-// (fft.h): the samples are read as x * 2^exponent, so a block-floating
-// inverse's reconstruction is scored at its true level. The fit's numbers
-// (amplitude, dc, residual_rms) are in those fraction units; snr_db is
-// scale-free. The read is one exact power-of-two multiply per sample, so
-// the hot loops stay the plain double loops they were.
+// (fft.h): the fit is reported as if the samples were x * 2^exponent, so a
+// block-floating inverse's reconstruction is scored at its true level. The
+// fit's numbers (amplitude, dc, residual_rms) are in those fraction units;
+// snr_db is scale-free.
+//
+// How the read is done matters for bit identity, so it is stated: a
+// floating sample enters the arithmetic as the bare static_cast<double> it
+// always was (no multiply, not even by 1.0: under fp-contraction a product
+// feeding a subtraction fuses differently from a plain operand, and the
+// pre-template bits would move by an ulp on hosts that contract, which the
+// macOS arm64 CI leg showed); an integer sample enters as its exact fraction
+// (an int16 / int32 times 2^-15 / 2^-31 is exact, so fusing that product
+// into a later add cannot change a bit either); and the exponent is applied
+// to the three magnitude fields after the fit, an exact power-of-two scale,
+// never to the samples. The hot loops stay the plain double loops they were.
 #pragma once
 
 #include <cmath>
@@ -68,14 +78,33 @@ namespace tap::dsp::analysis {
             }
         }
 
-        /// The multiplier that reads a sample as a fraction of full scale at
-        /// scale exponent `exponent`: 2^(exponent - fraction bits). A power of
-        /// two, so the product is exact (an int16 or int32 value fits a double
-        /// mantissa), and for the floating types at exponent 0 it is 1.0, the
-        /// identity: the floating path computes exactly what it did before.
+        /// One sample as a double in the instrument's units: a floating sample
+        /// as it is, the bare cast the pre-template instrument evaluated; an
+        /// integer sample as its exact Q0.15 / Q0.31 fraction (a 16- or 32-bit
+        /// integer times a power of two is exact in a double).
         template <analysis_sample Sample>
-        inline double sample_step(int exponent) noexcept {
-            return std::ldexp(1.0, exponent - fraction_bits<Sample>());
+        constexpr double to_fraction(Sample v) noexcept {
+            if constexpr (std::floating_point<Sample>) {
+                return static_cast<double>(v);
+            }
+            else {
+                constexpr double unit = 1.0 / static_cast<double>(std::int64_t{1} << fraction_bits<Sample>());
+                return static_cast<double>(v) * unit;
+            }
+        }
+
+        /// Reports a fit made on x as the fit of x * 2^exponent: the three
+        /// magnitude fields scale exactly (a power of two), the phase and the
+        /// frequency do not change. A no-op at exponent 0, so the default path
+        /// touches nothing.
+        template <typename Fit>
+        inline void apply_exponent(Fit& fit, int exponent) noexcept {
+            if (exponent != 0) {
+                const double k = std::ldexp(1.0, exponent);
+                fit.amplitude *= k;
+                fit.dc *= k;
+                fit.residual_rms *= k;
+            }
         }
 
         /// The range as a std::span<const Sample>.
@@ -99,11 +128,10 @@ namespace tap::dsp::analysis {
     /// equations) at the known normalized frequency, then measures the residual.
     /// @param x         any contiguous range of float / double / Q15 / Q31 samples
     /// @param freq_norm the tone's frequency in cycles per sample
-    /// @param exponent  scale exponent of the data (fixed-point FFT output): read as x * 2^exponent
+    /// @param exponent  scale exponent of the data (fixed-point FFT output): the fit is reported for x * 2^exponent
     template <analysis_range R>
     sine_fit fit_sine(const R& x, double freq_norm, int exponent = 0) {
         const auto   xs      = detail::as_span(x);
-        const double step    = detail::sample_step<typename decltype(xs)::value_type>(exponent);
         const double w       = 2.0 * std::numbers::pi * freq_norm;
         double       m[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
         double       rhs[3]  = {0, 0, 0};
@@ -111,12 +139,11 @@ namespace tap::dsp::analysis {
             const double s        = std::sin(w * static_cast<double>(i));
             const double c        = std::cos(w * static_cast<double>(i));
             const double basis[3] = {s, c, 1.0};
-            const double v        = static_cast<double>(xs[i]) * step;
             for (int r = 0; r < 3; ++r) {
                 for (int q = 0; q < 3; ++q) {
                     m[r][q] += basis[r] * basis[q];
                 }
-                rhs[r] += basis[r] * v;
+                rhs[r] += basis[r] * detail::to_fraction(xs[i]);
             }
         }
         // Gaussian elimination with partial pivoting.
@@ -156,11 +183,12 @@ namespace tap::dsp::analysis {
         for (std::size_t i = 0; i < xs.size(); ++i) {
             const double s = std::sin(w * static_cast<double>(i));
             const double c = std::cos(w * static_cast<double>(i));
-            const double r = static_cast<double>(xs[i]) * step - (sol[0] * s + sol[1] * c + sol[2]);
+            const double r = detail::to_fraction(xs[i]) - (sol[0] * s + sol[1] * c + sol[2]);
             sq += r * r;
         }
         fit.residual_rms = std::sqrt(sq / static_cast<double>(xs.size()));
         fit.freq_norm    = freq_norm;
+        detail::apply_exponent(fit, exponent);
         return fit;
     }
 
@@ -178,8 +206,8 @@ namespace tap::dsp::analysis {
         double            f    = freq_norm_guess;
         const std::size_t half = xs.size() / 2;
         for (int iter = 0; iter < 4; ++iter) {
-            const sine_fit a = fit_sine(xs.first(half), f, exponent);
-            const sine_fit b = fit_sine(xs.subspan(half), f, exponent);
+            const sine_fit a = fit_sine(xs.first(half), f); // the phases do not depend on the exponent
+            const sine_fit b = fit_sine(xs.subspan(half), f);
             // b.phase is relative to the second half's start; predict it from a.
             const double two_pi    = 2.0 * std::numbers::pi;
             const double predicted = a.phase + two_pi * f * static_cast<double>(half);
