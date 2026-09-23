@@ -38,8 +38,29 @@ jobs:
       # before asserting; a passing ctest swallows that output, so run them
       # verbosely as their own step (Part 13) and the log carries each host's
       # values.
+      # Runs even when the battery failed, so a mismatch still leaves every
+      # value in the log. On linux the run must match glibc's FMA/AVX2 row.
       - name: Split-radix fingerprints (verbose)
-        run: ctest --test-dir build --build-config Release -R "split_radix_fingerprint|ReferenceCHasThePinnedFingerprints" -V
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -o pipefail
+          ctest --test-dir build --build-config Release -R "split_radix_fingerprint|ReferenceCHasThePinnedFingerprints" -V | tee fingerprints.log
+          if [ "$RUNNER_OS" = Linux ]; then grep -q "matched row: x86-64 glibc (2.39), FMA/AVX2 dispatch" fingerprints.log; fi
+
+      # x86-64 glibc picks sin / cos / atan by CPU at run time and the two
+      # builds differ in the last bit (double N >= 8192): the tunable masks
+      # AVX2 and FMA so the SSE2 implementations run and the second glibc row
+      # is exercised every run, on the same binary.
+      - name: Split-radix fingerprints under glibc's SSE2 dispatch (linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        shell: bash
+        env:
+          GLIBC_TUNABLES: glibc.cpu.hwcaps=-AVX2,-FMA
+        run: |
+          set -o pipefail
+          ctest --test-dir build --build-config Release -R "split_radix_fingerprint|ReferenceCHasThePinnedFingerprints" -V | tee fingerprints-sse2.log
+          grep -q "matched row: x86-64 glibc (2.39), SSE2 dispatch" fingerprints-sse2.log
 
       # The Stage 2a informational parity target prints a max-ulp table per
       # platform that a passing ctest swallows; run it verbosely as its own

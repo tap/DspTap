@@ -398,39 +398,41 @@ namespace {
     // (tests/support/split_radix_fingerprints.h), computed from the C. Same
     // procedure, same binary, -ffp-contract=off on both sides: the C's
     // fingerprint must equal the engine's (the gate above, restated as a
-    // hash) and, where the platform has pins, the pin. This is the record
-    // that the pins are the C's bits; it leaves with this file at D6.
+    // hash) at every size, the C's float fingerprints the float row, and the
+    // C's double fingerprints one of the platform's double rows (printed).
+    // This is the record that the pins are the C's bits; it leaves with this
+    // file at D6.
     // ------------------------------------------------------------------------
     template <typename Sample>
-    void expect_c_has_pinned_fingerprints(const char* precision, const char* platform,
-                                          const tap::dsp::test::fingerprint_pins& pins) {
+    std::vector<tap::dsp::test::fingerprint_pair> c_fingerprints(const char* precision) {
         namespace t = tap::dsp::test;
-        for (std::size_t i = 0; i < t::k_fingerprint_sizes.size(); ++i) {
+        std::vector<t::fingerprint_pair> c;
+        for (std::size_t i = 0; i < t::fingerprint_size_count(TAP_DSP_PARITY_MAX_N); ++i) {
             const std::size_t n = t::k_fingerprint_sizes[i];
-            if (n > static_cast<std::size_t>(TAP_DSP_PARITY_MAX_N)) {
-                continue;
-            }
-            const t::fingerprint_pair c    = t::fingerprint_of<ooura_ref<Sample>, Sample>(n);
+            c.push_back(t::fingerprint_of<ooura_ref<Sample>, Sample>(n));
             const t::fingerprint_pair port = t::fingerprint_of<engine_under_test<Sample>, Sample>(n);
-            std::printf("[ C fingerprint ] %s n=%lu forward=%08lx%08lx inverse=%08lx%08lx (%s)\n", precision,
-                        static_cast<unsigned long>(n), static_cast<unsigned long>(c.forward >> 32),
-                        static_cast<unsigned long>(c.forward & 0xffffffffu),
-                        static_cast<unsigned long>(c.inverse >> 32),
-                        static_cast<unsigned long>(c.inverse & 0xffffffffu),
-                        platform != nullptr ? platform : "no pins for this platform");
-            EXPECT_EQ(c.forward, port.forward) << precision << " forward n=" << n;
-            EXPECT_EQ(c.inverse, port.inverse) << precision << " inverse n=" << n;
-            if (platform != nullptr) {
-                EXPECT_EQ(c.forward, pins[i].forward) << precision << " forward n=" << n << " on " << platform;
-                EXPECT_EQ(c.inverse, pins[i].inverse) << precision << " inverse n=" << n << " on " << platform;
-            }
+            std::printf("[ C fingerprint ] %s n=%lu forward=%08lx%08lx inverse=%08lx%08lx\n", precision,
+                        static_cast<unsigned long>(n), static_cast<unsigned long>(c.back().forward >> 32),
+                        static_cast<unsigned long>(c.back().forward & 0xffffffffu),
+                        static_cast<unsigned long>(c.back().inverse >> 32),
+                        static_cast<unsigned long>(c.back().inverse & 0xffffffffu));
+            EXPECT_EQ(c.back().forward, port.forward) << precision << " forward n=" << n;
+            EXPECT_EQ(c.back().inverse, port.inverse) << precision << " inverse n=" << n;
         }
+        return c;
     }
 
     TEST(fft_parity_ooura, ReferenceCHasThePinnedFingerprints) {
-        expect_c_has_pinned_fingerprints<double>("double", tap::dsp::test::k_double_pins_platform,
-                                                 tap::dsp::test::k_double_pins);
-        expect_c_has_pinned_fingerprints<float>("float", "every platform", tap::dsp::test::k_float_pins);
+        namespace t                                = tap::dsp::test;
+        const std::vector<t::fingerprint_pair> d   = c_fingerprints<double>("double");
+        const t::double_row*                   row = t::matching_double_row(d);
+        std::printf("[ C fingerprint ] double matched row: %s\n", row != nullptr ? row->name : "NONE");
+        EXPECT_NE(row, nullptr) << "the C's double fingerprints match no " << t::k_double_platform << " row";
+        const std::vector<t::fingerprint_pair> f = c_fingerprints<float>("float");
+        for (std::size_t i = 0; i < f.size(); ++i) {
+            EXPECT_EQ(f[i].forward, t::k_float_pins[i].forward) << "float forward n=" << t::k_fingerprint_sizes[i];
+            EXPECT_EQ(f[i].inverse, t::k_float_pins[i].inverse) << "float inverse n=" << t::k_fingerprint_sizes[i];
+        }
     }
 
 #else // TAP_DSP_PARITY_INFORMATIONAL
