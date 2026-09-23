@@ -4,8 +4,10 @@ DspTap's own code — everything outside `third_party/` and the two Ooura
 files under `tests/reference/ooura/` (`fftsg.c`, `fftsg_float.c`; the
 directory-local `.clang-format` beside them and the declaration header
 `tests/reference/ooura_rdft.h` above them are DspTap's): `include/tap/dsp/`,
-`tests/`, `tools/`, `notebooks/`, `bench/`, `scripts/`, `cmake/`, `docs/` and
-the build files — is licensed under the MIT License — see
+`tests/`, `tools/`, `notebooks/`, `bench/`, `scripts/`, `cmake/`, `platform/`
+(the bare-metal startup file and linker scripts the QEMU legs link, carried
+from MuTap's MIT copies; `platform/README.md` records their origin), `docs/`
+and the build files — is licensed under the MIT License — see
 [`LICENSE`](LICENSE).
 
 It bundles the following third-party code, each retaining its own license
@@ -93,8 +95,12 @@ text:
 - Path: `third_party/cmsis-dsp/`.
 - Origin: Arm Limited — a minimal subset (float32 real FFT + Helium/MVE
   transform closure) vendored for the optional Cortex-M55 backend.
-- License: Apache-2.0 — see `third_party/cmsis-dsp/LICENSE`; SPDX headers
-  retained in every vendored file. Provenance and refresh procedure in
+- License: Apache-2.0 — see `third_party/cmsis-dsp/LICENSE`; every vendored
+  file keeps the header it has upstream, which is an SPDX Apache-2.0 header
+  in all of them except `PrivateInclude/arm_compiler_specific.h`, which
+  carries no license header upstream either (checked against CMSIS-DSP at
+  the pinned commit `918014f0ba96`) and is covered by the package's
+  `LICENSE`. Provenance and refresh procedure in
   `third_party/cmsis-dsp/VENDOR.md`.
 - Compiled only when `TAP_DSP_FFT_CMSIS` is ON (Arm cross builds), into the
   `tap_dsp_fft` library that exists only then; untouched by the default
