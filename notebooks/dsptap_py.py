@@ -140,8 +140,8 @@ class RealFFT:
     """tap::dsp::basic_real_fft<Sample, Scaling> through the C ABI. `profile` is one of
 
         "double"   the golden model
-        "float"    the embedded floating profile (Ooura, or the vDSP/CMSIS backend the build
-                   selected — see `RealFFT.backend()`)
+        "float"    the embedded floating profile (the split-radix engine, or the vDSP/CMSIS
+                   backend the build selected — see `RealFFT.backend()`)
         "q15"      std::int16_t, Q0.15 I/O, tap::dsp::scaling::fixed
         "q31"      std::int32_t, Q0.31 I/O, scaling::fixed
         "q15_bfp"  Q15 under scaling::block_floating
@@ -225,8 +225,10 @@ class RealFFT:
 
     @staticmethod
     def backend() -> str:
-        """The float32 engine this build compiled: "ooura", "accelerate" or "cmsis". The double
-        profile is always Ooura; the fixed-point profiles are always the portable int32 kernel."""
+        """The float32 engine this build compiled: "split_radix" (the C++20 engine of
+        fft/split_radix.h, bit-identical to the Ooura C it replaced; "ooura" until Stage 2c),
+        "accelerate" or "cmsis". The double profile is always the split-radix engine; the
+        fixed-point profiles are always the portable int32 kernel."""
         return _lib.dsptap_fft_backend().decode()
 
     def forward_with_exponent(self, x: np.ndarray) -> tuple[np.ndarray, int]:
