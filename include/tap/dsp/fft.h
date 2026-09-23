@@ -356,8 +356,22 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     /// engine's statements are textually the C's and each compiler fuses both
     /// sides alike. That is an observation, not a guarantee: g++ on x86-64
     /// built with -march (FMA) is measured to fuse the two sides differently
-    /// (float moves by a few ulp at N >= 1024, double does not; clang with
-    /// the same flags is identical) and is not claimed. Why no export: an
+    /// (float moves by a few ulp at N >= 1024; clang with the same flags is
+    /// identical) and is not claimed. Stronger, measured on tap/DspTap#34
+    /// (Stage 6, which touches neither fft.h nor fft/): under g++ -O3
+    /// -march=x86-64-v3 at the default -ffp-contract=fast, the output of
+    /// basic_real_fft depends on the TRANSLATION-UNIT CONTEXT, not only on
+    /// the flags — an edit to unrelated code in the same TU (log_mel.h's
+    /// constructor) changed GCC's inlining of cftmdl2 into the split-radix
+    /// engine's cftrec4 / cftleaf (float cftrec4 went from 194 to 168
+    /// vfmadd instructions, double from 224 to 254) and moved pvoc's float
+    /// output bits while every pvoc function was instruction-identical;
+    /// appending ~30 unrelated lines to the TU made the outputs identical
+    /// again. The double codegen moved in that experiment too, so "double
+    /// does not move under g++ with FMA" (the 2b measurement) is an
+    /// observation, not a guarantee. Bit identity still holds at
+    /// -ffp-contract=off, on clang (per-statement contraction), on MSVC and
+    /// on all four QEMU legs. Why no export: an
     /// INTERFACE -ffp-contract=off would reach
     /// every consumer translation unit that includes this header and would
     /// pessimize the VFMA / FMA targets the float profile exists for (the

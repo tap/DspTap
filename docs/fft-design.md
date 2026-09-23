@@ -577,6 +577,7 @@ VFMA, any x86 built with `-march`). Therefore:
    | local, this port's development host | g++ 13.3.0 and clang++ 18.1.3, x86-64 without `-march` | 4 … 65536, 2^20 | 0 | 0 |
    | local, at tap/DspTap#31 (2b review) | g++ 13.3.0 `-O3 -march=haswell` (FMA, GCC contracts across statements after inlining) | 4 … 65536, 2^20 | 0 | **> 0 at N = 1024, 4096, 16384, 65536, 2^20** (0 at 2048, 8192, 32768); the informational target's per-value ulp distance reaches 256 / 4 (fwd / inv) at 1024 and 16384 / 65536 at 2^20 on bins near zero; the review's independent harness on `basic_real_fft<float>` vs the C: 56 of 1200 blocks differ at N ≥ 1024, max \|Δ\| / max \|ref\| = 3.6e-7 |
    | local, at tap/DspTap#31 (2b review) | clang++ 18.1.3 `-O3 -march=haswell` (FMA, per-statement contraction) | 4 … 65536, 2^20 | 0 | 0 |
+   | local, at tap/DspTap#34 (Stage 6 reviews; #34 touches neither `fft.h` nor `fft/`) | g++ `-O3 -march=x86-64-v3`, default `-ffp-contract=fast` | pvoc's float output through `basic_real_fft<float>` | codegen moved (float `cftrec4` 194 → 168 `vfmadd`, double 224 → 254) | **float output bits moved with an edit to unrelated code in the same TU** (log_mel.h's constructor), every pvoc function instruction-identical; ~30 unrelated lines appended to the TU made the outputs identical again — the output depends on TU context, not only on flags |
 
    Zero everywhere, including the four FMA-capable legs (macOS arm64, M4F,
    M33, M55): because every statement is textually identical on the two
@@ -595,7 +596,17 @@ VFMA, any x86 built with `-march`). Therefore:
    after inlining (588 fused instructions in a TU instantiating the port vs
    372 in the two C files, `-O3 -march=haswell`; clang 221 vs 333; both
    0 / 0 with the flag). The gate at `-ffp-contract=off` is 6 / 6 on both
-   compilers at `-march=haswell`.
+   compilers at `-march=haswell`. The Stage 6 reviews (tap/DspTap#34, last
+   row) sharpened this: under GCC's cross-statement contraction on an FMA
+   target the engine's output depends on **translation-unit context** —
+   what else the TU inlines decides how `cftmdl2` is inlined into `cftrec4`
+   / `cftleaf`, and with it which products fuse — so an edit to code that
+   never touches the FFT can move a consumer's float bits, and the double
+   codegen moved in the same experiment even though no double bit was seen
+   to move; "double is identical under g++ with FMA" is therefore an
+   observation about the builds measured, not a guarantee. Everything is
+   still bit-identical at `-ffp-contract=off`, on clang, on MSVC and on the
+   four QEMU legs. `fft.h`'s D9 paragraph states the same.
 3. **Decided at Stage 2b, stated in `fft.h`'s class docstring: `tap::dsp`
    does NOT export `-ffp-contract=off`** (or any contraction setting) to its
    consumers, and the header sets none; the engine is compiled under whatever
