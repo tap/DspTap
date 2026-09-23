@@ -714,7 +714,31 @@ Seeded by the Stage 1b ratchet from the vendored C, then re-measured at 2b
 SHA, toolchain and QEMU versions; the gate itself lives in
 `bench/baselines.json` and the CI job, never in this file.
 
-### `.text` per profile at N = 512 (`TODO(stage 3b follow-up)` for the fixed-point columns; ceilings not yet recorded)
+### `.text` per profile at N = 512
+
+**Stage 2c (this PR): the fixed-point columns, and the ceilings.** Measured
+on the recording run of the 2c branch (`21b3488`, bench run 35861317022,
+2026-09-23, arm-none-eabi-gcc 13.2.1 (15:13.2.rel1-2), QEMU 8.2.2 (1:8.2.2+ds-0ubuntu1.18), ubuntu-24.04), MinSizeRel,
+`size -A` `.text`. The float probe is byte-identical to the Stage 2b figure
+on every key (the shipping float path did not change; the `_c` probe is gone
+with the C). The fixed-point probes are `basic_real_fft<std::int16_t>` and
+`<std::int32_t>` under `scaling::fixed`: the same int32 kernel at both I/O
+widths, so Q15 is ~500 bytes over Q31 (the narrow/widen glue), 27-32 KB per
+profile against the float engine's 39-53 KB, and identical on the two M55
+keys (no backend applies). The ceilings are now set in `bench.yml`
+(`text_ceiling_f32/q15/q31`), policy measured + 3 % rounded up to 64 bytes
+(`bench/README.md`, "Sizes"): the Part 4 assertion for the float
+instantiation on the M55 leg is `40,512` bytes on
+`m55-ooura` (the engine) and `110,912` on `m55` (CMSIS-DSP).
+
+| Target | float (engine) | Q15 | Q31 | ceilings f32 / q15 / q31 |
+|---|---|---|---|---|
+| `m4-softfp` | 53,289 (split-radix) | 31,473 | 31,001 | 54,912 / 32,448 / 31,936 |
+| `m4f` | 44,601 (split-radix) | 31,681 | 31,209 | 45,952 / 32,640 / 32,192 |
+| `m33` | 44,001 (split-radix) | 31,105 | 30,633 | 45,376 / 32,064 / 31,552 |
+| `m55` | 107,657 (CMSIS-DSP Helium) | 27,097 | 26,593 | 110,912 / 27,968 / 27,392 |
+| `m55-ooura` | 39,281 (split-radix) | 27,097 | 26,593 | 40,512 / 27,968 / 27,392 |
+
 
 **Stage 2b (the flip; tap/DspTap#31).** Measured on the seeding run of the
 2b branch (`b078a80`, bench run 35844483811, 2026-09-23, arm-none-eabi-gcc
@@ -768,7 +792,36 @@ Pre-ratchet reference points from the audit (thumbv8.1m, hard float,
 rdft-reachable text, `--gc-sections`): float 15.7 KB at `-Os`, 19.9 KB at
 `-O2`; double (soft-float) 39.9 KB at `-O2`.
 
-### Instructions per scenario (`TODO(stage 3b follow-up)` for the fixed-point rows)
+### Instructions per scenario
+
+**Stage 2c (this PR): the fixed-point scenarios seeded.** Same run as the
+sizes above (35861317022 at `21b3488`), compare mode on every key: the float
+scenarios at +0.00 % against the 2b baselines on all five keys (the C is gone
+from the tree and the shipping path did not move), the three fixed-point
+scenarios recorded as new baselines (`bench/README.md`, one row per key and
+scenario). Executed guest instructions for the whole scenario binary, as for
+the float rows: 2^20 samples per direction through `forward()` + `inverse()`
+with the exponent folded after each block, construction and the checksum.
+
+| Scenario | `m4-softfp` | `m4f` | `m33` | `m55` | `m55-ooura` |
+|---|---|---|---|---|---|
+| `rfft_q15_512` | 746,311,273 | 753,215,637 | 752,189,619 | 684,157,511 | 684,157,511 |
+| `rfft_q31_512` | 709,161,574 | 715,019,447 | 714,626,257 | 657,595,969 | 657,595,969 |
+| `rfft_q31_2048` | 869,187,566 | 876,486,909 | 875,801,377 | 806,142,635 | 806,142,635 |
+| `rfft_q31_512` / `rfft_f32_512` | 0.38 | 7.36 | 7.08 | 12.55 | 7.37 |
+
+Read against the float engine: the int32 kernel costs 7.1-7.4x the split-radix
+float count on the FPU cores (M4F, M33, M55 with the engine) and 12.6x the
+CMSIS-DSP Helium count on `m55`, but only 0.38x the soft-float M4's float
+count — the profile the fixed-point kernel exists for. Q15 costs 4-5 % more
+than Q31 at the same N (the widen/narrow passes); the 2048-point Q31
+transform costs 1.23x the 512-point one for the same sample throughput
+(log2 N stages: 11 vs 9, plus the post-pass). These are the numbers every
+later `SMMULR`, Helium or table-layout change to `fft/fixed_point.h` is
+ratcheted against (D11). Host reference (x86-64, GCC 13.3 `-O3`, callgrind):
+434 M / 407 M / 495 M instructions for `rfft_q15_512` / `rfft_q31_512` /
+`rfft_q31_2048`, of which the two radix-4 stage kernels are 71-80 %.
+
 
 **Stage 2b (the flip; tap/DspTap#31): the baselines re-recorded to the
 port.** Same run as the sizes above (35844483811 at `b078a80`, seed mode on
@@ -827,9 +880,7 @@ no toolchain file overrides it — with VFMA on the M4F / M33 / M55).
 | ratio port / C | 0.9989 | 0.9947 | 0.9915 | 1.8752 (vs CMSIS) | 0.9521 | |
 | checksums | identical | identical | identical | differ (CMSIS ≠ Ooura, expected) | identical | |
 | `rfft_f64_512` (host-class only) | n/a | n/a | n/a | n/a | n/a | |
-| `rfft_q15_512` | | | | | | `TODO(stage 3b)` |
-| `rfft_q31_512` | | | | | | `TODO(stage 3b)` |
-| `rfft_q31_2048` | | | | | | `TODO(stage 3b)` |
+| `rfft_q15_512`, `rfft_q31_512`, `rfft_q31_2048` | seeded at Stage 2c: the table at the top of this section | | | | | |
 
 Read against the ±3 % ratchet 2b will apply: the port executes 0.1 % to
 5.8 % *fewer* instructions than the C on every Ooura key, well inside the
@@ -885,12 +936,21 @@ before DspTap consolidated the wrappers; the FFT's Tap lineage is the
 AmbiTap/MuTap one. The C++20 port landed at Stage 2a (tap/DspTap#28) as
 `include/tap/dsp/fft/split_radix.h`, beside the C and routed nowhere, with
 the banner below in place; Stage 2b (tap/DspTap#31) routed `basic_real_fft`
-at it, and the C stays in the tree as the parity reference until Stage 2c.
-What is vendored is one source file of Ooura's package plus
-its `readme.txt` — see `NOTICE.md` for exactly how the vendored file differs
-from upstream. Provenance stays visible after the port through four things:
-the port header's attribution banner, `NOTICE.md`, the parity test against
-`tests/reference/ooura/fftsg.c` (where `fftsg.c` alone moves at Stage 2c;
+at it; Stage 2c moved the C out of the shipping tree. Since 2c the library is
+header-only (`tap::dsp` a pure INTERFACE target; `tap_dsp_fft` exists only
+under `TAP_DSP_FFT_CMSIS`, carrying the CMSIS objects), and what remains of
+Ooura's package in the repo is `readme.txt` at `third_party/ooura/` plus the
+reference copy of `fftsg.c` — with `fftsg_float.c`, because the float half
+of the parity gate compares against `rdft_f` and would otherwise be
+port-vs-port — under `tests/reference/ooura/`, compiled by the gate alone
+(`tests/CMakeLists.txt`) and declared to it by `tests/reference/ooura/rdft.h`.
+See `NOTICE.md` for exactly how the reference file differs from upstream. D6
+retires the reference copy after both MuTap and MuTap-Max pin a tree
+containing 2c; with it goes the gate (`test_fft_parity_ooura.cpp`), leaving
+the routing proof (`test_fft_routing.cpp`) and the independent oracle
+(`test_fft_oracle.cpp`). Provenance stays visible after the port through four
+things: the port header's attribution banner, `NOTICE.md`, the parity test
+against `tests/reference/ooura/fftsg.c` (while it lasts;
 `readme.txt` stays at `third_party/ooura/readme.txt` permanently, D6), and
 one glossary line in MuTap's `docs/itu-compliance.md` mapping "measured on
 Ooura" to "the vendored C at DspTap ≤ `5ca3b1c` and the bit-identical port
@@ -904,13 +964,20 @@ attribution is carried by the banner and the notices, not the identifier.
 Ride the pin bumps; none is DspTap's to make.
 
 - **MuTap `THIRD_PARTY_NOTICES.md`** — rewritten in the Stage 2c bump with
-  `NOTICE.md`'s statement, because the notice will then live in a header
-  compiled into every external.
+  `NOTICE.md`'s statement, because the notice now lives in a header compiled
+  into every external and no `submodules/dsptap/third_party/ooura/fftsg*.c`
+  exists to cite (its Ooura section names those paths; `README.md`'s tree
+  listing and `docs/optimization.md` cite `third_party/ooura/` too). The
+  Stage 2c PR body carries the replacement text.
 - **MuTap `docs/itu-compliance.md`** — the glossary line above, at the
   Stage 2b bump.
-- **MuTap `ci.yml`** (the job that compiles
+- **MuTap `ci.yml`** (the `branchless-parity` job, which compiles
   `submodules/dsptap/third_party/ooura/fftsg*.c` by path, lines 319–324) —
-  rewritten header-only at the Stage 2c bump.
+  breaks by construction at the 2c bump (the files moved) and is rewritten
+  header-only: the two `gcc -c` lines and the two object files on the `g++`
+  line go, nothing replaces them (the job's subject is the suppressor's two
+  forms, which never needed the C after 2b; DspTap's own parity gate is the
+  C-vs-port check). The Stage 2c PR body carries the replacement job text.
 - **MuTap-Max** — picks everything up transitively through MuTap; nothing to
   write unless it redistributes `NOTICE.md` separately.
 
@@ -931,16 +998,19 @@ What that grants: use, copying and modification of the code, for any purpose
 and without fee; and distribution of the *original* package. Distribution of a
 modified derivative is not expressly granted.
 
-Today DspTap ships one source file of the package, `fftsg.c`, plus its
-`readme.txt`. The vendored `fftsg.c` is textually identical to the 2006-12-28
-`fft.tgz` except for a provenance banner Tap added at the top (the upstream
-file carries no notice of its own; the notice lives in `readme.txt`) and
-stripped trailing whitespace. That is a partial copy of the original package
-with the notice attached, not a modified transform; the maintainer's reading
-is that it is within the intent of the distribution grant, and the draft email
-below puts the question to the author.
+Until Stage 2c DspTap shipped one source file of the package, `fftsg.c`, plus
+its `readme.txt`; since 2c it ships `readme.txt` and carries `fftsg.c` outside
+the shipping tree, under `tests/reference/ooura/`, for the parity gate. The
+reference `fftsg.c` is textually identical to the 2006-12-28 `fft.tgz` except
+for a provenance banner Tap added at the top (the upstream file carries no
+notice of its own; the notice lives in `readme.txt`; the banner's pointer to
+the readme was updated when the file moved) and stripped trailing
+whitespace. That is a partial copy of the original package with the notice
+attached, not a modified transform; the maintainer's reading is that it is
+within the intent of the distribution grant, and the draft email below puts
+the question to the author.
 
-Going forward, the C++20 port of `rdft` is a **derivative work, not the
+What ships, the C++20 port of `rdft`, is a **derivative work, not the
 ORIGINAL package**, and its redistribution relies on the **modification grant**
 ("modify this code for any purpose"). Precedent exists but is not relied on:
 WebRTC/Chromium ship a modified `fft4g.c` under
@@ -956,9 +1026,10 @@ terms for the derived portion, with SPDX `LicenseRef-Ooura AND MIT` (MIT only
 for the wrapper and DspTap's additions), and a line stating that it is a
 derivative work with the modifications copyright and date.
 `third_party/ooura/readme.txt` stays at that path permanently as the license
-record for the derived code; only `fftsg.c` moves to the test reference tree
-at Stage 2c and is retired afterwards (D6). "permissive" and "public" — the
-words the earlier notice used — overstated the grant and are not used.
+record for the derived code; `fftsg.c` moved to the test reference tree at
+Stage 2c (with `fftsg_float.c`, for the float half of the gate) and is retired
+afterwards (D6). "permissive" and "public" — the words the earlier notice
+used — overstated the grant and are not used.
 
 This is a maintainer judgement call, not legal advice.
 
@@ -1005,9 +1076,11 @@ reference resolves to a file; that is also why the readme stays in-tree.
 ### Draft email to the author — for the maintainer to send
 
 Per audit Part 5, the maintainer decides whether to ask the author for an
-explicit statement on derivative distribution before Stage 2c merges; the
-decision and any outcome are recorded in `NOTICE.md` at Stage 2c. Nothing has
-been sent; this is the draft. Addresses: `ooura@kurims.kyoto-u.ac.jp` first
+explicit statement on derivative distribution; the decision and any outcome
+are recorded in `NOTICE.md`. **Status at Stage 2c (2026-09-23): not yet
+attempted** — nothing has been sent, by the maintainer or on the maintainer's
+behalf, and the Stage 2c PR flags the open decision to the maintainer rather
+than taking it. This is the draft. Addresses: `ooura@kurims.kyoto-u.ac.jp` first
 (published on the author's current homepage at kurims.kyoto-u.ac.jp, last
 updated 2006-12-28, the site that serves the current `fft.tgz`, and used in
 the `fft2d` readme), then `ooura@mmm.t.u-tokyo.ac.jp` (the address in the
@@ -1051,8 +1124,8 @@ the `fft2d` readme), then `ooura@mmm.t.u-tokyo.ac.jp` (the address in the
 > Timothy Place
 > https://github.com/tap/DspTap
 
-**Outcome:** recorded in `NOTICE.md` at Stage 2c (sent on / not sent because;
-reply / no reply by date), not here.
+**Outcome:** recorded in `NOTICE.md` (sent on / not sent because; reply / no
+reply by date), not here. As of Stage 2c: not yet attempted.
 
 ## Changelog of contract-affecting SHAs
 
@@ -1065,4 +1138,5 @@ byte-identical.
 | SHA | Stage | Profile(s) | What moved | Consumer pins re-measured |
 |---|---|---|---|---|
 | tap/DspTap#27 (`b08f6c6` on `main`) | 3b | Q15, Q31 | the profiles exist: `basic_real_fft<std::int16_t \| std::int32_t, Scaling>` returning an exponent, `scaling::fixed` / `scaling::block_floating`, the numbers in the table above | none (no consumer on fixed point) |
-| tap/DspTap#31 (Stage 2b; the squash SHA on `main` is the one MuTap's bump pins) | 2b | `double`, `float` | **no output bit**: `basic_real_fft` routes to `detail::split_radix_rdft` instead of the vendored C (bit-identical, both precisions); tables built in the constructor (no first-call cost); `forward(const float*, float*)` / `inverse(const float*, float*)` on the double engine `[[deprecated]]` (D5); fp-contraction policy stated (D9: no export) | MuTap fingerprint harness: 14 rows byte-identical, float rows included; `test_float32`, `test_g168`, `test_nn_suppressor` unchanged; DspTap icount baselines re-recorded to the port's counts (`bench/README.md`) |
+| tap/DspTap#31 (`bbfa48d` on `main`) | 2b | `double`, `float` | **no output bit**: `basic_real_fft` routes to `detail::split_radix_rdft` instead of the vendored C (bit-identical, both precisions); tables built in the constructor (no first-call cost); `forward(const float*, float*)` / `inverse(const float*, float*)` on the double engine `[[deprecated]]` (D5); fp-contraction policy stated (D9: no export) | MuTap fingerprint harness: 14 rows byte-identical, float rows included; `test_float32`, `test_g168`, `test_nn_suppressor` unchanged; DspTap icount baselines re-recorded to the port's counts (`bench/README.md`) |
+| Stage 2c (this PR; the squash SHA on `main` is the one the MuTap bump pins) | 2c | none numerically | **no output bit and no contract point**: the vendored C leaves the shipping tree (`fftsg.c` and `fftsg_float.c` to `tests/reference/ooura/`, D6); `tap::dsp` is a pure INTERFACE target and `tap_dsp_fft` exists only under `TAP_DSP_FFT_CMSIS`; the `extern "C"` `rdft`/`cdft`/`rdft_f`/`cdft_f` declarations leave `fft.h` (a consumer that took them from there no longer links — none did: MuTap and MuTap-Max were grepped); the capi's `dsptap_fft_backend()` returns `"split_radix"` where it returned `"ooura"`; the Q15/Q31 ratchet scenarios are seeded and the `.text` ceilings set | MuTap fingerprint harness (scratch build of MuTap `0f6a7f0` with this tree as the submodule, `-DMUTAP_WERROR=ON`): 14 rows byte-identical to the current pin `b08f6c6`; DspTap icount at +0.00 % on every float key |

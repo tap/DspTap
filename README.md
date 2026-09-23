@@ -17,7 +17,7 @@ each profile chosen once, at construction, by the sample type and the build:
 
 | Engine | Profiles | Selected by | What it is |
 |---|---|---|---|
-| split-radix (`fft/split_radix.h`) | `double`; `float` unless a backend is on | default | the C++20 transliteration of Ooura's `rdft`, **bit-identical** to the vendored C it replaced (both precisions; `tests/test_fft_parity_ooura.cpp`), tables built in the constructor |
+| split-radix (`fft/split_radix.h`) | `double`; `float` unless a backend is on | default | the C++20 transliteration of Ooura's `rdft`, **bit-identical** to the C it replaced (both precisions; `tests/test_fft_parity_ooura.cpp`, against the reference copy under `tests/reference/ooura/`, which is not part of what ships), tables built in the constructor |
 | CMSIS-DSP Helium | `float` | `TAP_DSP_FFT_CMSIS` (default ON for the bare-metal Cortex-M55 profile) | Arm's radix-4/8 MVE real FFT, re-presented in the same contract to float epsilon; on the `m55` icount key the vendored C (to which the split-radix engine is bit-identical) executes 1.81× (N = 512) / 1.97× (N = 2048) the instructions of the CMSIS build over the whole ratchet scenario, transform plus the class's copy loop, 2/N scaling and checksum ([run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811), `bench/README.md`); MuTap's transform-only figure on the C was ~3×, not re-measured here |
 | Apple vDSP | `float` | `TAP_DSP_FFT_ACCELERATE` (default ON on Apple) | `vDSP_fft_zrip`, same contract to float epsilon; ~3× faster per transform on Apple Silicon is MuTap's transform-only measurement on the vendored C (tap/MuTap#31), not re-measured in this repo (the same-binary comparison is Stage 4) |
 | int32 radix-4 (`fft/fixed_point.h`) | Q15, Q31 | the sample type | one kernel over Q1.30 twiddles under two scaling policies, returning an exponent |
@@ -50,11 +50,13 @@ identical) — the fp-contraction table in `docs/fft-design.md`. `tap::dsp`
 sets no `-ffp-contract` flag and exports none (Decision D9; the reasoning is
 in `fft.h`'s class docstring).
 
-**Header-only from Stage 2c.** Until then the `tap_dsp_fft` static library
-still carries the reference C (`third_party/ooura/fftsg.c`, `fftsg_float.c`),
-which nothing in `fft.h` calls any more, and the CMSIS objects when
-`TAP_DSP_FFT_CMSIS` is on; `tap::dsp` links it automatically. After 2c the
-library exists only for the CMSIS backend.
+**Header-only.** `tap::dsp` is a pure INTERFACE target: no vendored C is
+compiled into what ships. A static library (`tap_dsp_fft`, alias
+`tap::dsp_fft`) exists only under `TAP_DSP_FFT_CMSIS`, carrying the CMSIS-DSP
+objects, and `tap::dsp` links it automatically there. Until Stage 2c of the
+audit the same library also carried the vendored Ooura C on every platform;
+the reference copy now lives under `tests/reference/ooura/` and only the
+parity gate compiles it (`fft.h` has carried no `rdft` declaration since).
 
 Four profiles share the contract; the fixed-point ones (Stage 3b of the
 audit, design in [`docs/fft-design.md`](docs/fft-design.md), "The
@@ -486,10 +488,10 @@ add_subdirectory(submodules/dsptap)   # or however it is pinned
 target_link_libraries(my_dsp PRIVATE tap::dsp)
 ```
 
-`tap::dsp` is an INTERFACE target (the headers, plus the `tap::dsp_fft`
-static library that until Stage 2c still carries the reference Ooura C and,
-under `TAP_DSP_FFT_CMSIS`, the CMSIS objects); it does not build the tests
-when added as a subdirectory (`TAP_DSP_BUILD_TESTS` defaults OFF unless
+`tap::dsp` is a pure INTERFACE target (the headers; under `TAP_DSP_FFT_CMSIS`
+alone it also links the `tap::dsp_fft` static library that carries the CMSIS
+objects, and nothing else is ever compiled); it does not build the tests when
+added as a subdirectory (`TAP_DSP_BUILD_TESTS` defaults OFF unless
 top-level). The per-platform float32 backend defaults follow the target: vDSP
 on Apple, CMSIS on the bare-metal M55 profile, the split-radix engine
 elsewhere — override with `-DTAP_DSP_FFT_ACCELERATE=OFF` etc.
@@ -517,10 +519,14 @@ See [`third_party/ooura/readme.txt`](third_party/ooura/readme.txt) and
 vendored-code provenance and licenses. The floating profiles run the C++20
 port of the same split-radix transform (`include/tap/dsp/fft/split_radix.h`,
 landed bit-identical to the C at Stage 2a, #28, and routed at Stage 2b, #31);
-the Q15 / Q31 profiles landed at Stage 3b (#27). The design note is
-[`docs/fft-design.md`](docs/fft-design.md), filled in as each stage lands; the
-plan of record is `docs/audit-fft-and-code-smells.md` (#25). The vendored C
-stays in the tree as the parity reference until Stage 2c removes it.
+the Q15 / Q31 profiles landed at Stage 3b (#27). At Stage 2c the vendored C
+left the shipping tree: the reference copy (`fftsg.c` and its float
+instantiation `fftsg_float.c`) lives under `tests/reference/ooura/`, compiled
+only by the bit-identity gate `tests/test_fft_parity_ooura.cpp`, and is
+retired once both MuTap and MuTap-Max pin a tree containing 2c (Decision D6);
+`third_party/ooura/readme.txt` stays permanently as the license record. The
+design note is [`docs/fft-design.md`](docs/fft-design.md), filled in as each
+stage lands; the plan of record is `docs/audit-fft-and-code-smells.md` (#25).
 
 ## License
 
@@ -529,11 +535,12 @@ license. The Ooura FFT is under its author's own terms, stated in
 `third_party/ooura/readme.txt`: "You may use, copy, modify this code for any
 purpose and without fee. You may distribute this ORIGINAL package." — a grant
 of use, copying and modification, and of distribution of the original package.
-DspTap ships that file today with the notice attached, and the C++ port it
-routes to is a derivative work whose redistribution relies on the modification
-grant (SPDX `LicenseRef-Ooura AND MIT` for the port header, with the notice
-text in `LICENSES/LicenseRef-Ooura.txt`; the readme stays at
-`third_party/ooura/readme.txt` permanently). CMSIS-DSP / CMSIS-Core are
+DspTap ships the C++ port of that file, a derivative work whose redistribution
+relies on the modification grant (SPDX `LicenseRef-Ooura AND MIT` for the port
+header, with the notice text in `LICENSES/LicenseRef-Ooura.txt`; the readme
+stays at `third_party/ooura/readme.txt` permanently); the original `fftsg.c`
+is carried outside the shipping tree, under `tests/reference/ooura/`, with
+the notice attached, as the parity gate's reference. CMSIS-DSP / CMSIS-Core are
 Apache-2.0 with SPDX headers retained in every file. The canonical statement,
 and the maintainer's reading of what it covers — a judgement call, not legal
 advice — is [`NOTICE.md`](NOTICE.md).
