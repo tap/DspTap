@@ -319,30 +319,42 @@ target_link_libraries(tap_dsp_analysis_typed PRIVATE
 # clang-tidy checks every compile command a file has.
 # ==============================================================================
 if(NOT TAP_DSP_BARE_METAL)
-    # name:path-from-the-project-root:precision. Relative paths, because an
-    # absolute Windows path's drive colon would split the entry.
+    # Each entry is name:path-from-the-project-root:definition ("-" for none).
+    # Relative paths, because an absolute Windows path's drive colon would split
+    # the entry. The definition is the one the TU's real target passes: the
+    # icount scenario's precision, or DSPTAP_BUILDING for the capi library.
+    #
+    # Ordering: this file is add_subdirectory'd before the root CMakeLists.txt
+    # declares option(TAP_DSP_BUILD_BENCH) and option(TAP_DSP_BUILD_CAPI), so
+    # the tests below read the cache (a -D on the command line) or, when neither
+    # was given, an undefined variable, which if(NOT ...) treats as OFF, the
+    # options' default. Moving those option() calls above add_subdirectory(tests)
+    # would not change the result.
     set(_tap_dsp_tidy_only_tus)
     if(NOT TAP_DSP_BUILD_BENCH)
         list(APPEND _tap_dsp_tidy_only_tus
-            bench_fft:bench/bench_fft.cpp:0
-            size_probe:bench/size_probe.cpp:0
-            icount_float:bench/icount/icount_main.cpp:0
-            icount_fixed:bench/icount/icount_main.cpp:2)
+            bench_fft:bench/bench_fft.cpp:-
+            size_probe:bench/size_probe.cpp:-
+            icount_float:bench/icount/icount_main.cpp:TAP_DSP_SC_PRECISION=0
+            icount_fixed:bench/icount/icount_main.cpp:TAP_DSP_SC_PRECISION=2)
     endif()
     if(NOT TAP_DSP_BUILD_CAPI)
-        list(APPEND _tap_dsp_tidy_only_tus capi:tools/capi/dsptap_capi.cpp:0)
+        list(APPEND _tap_dsp_tidy_only_tus
+            capi:tools/capi/dsptap_capi.cpp:DSPTAP_BUILDING
+            capi_reference:tools/capi/test_capi_reference.cpp:-)
     endif()
-    list(APPEND _tap_dsp_tidy_only_tus fingerprint:tools/fingerprint/fingerprint.cpp:0)
+    list(APPEND _tap_dsp_tidy_only_tus fingerprint:tools/fingerprint/fingerprint.cpp:-)
     foreach(_tu IN LISTS _tap_dsp_tidy_only_tus)
         string(REPLACE ":" ";" _parts "${_tu}")
         list(GET _parts 0 _name)
         list(GET _parts 1 _src)
-        list(GET _parts 2 _precision)
+        list(GET _parts 2 _definition)
         add_library(tap_dsp_tidy_only_${_name} OBJECT EXCLUDE_FROM_ALL ${PROJECT_SOURCE_DIR}/${_src})
         target_include_directories(tap_dsp_tidy_only_${_name} PRIVATE
             ${PROJECT_SOURCE_DIR}/bench ${PROJECT_SOURCE_DIR}/tools/capi)
-        target_compile_definitions(tap_dsp_tidy_only_${_name} PRIVATE
-            TAP_DSP_SC_PRECISION=${_precision} DSPTAP_BUILDING)
+        if(NOT _definition STREQUAL "-")
+            target_compile_definitions(tap_dsp_tidy_only_${_name} PRIVATE ${_definition})
+        endif()
         target_link_libraries(tap_dsp_tidy_only_${_name} PRIVATE tap::dsp tap_dsp_warnings)
     endforeach()
 endif()
