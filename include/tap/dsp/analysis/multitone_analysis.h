@@ -4,7 +4,12 @@
 // Copyright 2026 Timothy Place and the DspTap contributors.
 //
 // Carried from SampleRateTap's test harness (tests/support/), promoted here
-// as a shared measurement instrument.
+// as a shared measurement instrument. program_weighted_snr_db takes any
+// contiguous range of float / double / Q15 / Q31 samples, with the same
+// reading rules as sine_analysis.h (the double work buffer it fits on is
+// built from that reading); it takes no scale exponent because its result
+// is a ratio and a power-of-two scale of the tail cannot move it. The
+// joint-fit internals below work on the double buffer and are unchanged.
 //
 // Why this exists: single-sine SNR is the worst-case metric. A filter with
 // transmission zeros at k*fs (the compensated designs in kaiser.h) is
@@ -171,9 +176,18 @@ namespace tap::dsp::analysis {
     /// implied ratios amplitude-weighted — every tone rides the SAME physical
     /// clock ratio, so pooling averages the tracking noise down — then
     /// joint-fit once more at the pooled ratio.
-    inline double program_weighted_snr_db(std::span<const float> tail, const tone_comb& comb, double /*fsIn*/,
-                                          double fs_out) {
-        std::vector<double> work(tail.begin(), tail.end());
+    ///
+    /// @param tail     any contiguous range of float / double / Q15 / Q31 samples
+    ///                 (sine_analysis.h: integer samples are read as Q0.15 / Q0.31 fractions)
+    /// @param comb     the comb the tail was generated from
+    /// @param fs_out   the tail's sample rate (the first rate argument is unused, kept for source compatibility)
+    template <analysis_range R>
+    double program_weighted_snr_db(const R& tail, const tone_comb& comb, double /*fsIn*/, double fs_out) {
+        const auto          ts = detail::as_span(tail);
+        std::vector<double> work(ts.size());
+        for (std::size_t i = 0; i < ts.size(); ++i) {
+            work[i] = detail::to_fraction(ts[i]);
+        }
         const std::size_t   k = comb.freq_hz.size();
         std::vector<double> nus(k);
         for (std::size_t t = 0; t < k; ++t) {

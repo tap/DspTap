@@ -267,3 +267,24 @@ endif()
 # ==============================================================================
 # END Stage 2a additions
 # ==============================================================================
+
+# ==============================================================================
+# BEGIN Stage 3c addition (docs/audit-fft-and-code-smells.md, Part 3): the typed
+# analysis instruments' battery. Its own target, like the parity gate above, so
+# it can carry -ffp-contract=off: its pins are same-binary bit-identity
+# comparisons between the templated instruments and verbatim copies of the
+# pre-template ones, which GCC's cross-statement contraction can move by an
+# ulp on FMA hardware (test_analysis_typed.cpp, file comment). The double
+# joint-fit test is excluded on the QEMU legs for the same budget reason as
+# MultitoneAnalysis in the main battery. Keep this block at the end of the file.
+# ==============================================================================
+tap_dsp_add_gtest_executable(tap_dsp_analysis_typed
+    SOURCES test_analysis_typed.cpp
+    MAIN_FILTER "*-MultitoneAnalysisTyped.*")
+target_compile_options(tap_dsp_analysis_typed PRIVATE ${_tap_dsp_nocontract_cxx})
+target_link_libraries(tap_dsp_analysis_typed PRIVATE
+    tap::dsp
+    tap_dsp_warnings)
+# ==============================================================================
+# END Stage 3c addition
+# ==============================================================================

@@ -23,3 +23,16 @@ set_target_properties(dsptap_capi PROPERTIES
     CXX_STANDARD_REQUIRED ON
     OUTPUT_NAME dsptap_capi
     CXX_VISIBILITY_PRESET hidden)
+
+# The C-side smoke test (test_capi.c): compiles the header with a C front end and drives every
+# FFT profile through the exponent contract the way a binding does. Built only when the root
+# project builds its tests (never in the standalone build the ctypes bridge does), registered
+# with CTest as dsptap_capi_smoke; it lives here rather than under tests/ so the executable lands
+# next to the shared library on every platform (Windows needs the DLL beside the .exe).
+if (TAP_DSP_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
+    enable_language(C)
+    add_executable(dsptap_capi_smoke test_capi.c)
+    target_link_libraries(dsptap_capi_smoke PRIVATE dsptap_capi $<$<NOT:$<PLATFORM_ID:Windows>>:m>)
+    set_target_properties(dsptap_capi_smoke PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON)
+    add_test(NAME dsptap_capi_smoke COMMAND dsptap_capi_smoke)
+endif ()
