@@ -504,7 +504,7 @@ See [`third_party/ooura/readme.txt`](third_party/ooura/readme.txt) and
 [`third_party/cmsis-dsp/VENDOR.md`](third_party/cmsis-dsp/VENDOR.md) for the
 vendored-code provenance and licenses. The floating profiles run the C++20
 port of the same split-radix transform (`include/tap/dsp/fft/split_radix.h`,
-landed bit-identical to the C at Stage 2a, #28, and routed at Stage 2b, #30);
+landed bit-identical to the C at Stage 2a, #28, and routed at Stage 2b, #31);
 the Q15 / Q31 profiles landed at Stage 3b (#27). The design note is
 [`docs/fft-design.md`](docs/fft-design.md), filled in as each stage lands; the
 plan of record is `docs/audit-fft-and-code-smells.md` (#25). The vendored C
