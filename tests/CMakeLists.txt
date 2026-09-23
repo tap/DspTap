@@ -283,6 +283,21 @@ if(NOT TAP_DSP_BARE_METAL)
     set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${_tap_dsp_parity_xml_script})
 endif()
 
+# THE SPLIT-RADIX FINGERPRINTS (Decisions D6/D10): FNV-1a-64 over the IEEE bit
+# patterns of detail::split_radix_rdft's double and float outputs, forward and
+# inverse, pinned to the vendored C's (the gate's ReferenceCHasThePinned-
+# Fingerprints computes the same values from the C). Own target so it owns
+# -ffp-contract=off, like the gate. Runs whole on the QEMU legs (no
+# MAIN_FILTER): at N <= 4096 it is milliseconds.
+tap_dsp_add_gtest_executable(tap_dsp_fft_split_radix_fingerprint
+    SOURCES test_fft_split_radix_fingerprint.cpp)
+target_compile_options(tap_dsp_fft_split_radix_fingerprint PRIVATE ${_tap_dsp_nocontract_cxx})
+target_compile_definitions(tap_dsp_fft_split_radix_fingerprint PRIVATE
+    TAP_DSP_TEST_MAX_FFT_N=${TAP_DSP_PARITY_MAX_N})
+target_link_libraries(tap_dsp_fft_split_radix_fingerprint PRIVATE
+    tap::dsp
+    tap_dsp_warnings)
+
 # ==============================================================================
 # END Stage 2a additions
 # ==============================================================================

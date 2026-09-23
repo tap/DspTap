@@ -109,6 +109,7 @@
 
 #include "reference/ooura_rdft.h"
 #include "support/signals.h"
+#include "support/split_radix_fingerprints.h"
 #include "tap/dsp/fft/split_radix.h"
 
 #ifndef TAP_DSP_PARITY_MAX_N
@@ -391,6 +392,46 @@ namespace {
         expect_identical_large<float>();
     }
 #endif // TAP_DSP_PARITY_MAX_N >= (1 << 20)
+
+    // ------------------------------------------------------------------------
+    // D6 cross-check: the pinned split-radix fingerprints
+    // (tests/support/split_radix_fingerprints.h), computed from the C. Same
+    // procedure, same binary, -ffp-contract=off on both sides: the C's
+    // fingerprint must equal the engine's (the gate above, restated as a
+    // hash) and, where the platform has pins, the pin. This is the record
+    // that the pins are the C's bits; it leaves with this file at D6.
+    // ------------------------------------------------------------------------
+    template <typename Sample>
+    void expect_c_has_pinned_fingerprints(const char* precision, const char* platform,
+                                          const tap::dsp::test::fingerprint_pins& pins) {
+        namespace t = tap::dsp::test;
+        for (std::size_t i = 0; i < t::k_fingerprint_sizes.size(); ++i) {
+            const std::size_t n = t::k_fingerprint_sizes[i];
+            if (n > static_cast<std::size_t>(TAP_DSP_PARITY_MAX_N)) {
+                continue;
+            }
+            const t::fingerprint_pair c    = t::fingerprint_of<ooura_ref<Sample>, Sample>(n);
+            const t::fingerprint_pair port = t::fingerprint_of<engine_under_test<Sample>, Sample>(n);
+            std::printf("[ C fingerprint ] %s n=%lu forward=%08lx%08lx inverse=%08lx%08lx (%s)\n", precision,
+                        static_cast<unsigned long>(n), static_cast<unsigned long>(c.forward >> 32),
+                        static_cast<unsigned long>(c.forward & 0xffffffffu),
+                        static_cast<unsigned long>(c.inverse >> 32),
+                        static_cast<unsigned long>(c.inverse & 0xffffffffu),
+                        platform != nullptr ? platform : "no pins for this platform");
+            EXPECT_EQ(c.forward, port.forward) << precision << " forward n=" << n;
+            EXPECT_EQ(c.inverse, port.inverse) << precision << " inverse n=" << n;
+            if (platform != nullptr) {
+                EXPECT_EQ(c.forward, pins[i].forward) << precision << " forward n=" << n << " on " << platform;
+                EXPECT_EQ(c.inverse, pins[i].inverse) << precision << " inverse n=" << n << " on " << platform;
+            }
+        }
+    }
+
+    TEST(fft_parity_ooura, ReferenceCHasThePinnedFingerprints) {
+        expect_c_has_pinned_fingerprints<double>("double", tap::dsp::test::k_double_pins_platform,
+                                                 tap::dsp::test::k_double_pins);
+        expect_c_has_pinned_fingerprints<float>("float", "every platform", tap::dsp::test::k_float_pins);
+    }
 
 #else // TAP_DSP_PARITY_INFORMATIONAL
 
