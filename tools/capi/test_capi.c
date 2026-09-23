@@ -241,6 +241,105 @@ static void check_profile(int profile, const char* name, int n) {
     dsptap_fft_destroy(h);
 }
 
+/// The non-FFT entry points' argument contract (Stage 6): each create returns NULL outside its
+/// header's precondition instead of handing out a handle the header only asserts on, and every
+/// handle function returns -1 (or does nothing, for destroy) on a NULL handle.
+static void check_other_primitives(void) {
+    CHECK(dsptap_yin_create(800, 1, 800) == NULL);   // tau_min < 2
+    CHECK(dsptap_yin_create(800, 800, 800) == NULL); // tau_min >= tau_max
+    CHECK(dsptap_yin_create(799, 20, 800) == NULL);  // window < tau_max
+    CHECK(dsptap_psola_create(15) == NULL);
+    CHECK(dsptap_psola_create(1 << 26) == NULL); // psola.h: max_period < 2^26
+    CHECK(dsptap_pvoc_create(32) == NULL);
+    CHECK(dsptap_pvoc_create(1000) == NULL);                                                // not a power of two
+    CHECK(dsptap_pvoc_create(1 << 29) == NULL);                                             // pvoc.h: fft_size <= 2^28
+    CHECK(dsptap_log_mel_create(16000.0, 400, 160, 256, 40, 20.0, 7600.0, 0, 0.0) == NULL); // fft_size < frame
+    CHECK(dsptap_decimator_create(4, 0) == NULL);
+
+    CHECK(dsptap_yin_frame_size(NULL) == -1);
+    CHECK(dsptap_yin_set_threshold(NULL, 0.1) == -1);
+    CHECK(dsptap_psola_latency(NULL) == -1);
+    CHECK(dsptap_pvoc_latency(NULL) == -1);
+    CHECK(dsptap_log_mel_bands(NULL) == -1);
+    CHECK(dsptap_log_mel_set_log(NULL, 1e-10, 5.0, 5.0) == -1);
+    CHECK(dsptap_decimator_taps(NULL) == -1);
+    dsptap_yin_destroy(NULL);
+    dsptap_psola_destroy(NULL);
+    dsptap_pvoc_destroy(NULL);
+    dsptap_log_mel_destroy(NULL);
+    dsptap_decimator_destroy(NULL);
+
+    {
+        dsptap_yin y = dsptap_yin_create(800, 20, 800);
+        CHECK(y != NULL);
+        CHECK(dsptap_yin_frame_size(y) == 1600);
+        dsptap_yin_destroy(y);
+        dsptap_psola ps = dsptap_psola_create(900);
+        CHECK(ps != NULL);
+        CHECK(dsptap_psola_latency(ps) == 2 * 900 + 2);
+        dsptap_psola_destroy(ps);
+        dsptap_pvoc pv = dsptap_pvoc_create(1024);
+        CHECK(pv != NULL);
+        CHECK(dsptap_pvoc_latency(pv) == 1024);
+        dsptap_pvoc_destroy(pv);
+    }
+
+    // A rejected log_mel setter leaves the handle as it was: still 40 bands, still processing.
+    {
+        dsptap_log_mel lm = dsptap_log_mel_create(16000.0, 400, 160, 512, 40, 20.0, 7600.0, 0, 0.0);
+        CHECK(lm != NULL);
+        CHECK(dsptap_log_mel_set_log(lm, -1.0, 5.0, 5.0) == -1); // log_floor must be > 0
+        CHECK(dsptap_log_mel_set_pcen(lm, 1, -0.5, 0.98, 2.0, 0.5, 1e-6) == -1);
+        CHECK(dsptap_log_mel_bands(lm) == 40);
+        static double x[1600];
+        static double f[10 * 40];
+        CHECK(dsptap_log_mel_process(lm, x, 1600, f, 10) == 10);
+        dsptap_log_mel_destroy(lm);
+    }
+}
+
+/// The decimator's process path stages through buffers sized at create (4096 inputs per block):
+/// a call far longer than a block, a call split at arbitrary points and a truncating max_out all
+/// agree bit for bit with decimate.h's chunking-invariant stream.
+static void check_decimator(void) {
+    enum { k_n = 20011 };
+    static double x[k_n];
+    static double whole[k_n];
+    static double parts[k_n];
+    for (int j = 0; j < k_n; ++j) {
+        x[j] = 0.6 * sin(0.013 * (double)j) + 0.3 * cos(0.37 * (double)j);
+    }
+    const int ratios[] = {2, 3, 6};
+    for (int r = 0; r < 3; ++r) {
+        dsptap_decimator d = dsptap_decimator_create(ratios[r], 1);
+        CHECK(d != NULL);
+        const int expect = dsptap_decimator_outputs_for(d, k_n);
+        CHECK(expect == (k_n + ratios[r] - 1) / ratios[r]); // ceil(n / M) from a fresh instance
+        CHECK(dsptap_decimator_process(d, x, k_n, whole, k_n) == expect);
+
+        CHECK(dsptap_decimator_reset(d) == 0);
+        const int cuts[] = {0, 1, 7, 4096, 4097, 9000, 17000, k_n};
+        int       made   = 0;
+        for (int c = 0; c + 1 < (int)(sizeof(cuts) / sizeof(cuts[0])); ++c) {
+            const int len = cuts[c + 1] - cuts[c];
+            made += dsptap_decimator_process(d, x + cuts[c], len, parts + made, k_n - made);
+        }
+        CHECK(made == expect);
+        CHECK(memcmp(whole, parts, (size_t)expect * sizeof(double)) == 0);
+
+        // max_out truncates the written outputs but consumes every input: the next call resumes
+        // exactly where the whole-stream call would be.
+        CHECK(dsptap_decimator_reset(d) == 0);
+        CHECK(dsptap_decimator_process(d, x, 10000, parts, 5) == 5);
+        CHECK(memcmp(whole, parts, 5 * sizeof(double)) == 0);
+        const int first = (10000 + ratios[r] - 1) / ratios[r]; // what the truncated call produced
+        const int rest  = dsptap_decimator_process(d, x + 10000, k_n - 10000, parts, k_n);
+        CHECK(first + rest == expect);
+        CHECK(memcmp(whole + first, parts, (size_t)rest * sizeof(double)) == 0);
+        dsptap_decimator_destroy(d);
+    }
+}
+
 int main(void) {
     printf("dsptap_capi smoke: float32 backend %s\n", dsptap_fft_backend());
 
@@ -296,6 +395,9 @@ int main(void) {
         check_profile(k_profiles[p], k_names[p], 512);
         check_profile(k_profiles[p], k_names[p], 64);
     }
+
+    check_other_primitives();
+    check_decimator();
 
     if (failures == 0) {
         printf("dsptap_capi smoke: all checks passed\n");

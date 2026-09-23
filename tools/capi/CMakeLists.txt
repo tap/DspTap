@@ -17,6 +17,12 @@ if (NOT TARGET tap::dsp)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../.. ${CMAKE_CURRENT_BINARY_DIR}/dsptap)
 endif ()
 target_link_libraries(dsptap_capi PRIVATE tap::dsp)
+# dsptap_capi.h exports its symbols while this library builds and imports them everywhere else
+# (the __declspec(dllexport) / dllimport split on Windows; visibility("default") elsewhere).
+target_compile_definitions(dsptap_capi PRIVATE DSPTAP_BUILDING)
+if (TARGET tap_dsp_warnings)
+    target_link_libraries(dsptap_capi PRIVATE tap_dsp_warnings)
+endif ()
 
 set_target_properties(dsptap_capi PROPERTIES
     CXX_STANDARD 20
