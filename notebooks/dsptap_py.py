@@ -9,7 +9,8 @@ building it first if missing (requires cmake in PATH):
 The C ABI (tools/capi/) wraps the *same* portable DSP headers the consuming
 libraries compile — so the notebooks exercise the real shipping code, not a
 Python re-implementation. Exposed primitives: the real FFT (`RealFFT`, in the
-double and float profiles), the YIN pitch detector (`Yin`), the TD-PSOLA
+double, float, Q15 and Q31 profiles, the fixed-point ones under both scaling
+policies), the YIN pitch detector (`Yin`), the TD-PSOLA
 shifter (`Psola`), and the peak-locked phase-vocoder shifter (`Pvoc`, with
 optional LPC formant preservation), the log-mel/PCEN feature front end
 (`LogMel`) and the fixed-ratio decimators to 16 kHz (`Decimator`).
@@ -61,6 +62,7 @@ def load() -> ctypes.CDLL:
 
     vp = ctypes.c_void_p
     f64p = ctypes.POINTER(ctypes.c_double)
+    i32p = ctypes.POINTER(ctypes.c_int)
     sigs = {
         "dsptap_fft_create":        ([ctypes.c_int, ctypes.c_int], vp),
         "dsptap_fft_destroy":       ([vp], None),
@@ -69,10 +71,15 @@ def load() -> ctypes.CDLL:
         "dsptap_fft_profile":       ([vp], ctypes.c_int),
         "dsptap_fft_sample_bytes":  ([vp], ctypes.c_int),
         "dsptap_fft_backend":       ([], ctypes.c_char_p),
+        "dsptap_fft_fixed_scaling_exponent": ([vp], ctypes.c_int),
         "dsptap_fft_forward":       ([vp, f64p, f64p], ctypes.c_int),
         "dsptap_fft_inverse":       ([vp, f64p, f64p], ctypes.c_int),
+        "dsptap_fft_forward_exp":   ([vp, f64p, f64p, i32p], ctypes.c_int),
+        "dsptap_fft_inverse_exp":   ([vp, f64p, f64p, i32p], ctypes.c_int),
         "dsptap_fft_forward_inplace_raw": ([vp, vp], ctypes.c_int),
         "dsptap_fft_inverse_inplace_raw": ([vp, vp], ctypes.c_int),
+        "dsptap_fft_forward_inplace_raw_exp": ([vp, vp, i32p], ctypes.c_int),
+        "dsptap_fft_inverse_inplace_raw_exp": ([vp, vp, i32p], ctypes.c_int),
         "dsptap_yin_create":        ([ctypes.c_int, ctypes.c_int, ctypes.c_int], vp),
         "dsptap_yin_destroy":       ([vp], None),
         "dsptap_yin_set_threshold": ([vp, ctypes.c_double], ctypes.c_int),
@@ -130,16 +137,43 @@ def _f64(x: np.ndarray):
 
 
 class RealFFT:
-    """tap::dsp::basic_real_fft<Sample> — `profile` "double" (the golden model) or "float"
-    (the embedded profile: Ooura, or the vDSP/CMSIS backend the build selected — see
-    `RealFFT.backend()`). "q15" and "q31" are reserved for the fixed-point profiles
-    (Stage 3c of docs/audit-fft-and-code-smells.md) and raise until they land.
+    """tap::dsp::basic_real_fft<Sample, Scaling> through the C ABI. `profile` is one of
+
+        "double"   the golden model
+        "float"    the embedded floating profile (Ooura, or the vDSP/CMSIS backend the build
+                   selected — see `RealFFT.backend()`)
+        "q15"      std::int16_t, Q0.15 I/O, tap::dsp::scaling::fixed
+        "q31"      std::int32_t, Q0.31 I/O, scaling::fixed
+        "q15_bfp"  Q15 under scaling::block_floating
+        "q31_bfp"  Q31 under scaling::block_floating
+
+    THE EXPONENT (fft.h's fixed-point contract, restated in the bridge's terms). A fixed-point
+    transform leaves its buffer scaled by 2^-e and returns e: read the native buffer as
+    fractions of full scale (x / 2^15 or x / 2^31) and let G be the "double" profile on the same
+    input read the same way — after a forward, G's forward == buffer * 2^e; after an inverse,
+    G's UNNORMALIZED inverse == buffer * 2^e (same packing, same exp(+i) sign, up to the kernel's
+    rounding noise). Under fixed scaling e is the constant `exponent_bound` (log2 n for Q15,
+    log2 n + 1 for Q31); under block floating point 0 <= e <= `exponent_bound`, chosen per block
+    from the data's headroom. The fixed-point inverse applies NO 2/n; a raw round trip
+    reconstructs x == out * 2^(e_fwd + e_inv + 1 - log2 n). The floating profiles report e == 0
+    everywhere an exponent appears.
 
     `forward`/`inverse` take and return float64 arrays in the header's PACKED layout and
-    Ooura's exp(+i) sign convention, whatever the profile (the float profile converts at the
-    boundary). `forward_inplace_raw`/`inverse_inplace_raw` run on the profile's native dtype
-    with no conversion at all — the path that measures the embedded profile's own arithmetic —
-    and the raw inverse is UNSCALED, exactly as in fft.h.
+    Ooura's exp(+i) sign convention, whatever the profile, in the DOUBLE profile's units: the
+    float profile converts at the boundary; the fixed-point profiles quantize the input to
+    their Q format at the C boundary (round half away from zero, saturating at +-full scale)
+    and return the native result already multiplied by 2^e, so the array compares directly to
+    the double profile's on the same quantized input. The exponent of the last `forward`/
+    `inverse` is `last_exponent`; `forward_with_exponent`/`inverse_with_exponent` return
+    `(array, e)`. Note that the fixed-point `inverse` is the UNNORMALIZED inverse (no 2/n,
+    unlike the floating profiles' `inverse`), and that its input is quantized to [-1, 1), so
+    the floating-style `inverse(forward(x))` round trip is a raw-path matter for fixed point.
+
+    `forward_inplace_raw`/`inverse_inplace_raw` run on the profile's native dtype (`dtype`:
+    float64, float32, int16 or int32) with no conversion at all — the path that measures the
+    embedded profile's own arithmetic — and RETURN e (0 for the floating profiles); the raw
+    inverse is UNSCALED, exactly as in fft.h. `to_native` quantizes a float64 signal the way the
+    boundary does, for building raw buffers; `from_native` reads one back as fractions times 2^e.
 
     Packing (fft.h): packed[0] = DC, packed[1] = Nyquist (both real);
     packed[2k] + 1j*packed[2k+1] = bin k for 1 <= k < n/2, with W = exp(+2*pi*i/n).
@@ -148,8 +182,9 @@ class RealFFT:
     `unpack(forward(x))` matches `numpy.fft.rfft(x)` bin for bin.
     """
 
-    PROFILES = {"double": 0, "float": 1, "q15": 2, "q31": 3}
-    _DTYPES = {0: np.float64, 1: np.float32, 2: np.int16, 3: np.int32}
+    PROFILES = {"double": 0, "float": 1, "q15": 2, "q31": 3, "q15_bfp": 4, "q31_bfp": 5}
+    _DTYPES = {0: np.float64, 1: np.float32, 2: np.int16, 3: np.int32, 4: np.int16, 5: np.int32}
+    _FRAC_BITS = {0: 0, 1: 0, 2: 15, 3: 31, 4: 15, 5: 31}
 
     def __init__(self, size: int, profile: str | int = "double"):
         code = self.PROFILES.get(profile) if isinstance(profile, str) else profile
@@ -158,12 +193,14 @@ class RealFFT:
                              f"(or the codes {sorted(self.PROFILES.values())}), not {profile!r}")
         self._h = _lib.dsptap_fft_create(size, code)
         if not self._h:
-            if code in (2, 3):
-                raise NotImplementedError("the Q15/Q31 FFT profiles land at Stage 3c")
             raise ValueError(f"size must be a power of two >= 4, not {size!r}")
         self.size = size
         self.profile = next(k for k, v in self.PROFILES.items() if v == code)
         self.dtype = np.dtype(self._DTYPES[code])
+        self.frac_bits = self._FRAC_BITS[code]
+        self.is_fixed_point = code >= 2
+        self.is_block_floating = code >= 4
+        self.last_exponent = 0
         assert self.dtype.itemsize == _lib.dsptap_fft_sample_bytes(self._h)
 
     def __del__(self):
@@ -174,42 +211,98 @@ class RealFFT:
     def num_bins(self) -> int:
         return _lib.dsptap_fft_num_bins(self._h)
 
+    @property
+    def exponent_bound(self) -> int:
+        """basic_real_fft<Sample, Scaling>::fixed_scaling_exponent(n): the exponent every
+        transform of a fixed-scaling profile returns and the upper bound under block floating
+        point; 0 for the floating profiles."""
+        return _lib.dsptap_fft_fixed_scaling_exponent(self._h)
+
     @staticmethod
     def backend() -> str:
-        """The float32 engine this build compiled: "ooura", "accelerate" or "cmsis"."""
+        """The float32 engine this build compiled: "ooura", "accelerate" or "cmsis". The double
+        profile is always Ooura; the fixed-point profiles are always the portable int32 kernel."""
         return _lib.dsptap_fft_backend().decode()
 
-    def forward(self, x: np.ndarray) -> np.ndarray:
-        """Packed spectrum (float64, length n) of n real samples; the float profile rounds x to
-        float32 at the boundary."""
+    def forward_with_exponent(self, x: np.ndarray) -> tuple[np.ndarray, int]:
+        """Packed spectrum (float64, length n) of n real samples, and the transform's exponent e.
+        The array is already scaled by 2^e (it is the double profile's spectrum of the quantized
+        input, up to the kernel's noise); the float profile rounds x to float32 at the boundary,
+        the fixed-point profiles quantize it to their Q format."""
         x = _f64(x)
         self._check_len(x)
         out = np.empty_like(x)
-        _lib.dsptap_fft_forward(self._h, x.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-                                out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)))
-        return out
+        e = ctypes.c_int(0)
+        _lib.dsptap_fft_forward_exp(self._h, x.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                                    out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), ctypes.byref(e))
+        self.last_exponent = e.value
+        return out, e.value
 
-    def inverse(self, packed: np.ndarray) -> np.ndarray:
-        """Normalized inverse (scaled by 2/n): inverse(forward(x)) reproduces x."""
+    def forward(self, x: np.ndarray) -> np.ndarray:
+        """forward_with_exponent(x)[0]; the exponent is left in `last_exponent`."""
+        return self.forward_with_exponent(x)[0]
+
+    def inverse_with_exponent(self, packed: np.ndarray) -> tuple[np.ndarray, int]:
+        """Inverse at the double boundary, and its exponent. Floating profiles: normalized by
+        2/n, so inverse(forward(x)) reproduces x. Fixed-point profiles: the packed spectrum is
+        quantized to the Q format (fractions of full scale, saturating outside [-1, 1)) and the
+        result is the UNNORMALIZED inverse times 2^e — the double profile's raw inverse of the
+        same quantized spectrum, with no 2/n."""
         packed = _f64(packed)
         self._check_len(packed)
         out = np.empty_like(packed)
-        _lib.dsptap_fft_inverse(self._h, packed.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-                                out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)))
-        return out
+        e = ctypes.c_int(0)
+        _lib.dsptap_fft_inverse_exp(self._h, packed.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                                    out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), ctypes.byref(e))
+        self.last_exponent = e.value
+        return out, e.value
 
-    def forward_inplace_raw(self, data: np.ndarray) -> np.ndarray:
-        """In-place forward on the profile's native dtype (no conversion); returns `data`."""
-        self._check_raw(data)
-        _lib.dsptap_fft_forward_inplace_raw(self._h, data.ctypes.data_as(ctypes.c_void_p))
-        return data
+    def inverse(self, packed: np.ndarray) -> np.ndarray:
+        """inverse_with_exponent(packed)[0]; the exponent is left in `last_exponent`."""
+        return self.inverse_with_exponent(packed)[0]
 
-    def inverse_inplace_raw(self, data: np.ndarray) -> np.ndarray:
-        """In-place UNSCALED inverse on the native dtype (multiply by 2/n yourself); returns
-        `data`."""
+    def forward_inplace_raw(self, data: np.ndarray) -> int:
+        """In-place forward on the profile's native dtype (no conversion); returns the exponent e
+        (0 for the floating profiles). `data` is transformed in place."""
         self._check_raw(data)
-        _lib.dsptap_fft_inverse_inplace_raw(self._h, data.ctypes.data_as(ctypes.c_void_p))
-        return data
+        e = ctypes.c_int(0)
+        if _lib.dsptap_fft_forward_inplace_raw_exp(self._h, data.ctypes.data_as(ctypes.c_void_p),
+                                                   ctypes.byref(e)) != 0:
+            raise RuntimeError("dsptap_fft_forward_inplace_raw_exp failed")
+        self.last_exponent = e.value
+        return e.value
+
+    def inverse_inplace_raw(self, data: np.ndarray) -> int:
+        """In-place UNSCALED inverse on the native dtype; returns the exponent e (0 for the
+        floating profiles, where you multiply by 2/n yourself; for fixed point the round trip
+        is x == out * 2^(e_fwd + e_inv + 1 - log2 n))."""
+        self._check_raw(data)
+        e = ctypes.c_int(0)
+        if _lib.dsptap_fft_inverse_inplace_raw_exp(self._h, data.ctypes.data_as(ctypes.c_void_p),
+                                                   ctypes.byref(e)) != 0:
+            raise RuntimeError("dsptap_fft_inverse_inplace_raw_exp failed")
+        self.last_exponent = e.value
+        return e.value
+
+    def to_native(self, x: np.ndarray) -> np.ndarray:
+        """A float64 signal in fractions of full scale as a native raw buffer: the plain cast for
+        the floating profiles; for the fixed-point profiles the boundary's quantization (round
+        half away from zero, saturating at the rails: tap::dsp::detail::round_sat), so
+        `forward_inplace_raw(to_native(x))` sees exactly the samples `forward(x)` does."""
+        x = _f64(x)
+        if not self.is_fixed_point:
+            return x.astype(self.dtype)
+        scaled = x * float(2 ** self.frac_bits)
+        r = np.where(scaled < 0.0, scaled - 0.5, scaled + 0.5)
+        info = np.iinfo(self.dtype)
+        r = np.clip(np.trunc(r), info.min, info.max)
+        return r.astype(self.dtype)
+
+    def from_native(self, data: np.ndarray, exponent: int = 0) -> np.ndarray:
+        """A native buffer read as fractions of full scale times 2^exponent (float64), the
+        reading the exponent contract is written in; for the floating profiles the widening
+        cast times 2^exponent."""
+        return np.asarray(data, dtype=np.float64) * float(2.0 ** (exponent - self.frac_bits))
 
     def _check_len(self, a: np.ndarray) -> None:
         if a.ndim != 1 or a.size != self.size:
