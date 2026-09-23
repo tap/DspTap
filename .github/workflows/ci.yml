@@ -33,6 +33,14 @@ jobs:
       - name: Test
         run: ctest --test-dir build --build-config Release --output-on-failure
 
+      # The split-radix fingerprints (and, while the reference C is in the
+      # tree, the parity gate's C-side cross-check of them) print every value
+      # before asserting; a passing ctest swallows that output, so run them
+      # verbosely as their own step (Part 13) and the log carries each host's
+      # values.
+      - name: Split-radix fingerprints (verbose)
+        run: ctest --test-dir build --build-config Release -R "split_radix_fingerprint|ReferenceCHasThePinnedFingerprints" -V
+
       # The Stage 2a informational parity target prints a max-ulp table per
       # platform that a passing ctest swallows; run it verbosely as its own
       # step so the number is in the log. Guarded so the step is a no-op until
