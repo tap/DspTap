@@ -1,0 +1,11 @@
+# The reference copy of Takuya Ooura's fftsg.c (and its float instantiation)
+# is vendored code, formatted upstream and never by us: it moved here from
+# third_party/ooura/ at Stage 2c (docs/audit-fft-and-code-smells.md, Decision
+# D6) to serve tests/test_fft_parity_ooura.cpp alone, and it must stay
+# textually what the parity gate measured. The canonical pre-commit hook
+# excludes ^third_party/ by path and is a taphouse file that is not edited
+# per repo, so this directory-local config disables clang-format for the
+# files below it instead (the tidy gate reads the compile database, from
+# which tests/CMakeLists.txt excludes these two TUs). Not a taphouse file.
+DisableFormat: true
+SortIncludes: Never

@@ -10,8 +10,11 @@
  * declarations keep their real prototypes; fftsg.c's own include then
  * becomes a no-op via the header guard.
  *
- * The underlying algorithm and code remain Takuya Ooura's; see readme.txt
- * for the license/attribution terms.
+ * The underlying algorithm and code remain Takuya Ooura's; see
+ * third_party/ooura/readme.txt for the license/attribution terms. Since
+ * Stage 2c this file lives under tests/reference/ beside fftsg.c: the float
+ * half of the parity gate (tests/test_fft_parity_ooura.cpp) compares the
+ * port's float instantiation against rdft_f, so the two files move together.
  */
 
 #include <math.h>
