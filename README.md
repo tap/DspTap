@@ -437,9 +437,15 @@ packed exp(+i) layout to and from `numpy.fft.rfft`'s convention): the packing
 and sign contract against numpy, the float32 profile's per-bin error against
 the double golden model vs N — on the profile's own arithmetic via the raw
 in-place entry points, not a double round trip — and the round-trip error of
-both profiles. Its fixed-point section (Q15/Q31 noise floors under Welch's
-model) is a designed placeholder until Stage 3b/3c of
-`docs/audit-fft-and-code-smells.md` lands.
+both profiles. With tap/DspTap#30 (Stage 3c) `notebooks/fft.ipynb` also
+measures the four fixed-point configurations (`"q15"`, `"q31"`, `"q15_bfp"`,
+`"q31_bfp"` in `dsptap_py.RealFFT`, the exponent returned with every
+transform): the noise-floor table of the fixed-point design record in
+`docs/fft-design.md` ("The fixed-point profiles", §5) re-measured through the
+ABI beside the battery's pins, the DC-path bias to N = 65536, the
+block-floating exponent on speech-like material, and the battery's output
+fingerprints reproduced through the ABI; `sine_analysis.h` /
+`multitone_analysis.h` score Q15 / Q31 spans directly from #30 onward.
 
 ## Build
 
