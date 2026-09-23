@@ -14,14 +14,28 @@
 # host-class and gets the double scenario; the Cortex-M legs are not.
 #
 # TAP_DSP_BENCH_ENGINE selects the engine everything here measures
-# (bench_common.h): reference_c (the vendored C, the default) or split_radix
-# (the Stage 2a port). From Stage 2a until 2c the float icount scenarios and
-# the float size probe are also built against the port under a `_port`
-# suffix, so every bench run at the default reports both — unless this
-# variable is already split_radix, in which case the bare-keyed binaries are
-# the port and the `_port` pairs are not built (same rule in icount/).
-set(TAP_DSP_BENCH_ENGINE reference_c CACHE STRING
-    "FFT engine the benchmark scenarios measure (reference_c or split_radix)")
+# (bench_common.h): basic_real_fft (what ships: the split-radix engine, or
+# CMSIS / vDSP behind the class for float where the build says so; the
+# default) or reference_c (the vendored C called directly). From Stage 2b
+# until 2c the float icount scenarios and the float size probe are also built
+# against the C under a `_c` suffix, so every bench run at the default reports
+# both — unless this variable is already reference_c, in which case the
+# bare-keyed binaries are the C and the `_c` pairs are not built (same rule in
+# icount/).
+set(TAP_DSP_BENCH_ENGINE basic_real_fft CACHE STRING
+    "FFT engine the benchmark scenarios measure (basic_real_fft or reference_c)")
+# Said in every configure log, because the value reference_c kept its
+# spelling across the flip with a new meaning: a build directory configured
+# before Stage 2b carries it as the old default (then: the class as built)
+# and would otherwise measure the C on the gated keys without a word.
+if(TAP_DSP_BENCH_ENGINE STREQUAL "reference_c")
+    message(STATUS "TAP_DSP_BENCH_ENGINE=reference_c: the bare-keyed bench binaries measure the vendored C "
+                   "directly and no `_c` pair is built; a cache from before Stage 2b holds this value as its "
+                   "old default, so reconfigure with -UTAP_DSP_BENCH_ENGINE to measure what ships")
+else()
+    message(STATUS "TAP_DSP_BENCH_ENGINE=${TAP_DSP_BENCH_ENGINE}: the bare-keyed bench binaries measure what ships "
+                   "(basic_real_fft as built); the `_c` pairs measure the vendored C")
+endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Generic")
     set(_tap_dsp_bench_host_class OFF)
@@ -43,14 +57,15 @@ add_subdirectory(icount)
 
 # Size probes: name:precision:n:engine, the same profiles as the icount
 # scenarios at N = 512 (the ceilings are stated per profile, not per N). The
-# float probe builds twice, C and port (`_port`), so bench.yml reports the
-# port's .text beside the C's; the ceiling applies to the C probe only until
-# Stage 2b routes the port (bench/README.md, "Sizes"). The `_port` probe is
-# skipped when the engine is already split_radix, exactly as icount/ skips
-# the `_port` scenarios: the probe would be the port compared to itself.
+# float probe builds twice, what ships and the vendored C (`_c`), so bench.yml
+# reports the C's .text beside the shipping probe's until Stage 2c retires
+# the C; the ceiling applies to the bare probe (bench/README.md, "Sizes").
+# The `_c` probe is skipped when the engine is already reference_c, exactly
+# as icount/ skips the `_c` scenarios: the probe would be the C compared to
+# itself.
 set(_tap_dsp_size_probes rfft_f32_512:0:512:${TAP_DSP_BENCH_ENGINE})
-if(NOT TAP_DSP_BENCH_ENGINE STREQUAL "split_radix")
-    list(APPEND _tap_dsp_size_probes rfft_f32_512_port:0:512:split_radix)
+if(NOT TAP_DSP_BENCH_ENGINE STREQUAL "reference_c")
+    list(APPEND _tap_dsp_size_probes rfft_f32_512_c:0:512:reference_c)
 endif()
 if(_tap_dsp_bench_host_class)
     list(APPEND _tap_dsp_size_probes rfft_f64_512:1:512:${TAP_DSP_BENCH_ENGINE})

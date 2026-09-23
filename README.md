@@ -10,32 +10,61 @@ RatioTap:
 
 ## `tap::dsp::real_fft` — real FFT with a fixed numeric contract
 
-`include/tap/dsp/fft.h` wraps the vendored [Ooura split-radix real
-FFT](third_party/ooura/) behind a small, well-specified interface, with
-**optional, mutually-exclusive float32 backends** that re-present the *exact*
-same numeric contract for speed on specific hardware:
+`include/tap/dsp/fft.h` is one real-FFT contract — the packing, the
+`W = exp(+2πi/N)` sign convention, the unnormalized in-place inverse, the
+numbers in the tables below — over four sample types, with the engine behind
+each profile chosen once, at construction, by the sample type and the build:
 
-| Backend | Build option | Target | Notes |
-|---------|-------------|--------|-------|
-| Ooura (default) | — | everywhere | the golden model; double is **always** Ooura |
-| CMSIS-DSP Helium | `TAP_DSP_FFT_CMSIS` | bare-metal Cortex-M55 (MVE) | ~3× fewer instructions/transform |
-| Apple vDSP | `TAP_DSP_FFT_ACCELERATE` | macOS / Apple Silicon | ~3× faster/transform |
+| Engine | Profiles | Selected by | What it is |
+|---|---|---|---|
+| split-radix (`fft/split_radix.h`) | `double`; `float` unless a backend is on | default | the C++20 transliteration of Ooura's `rdft`, **bit-identical** to the vendored C it replaced (both precisions; `tests/test_fft_parity_ooura.cpp`), tables built in the constructor |
+| CMSIS-DSP Helium | `float` | `TAP_DSP_FFT_CMSIS` (default ON for the bare-metal Cortex-M55 profile) | Arm's radix-4/8 MVE real FFT, re-presented in the same contract to float epsilon; on the `m55` icount key the vendored C (to which the split-radix engine is bit-identical) executes 1.81× (N = 512) / 1.97× (N = 2048) the instructions of the CMSIS build over the whole ratchet scenario, transform plus the class's copy loop, 2/N scaling and checksum ([run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811), `bench/README.md`); MuTap's transform-only figure on the C was ~3×, not re-measured here |
+| Apple vDSP | `float` | `TAP_DSP_FFT_ACCELERATE` (default ON on Apple) | `vDSP_fft_zrip`, same contract to float epsilon; ~3× faster per transform on Apple Silicon is MuTap's transform-only measurement on the vendored C (tap/MuTap#31), not re-measured in this repo (the same-binary comparison is Stage 4) |
+| int32 radix-4 (`fft/fixed_point.h`) | Q15, Q31 | the sample type | one kernel over Q1.30 twiddles under two scaling policies, returning an exponent |
 
-The two float32 backends conjugate imaginary bins and rescale so every
-intermediate spectrum matches the Ooura build to single-precision rounding —
-so the whole double-precision test battery stays a valid oracle for the
-accelerated float paths. `tests/test_fft_backend.cpp` pins each backend to
-Ooura's `rdft_f` bin-for-bin at the certified geometries (N = 512, 2048).
+The two float32 backends are mutually exclusive, apply to `float` only (double
+is always the split-radix engine, the golden model), and conjugate imaginary
+bins and rescale so every intermediate spectrum matches the default build to
+single-precision rounding — so the whole double-precision test battery stays a
+valid oracle for the accelerated float paths. `tests/test_fft_backend.cpp`
+pins each backend to the split-radix float engine bin-for-bin at the certified
+geometries (N = 512, 2048); `tests/test_fft_routing.cpp` pins `basic_real_fft`
+to the engine byte for byte where no backend is on.
 
-Four profiles share one numeric contract (packing, `W = exp(+2πi/N)`,
-unnormalized inverse); the fixed-point ones (Stage 3b of the audit, design in
-[`docs/fft-fixed-point.md`](docs/fft-fixed-point.md)) return an exponent `e`
-from every transform in place of a floating scale:
+**Migration note for consumers (Stage 2b of the audit).** What changed: the
+words. `basic_real_fft<double>` and `basic_real_fft<float>` now hold a
+`detail::split_radix_rdft<Sample>` instead of Ooura's `ip`/`w` workspace, their
+tables are built in the constructor rather than on the first transform, and the
+float-I/O-on-double overloads `forward(const float*, float*)` /
+`inverse(const float*, float*)` are `[[deprecated]]` (Decision D5, one consumer
+cycle). What did not change, as measured: any output bit at default
+fp-contraction on every CI platform (x86-64 without `-march`, MSVC, Apple
+arm64, the four Cortex-M legs) and on clang with FMA. Every transform through
+`basic_real_fft` produced the same bytes as before the flip there, for
+`double` and for `float`, and MuTap's fingerprint harness (float rows
+included) was byte-identical through the bump at MuTap's flags; no consumer
+source needs editing and no float pin moves. The one measured exception is a
+g++ x86-64 build with `-march` (FMA), where `basic_real_fft<float>` moves by a
+few float ulp at N ≥ 1024 (`double` unchanged; clang at the same flags
+identical) — the fp-contraction table in `docs/fft-design.md`. `tap::dsp`
+sets no `-ffp-contract` flag and exports none (Decision D9; the reasoning is
+in `fft.h`'s class docstring).
 
-| Profile | Alias | Kernel | Forward scale | Noise floor (per-bin SNR, full-scale white noise, N = 512) | Target |
+**Header-only from Stage 2c.** Until then the `tap_dsp_fft` static library
+still carries the reference C (`third_party/ooura/fftsg.c`, `fftsg_float.c`),
+which nothing in `fft.h` calls any more, and the CMSIS objects when
+`TAP_DSP_FFT_CMSIS` is on; `tap::dsp` links it automatically. After 2c the
+library exists only for the CMSIS backend.
+
+Four profiles share the contract; the fixed-point ones (Stage 3b of the
+audit, design in [`docs/fft-design.md`](docs/fft-design.md), "The
+fixed-point profiles") return an exponent `e` from every transform in place
+of a floating scale:
+
+| Profile | Alias | Engine | Forward scale | Noise floor (fixed point: per-bin SNR, full-scale white noise, N = 512) | Target |
 |---|---|---|---|---|---|
-| `double` | `real_fft` | Ooura split-radix | X | golden model | desktop, reference |
-| `float` | `real_fft32` | Ooura split-radix (vDSP / CMSIS-Helium backends) | X | float epsilon | Cortex-M55, Hexagon HVX, Apple Silicon |
+| `double` | `real_fft` | split-radix | X | golden model: 1.85e-16 relative 2-norm error vs the compensated-DFT oracle at N = 256 on x86-64, 1.66 – 1.89e-16 on the Cortex-M legs (pinned 4×, `DoubleForwardTracksCompensatedDft`) | desktop, reference |
+| `float` | `real_fft32` | split-radix (vDSP / CMSIS-Helium backends) | X | 1.12e-7 relative 2-norm error vs double at N = 512 on x86-64 and the soft-float M4, 1.17e-7 on the VFMA legs (pinned 2×, `FloatEngineTracksDoubleAtN512`); < 1e-6 at N = 1024 | Cortex-M4F, M33, M55, Hexagon HVX, Apple Silicon |
 | `std::int16_t` (Q15), `scaling::fixed` | `real_fft_q15` | int32 radix-4, Q1.30 twiddles | X / N, e = log2 N | 0.29 LSB rms (the output rounding); 66.5 dB at 0 dBFS, 26.6 dB at −40 dBFS | Cortex-M4 (soft-float), M33 |
 | `std::int32_t` (Q31), `scaling::fixed` | `real_fft_q31` | same kernel, in place | X / 2N, e = log2 N + 1 | 0.68 LSB rms; 149.4 dB at 0 dBFS, 109.4 dB at −40 dBFS | Cortex-M4, M33, M55 |
 | Q15, `scaling::block_floating` | `real_fft_q15_bfp` | same, per-stage headroom scan | X / 2^e, 0 ≤ e ≤ log2 N | 90.6 dB at 0 dBFS, 80.6 dB at −40 dBFS | round-trip consumers |
@@ -408,13 +437,20 @@ packed exp(+i) layout to and from `numpy.fft.rfft`'s convention): the packing
 and sign contract against numpy, the float32 profile's per-bin error against
 the double golden model vs N — on the profile's own arithmetic via the raw
 in-place entry points, not a double round trip — and the round-trip error of
-both profiles. Its fixed-point section (Q15/Q31 noise floors under Welch's
-model) is a designed placeholder until Stage 3b/3c of
-`docs/audit-fft-and-code-smells.md` lands.
+both profiles. With tap/DspTap#30 (Stage 3c) `notebooks/fft.ipynb` also
+measures the four fixed-point configurations (`"q15"`, `"q31"`, `"q15_bfp"`,
+`"q31_bfp"` in `dsptap_py.RealFFT`, the exponent returned with every
+transform): the noise-floor table of the fixed-point design record in
+`docs/fft-design.md` ("The fixed-point profiles", §5) re-measured through the
+ABI beside the battery's pins, the DC-path bias to N = 65536, the
+block-floating exponent on speech-like material, and the battery's output
+fingerprints reproduced through the ABI; `sine_analysis.h` /
+`multitone_analysis.h` score Q15 / Q31 spans directly from #30 onward.
 
 ## Build
 
-Standalone (builds the Ooura path, plus vDSP on macOS, and runs the tests):
+Standalone (builds the split-radix engine, plus vDSP on macOS, and runs the
+tests):
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -428,7 +464,7 @@ CI also runs an emulation-sized selection of the battery
 FPU flavour selected by `-DTAP_DSP_M4_FPU=ON`), `cortex-m33`
 (`cmake/arm-cortex-m33-mps2.cmake`) and `cortex-m55`
 (`cmake/arm-cortex-m55-mps3.cmake`, where the CMSIS-DSP Helium FFT backend is
-ON and its parity suite runs against Ooura). Every suite compiled into a test
+ON and its parity suite runs against the split-radix engine). Every suite compiled into a test
 executable runs on the target unless excluded by name in
 `tests/CMakeLists.txt` (a negative filter; each exclusion is a budget note).
 To run one locally, with `arm-none-eabi-g++` and `qemu-system-arm` on `PATH`:
@@ -450,12 +486,13 @@ add_subdirectory(submodules/dsptap)   # or however it is pinned
 target_link_libraries(my_dsp PRIVATE tap::dsp)
 ```
 
-`tap::dsp` is an INTERFACE target (the headers + the compiled Ooura
-static lib `tap::dsp_fft`); it does not build the tests when added as a
-subdirectory (`TAP_DSP_BUILD_TESTS` defaults OFF unless top-level). The
-per-platform float32 backend defaults follow the target: vDSP on Apple, CMSIS
-on the bare-metal M55 profile, Ooura elsewhere — override with
-`-DTAP_DSP_FFT_ACCELERATE=OFF` etc.
+`tap::dsp` is an INTERFACE target (the headers, plus the `tap::dsp_fft`
+static library that until Stage 2c still carries the reference Ooura C and,
+under `TAP_DSP_FFT_CMSIS`, the CMSIS objects); it does not build the tests
+when added as a subdirectory (`TAP_DSP_BUILD_TESTS` defaults OFF unless
+top-level). The per-platform float32 backend defaults follow the target: vDSP
+on Apple, CMSIS on the bare-metal M55 profile, the split-radix engine
+elsewhere — override with `-DTAP_DSP_FFT_ACCELERATE=OFF` etc.
 
 ## Provenance
 
@@ -477,11 +514,13 @@ extract-on-second-consumer rule that created this repo.
 
 See [`third_party/ooura/readme.txt`](third_party/ooura/readme.txt) and
 [`third_party/cmsis-dsp/VENDOR.md`](third_party/cmsis-dsp/VENDOR.md) for the
-vendored-code provenance and licenses. The design note for the planned C++20
-port of the same split-radix transform (and the Q15 / Q31 profiles) is
+vendored-code provenance and licenses. The floating profiles run the C++20
+port of the same split-radix transform (`include/tap/dsp/fft/split_radix.h`,
+landed bit-identical to the C at Stage 2a, #28, and routed at Stage 2b, #31);
+the Q15 / Q31 profiles landed at Stage 3b (#27). The design note is
 [`docs/fft-design.md`](docs/fft-design.md), filled in as each stage lands; the
-plan of record, `docs/audit-fft-and-code-smells.md`, lands with the plan PR
-(#25). Nothing from either has shipped yet.
+plan of record is `docs/audit-fft-and-code-smells.md` (#25). The vendored C
+stays in the tree as the parity reference until Stage 2c removes it.
 
 ## License
 
@@ -490,8 +529,8 @@ license. The Ooura FFT is under its author's own terms, stated in
 `third_party/ooura/readme.txt`: "You may use, copy, modify this code for any
 purpose and without fee. You may distribute this ORIGINAL package." — a grant
 of use, copying and modification, and of distribution of the original package.
-DspTap ships that file today with the notice attached, and the planned C++
-port is a derivative work whose redistribution relies on the modification
+DspTap ships that file today with the notice attached, and the C++ port it
+routes to is a derivative work whose redistribution relies on the modification
 grant (SPDX `LicenseRef-Ooura AND MIT` for the port header, with the notice
 text in `LICENSES/LicenseRef-Ooura.txt`; the readme stays at
 `third_party/ooura/readme.txt` permanently). CMSIS-DSP / CMSIS-Core are

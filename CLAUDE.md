@@ -34,7 +34,9 @@ instruments (`analysis/`). See `README.md` for each asset's contract summary.
   four-profile ladder in full: `double` / `float` / Q15 / Q31 over one contract, the fixed
   profiles as `basic_real_fft<int16_t|int32_t, Scaling>` returning an exponent, with a
   fixed-scaling and a block-floating policy (`fft.h`, `fft/fixed_point.h`,
-  `docs/fft-fixed-point.md`), each floor a measured number against the double profile.
+  `docs/fft-design.md`), each floor a measured number against the double profile. The floating
+  profiles run the C++20 split-radix engine (`fft/split_radix.h`), bit-identical to the vendored
+  Ooura C it replaced; the C stays in-tree only as the parity reference until Stage 2c.
 - **Real-time safe by construction.** Geometry fixed at construction, every buffer allocated
   there; processing is `noexcept` and allocation-free. Numerically fragile recursions (e.g. the
   order-48 Levinson–Durbin inside `pvoc`) run in double even in the float profile — documented

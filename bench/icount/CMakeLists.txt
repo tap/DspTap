@@ -17,7 +17,7 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Generic")
 endif()
 
 # One scenario binary: tap_dsp_icount_<key>, measuring <engine>
-# (bench_common.h: reference_c or split_radix) over precision/n.
+# (bench_common.h: basic_real_fft or reference_c) over precision/n.
 function(tap_dsp_add_icount_scenario _key _precision _n _engine)
     add_executable(tap_dsp_icount_${_key} icount_main.cpp)
     target_compile_definitions(tap_dsp_icount_${_key} PRIVATE
@@ -48,17 +48,19 @@ foreach(_sc IN LISTS _tap_dsp_icount_scenarios)
     list(GET _parts 0 _name)
     list(GET _parts 1 _precision)
     list(GET _parts 2 _n)
-    # The gated binary: the engine the cache variable selects (reference_c,
-    # the vendored C, unless overridden), keyed by the bare scenario name.
+    # The gated binary: the engine the cache variable selects (basic_real_fft,
+    # what ships, unless overridden), keyed by the bare scenario name.
     tap_dsp_add_icount_scenario(${_name} ${_precision} ${_n} ${TAP_DSP_BENCH_ENGINE})
-    # Stage 2a until 2c: every float scenario also builds against the C++20
-    # port (TAP_DSP_BENCH_ENGINE=split_radix), key suffix `_port`. The suffix
-    # is scripts/icount.py's INFORMATIONAL_SUFFIX: the binary is counted and
-    # printed with its ratio to the C sibling, never gated and never written
-    # to bench/baselines.json, because nothing is routed at the port yet
-    # (docs/audit-fft-and-code-smells.md, Part 3 Stage 2a). Stage 2b flips the
-    # routing and ratchets the bare key against the seeded C numbers.
-    if(_precision EQUAL 0 AND NOT TAP_DSP_BENCH_ENGINE STREQUAL "split_radix")
-        tap_dsp_add_icount_scenario(${_name}_port ${_precision} ${_n} split_radix)
+    # Stage 2b until 2c: every float scenario also builds against the vendored
+    # C called directly (TAP_DSP_BENCH_ENGINE=reference_c), key suffix `_c`.
+    # The suffix is scripts/icount.py's INFORMATIONAL_SUFFIX: the binary is
+    # counted and printed with its ratio to the gated sibling and whether the
+    # two output checksums agree, never gated and never written to
+    # bench/baselines.json. Until 2b the same mechanism ran the other way
+    # (`_port`: the port beside the C while the C shipped); the flip
+    # re-recorded the bare keys to the port and the C became the informational
+    # side. Stage 2c deletes the C and this pair with it.
+    if(_precision EQUAL 0 AND NOT TAP_DSP_BENCH_ENGINE STREQUAL "reference_c")
+        tap_dsp_add_icount_scenario(${_name}_c ${_precision} ${_n} reference_c)
     endif()
 endforeach()

@@ -36,13 +36,15 @@ its own license text:
   the maintainer's reading is that it is within the intent of the
   distribution grant, and the draft email in `docs/fft-design.md` puts the
   question to the author.
-- What DspTap relies on going forward: the C++20 port of `rdft`
+- What DspTap ships and relies on: the C++20 port of `rdft`
   (`include/tap/dsp/fft/split_radix.h`, a statement-for-statement
   transliteration). It landed at Stage 2a (tap/DspTap#28) beside the vendored
   C, bit-identical to it for both precisions under the parity gate
-  (`tests/test_fft_parity_ooura.cpp`), and nothing is routed at it yet:
-  `basic_real_fft` still runs `fftsg.c` until Stage 2b flips the routing, and
-  the C leaves the shipping tree at Stage 2c. The port is a **derivative work,
+  (`tests/test_fft_parity_ooura.cpp`), and Stage 2b (tap/DspTap#31) routed
+  `basic_real_fft` at it: every floating transform a consumer runs is the port.
+  The vendored `fftsg.c` / `fftsg_float.c` remain in the tree, and in the
+  `tap_dsp_fft` static library, only as the parity reference the gate compares
+  against; they leave the shipping tree at Stage 2c. The port is a **derivative work,
   not the ORIGINAL package**, and its redistribution relies on the
   **modification grant** ("modify this code for any purpose"). Precedent
   exists but is not relied on: WebRTC/Chromium ship a
