@@ -279,7 +279,9 @@ rows), icount ratchet at 0% delta on m33 and hexagon (the ratchet's ±3% is not 
 0% is, because nothing numeric changed), `test_float32`, `test_g168`, `test_nn_suppressor`
 unchanged. DspTap's own ratchet (Stage 1b): the port within ±3% of the C's instruction count
 on every QEMU leg and within the `.text` ceilings; the measured deltas go into
-`bench/README.md` with the flip. Rollback is a one-line revert.
+`bench/README.md` with the flip. Rollback is a one-line revert. *Amended after the bump: the
+"0% delta" prediction did not hold — the counts fell on m33 and hexagon and were re-recorded
+per D11; see Part 13, "Stage 2b's MuTap gate".*
 
 **2c. Remove the C.** Delete `fftsg_float.c`; move `fftsg.c` and `readme.txt` to
 `tests/reference/ooura/`; `tap_dsp_fft` exists only when `TAP_DSP_FFT_CMSIS` is on. MuTap:
@@ -994,6 +996,20 @@ opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
   outside that range (the existing battery started at 64 and never saw it; N = 4 hard-faults).
   Owned by Stage 4: the engine reports its supported range, construction checks it, and the
   backend's docstring states it as a contract number. Until then the oracle carries the range.
+- **Stage 2b's MuTap gate "icount ratchet at 0% delta on m33 and hexagon (0% is the gate,
+  because nothing numeric changed)" was a prediction that did not hold** (wave 3; recorded at
+  the Stage 2c fix pass, tap/DspTap#32). Measured on the MuTap bump to DspTap `ae0c027`
+  (tap/MuTap#54; PR run 35866422618 against the previous `main` run 35804748507): every
+  scenario's output checksum unchanged and the fingerprints identical on all legs, but the
+  instruction counts moved downward — m33 chain −1.17/−1.15%, fdkf −2.46/−2.03%, shadow
+  −3.05/−3.05% (crossing the two-sided ±3% band), suppressor −1.13/−1.14%; hexagon −0.004 to
+  −0.86%; m55 (CMSIS) ≤ 0.003%. Cause: the header-only port compiles to fewer instructions
+  than the vendored C on GCC 13.2 Cortex-M and on Hexagon clang, the same direction DspTap's
+  own Stage 2b re-record measured (tap/DspTap#31). "Nothing numeric changed" was true of the
+  outputs and said nothing about the instruction stream. Disposition: re-recorded per D11 with
+  a written commit in the MuTap bump. The gate for a bump is "fingerprints byte-identical on
+  every leg"; the ratchet is re-recorded when the engine changes. The Stage 2b paragraph in
+  Part 3 keeps its text and carries a one-line pointer here.
 
 ---
 
