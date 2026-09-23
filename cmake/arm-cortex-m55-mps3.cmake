@@ -46,11 +46,12 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 
-# Largest transform the Stage 2a Ooura parity suite runs on this leg
-# (tests/CMakeLists.txt reads it as a cache default): the plan's "parity at
-# N <= 4096" on emulated targets, and what fits the data region (2^20 needs
-# five 8 MB buffers). A plain cache set, so -D on the command line still wins.
-set(TAP_DSP_PARITY_MAX_N 4096 CACHE STRING "Largest FFT size the Ooura parity suite runs on this leg")
+# Largest transform the FFT test sweeps run on this leg (tests/CMakeLists.txt
+# reads it as a cache default): what fits the data region (2^20 needs five
+# 8 MB buffers). Introduced as TAP_DSP_PARITY_MAX_N for the Stage 2a parity
+# sweep, renamed when that gate was retired (Decision D6). A plain cache set,
+# so -D on the command line still wins.
+set(TAP_DSP_TEST_MAX_FFT_N 4096 CACHE STRING "Largest FFT size the test sweeps run on this leg")
 
 # Switches the test harness to one-shot mode: a single registered CTest test
 # running the whole (emulation-sized) suite, judged by gtest's summary text

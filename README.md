@@ -23,7 +23,7 @@ its size range and shareability as contract numbers:
 
 | Engine | Profiles | Selected by | Size range | Shareable | What it is |
 |---|---|---|---|---|---|
-| split-radix (`fft/split_radix.h`) | `double`; `float` unless a backend is on | default | 4 … 2^30 | yes | the C++20 transliteration of Ooura's `rdft`, **bit-identical** to the C it replaced (both precisions; `tests/test_fft_parity_ooura.cpp`, against the reference copy under `tests/reference/ooura/`, which is not part of what ships), tables built in the constructor |
+| split-radix (`fft/split_radix.h`) | `double`; `float` unless a backend is on | default | 4 … 2^30 | yes | the C++20 transliteration of Ooura's `rdft`, **bit-identical** to the C it replaced (both precisions; gated against a reference copy of the C from Stage 2a until Decision D6 deleted it, pinned since as output fingerprints in `tests/test_fft_split_radix_fingerprint.cpp`), tables built in the constructor |
 | CMSIS-DSP Helium (`fft/backends/cmsis.h`) | `float` | `TAP_DSP_FFT_CMSIS` (default ON for the bare-metal Cortex-M55 profile) | **32 … 4096** (CMSIS-DSP's own init table; the constructor checks the init status since Stage 4 — outside this range the library never initialized, and N = 4 hard-faulted) | no | Arm's radix-4/8 MVE real FFT, re-presented in the same contract to float epsilon; on the `m55` icount key the vendored C (to which the split-radix engine is bit-identical) executes 1.81× (N = 512) / 1.97× (N = 2048) the instructions of the CMSIS build over the whole ratchet scenario, transform plus the class's copy loop, 2/N scaling and checksum ([run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811), `bench/README.md`); MuTap's transform-only figure on the C was ~3×, not re-measured here |
 | Apple vDSP (`fft/backends/accelerate.h`) | `float` | `TAP_DSP_FFT_ACCELERATE` (default ON on Apple) | 4 … 2^20 | no | `vDSP_fft_zrip`, same contract to float epsilon; ~3× faster per transform on Apple Silicon is MuTap's transform-only measurement on the vendored C (tap/MuTap#31), not re-measured in this repo (the same-binary parity *test* exists since Stage 4; the microbenchmark needs a Mac) |
 | int32 radix-4 (`fft/fixed_point.h`) | Q15, Q31 | the sample type (the second template argument is the scaling policy here) | 4 … 65536 | Q31 yes, Q15 no | one kernel over Q1.30 twiddles under two scaling policies, returning an exponent |
@@ -87,8 +87,8 @@ compiled into what ships. A static library (`tap_dsp_fft`, alias
 `tap::dsp_fft`) exists only under `TAP_DSP_FFT_CMSIS`, carrying the CMSIS-DSP
 objects, and `tap::dsp` links it automatically there. Until Stage 2c of the
 audit the same library also carried the vendored Ooura C on every platform;
-the reference copy now lives under `tests/reference/ooura/` and only the
-parity gate compiles it (`fft.h` has carried no `rdft` declaration since).
+a reference copy then served the parity gate alone until Decision D6 deleted
+it (`fft.h` has carried no `rdft` declaration since 2c).
 
 Four profiles share the contract; the fixed-point ones (Stage 3b of the
 audit, design in [`docs/fft-design.md`](docs/fft-design.md), "The
@@ -556,11 +556,14 @@ vendored-code provenance and licenses. The floating profiles run the C++20
 port of the same split-radix transform (`include/tap/dsp/fft/split_radix.h`,
 landed bit-identical to the C at Stage 2a, #28, and routed at Stage 2b, #31);
 the Q15 / Q31 profiles landed at Stage 3b (#27). At Stage 2c the vendored C
-left the shipping tree: the reference copy (`fftsg.c` and its float
-instantiation `fftsg_float.c`) lives under `tests/reference/ooura/`, compiled
-only by the bit-identity gate `tests/test_fft_parity_ooura.cpp`, and is
-retired once both MuTap and MuTap-Max pin a tree containing 2c (Decision D6);
-`third_party/ooura/readme.txt` stays permanently as the license record. The
+left the shipping tree, and a reference copy (`fftsg.c` and its float
+instantiation `fftsg_float.c`) under `tests/reference/ooura/` served the
+bit-identity gate alone until both MuTap and MuTap-Max pinned a tree
+containing 2c; Decision D6 then deleted it. The engine's identity to the C is
+pinned since by `tests/test_fft_split_radix_fingerprint.cpp` (output
+fingerprints measured equal to the C's; how to re-verify against upstream is
+in the design note), and `third_party/ooura/readme.txt` stays permanently as
+the license record. The
 design note is [`docs/fft-design.md`](docs/fft-design.md), filled in as each
 stage lands; the plan of record is `docs/audit-fft-and-code-smells.md` (#25).
 
@@ -574,9 +577,9 @@ of use, copying and modification, and of distribution of the original package.
 DspTap ships the C++ port of that file, a derivative work whose redistribution
 relies on the modification grant (SPDX `LicenseRef-Ooura AND MIT` for the port
 header, with the notice text in `LICENSES/LicenseRef-Ooura.txt`; the readme
-stays at `third_party/ooura/readme.txt` permanently); the original `fftsg.c`
-is carried outside the shipping tree, under `tests/reference/ooura/`, with
-the notice attached, as the parity gate's reference. CMSIS-DSP / CMSIS-Core are
+stays at `third_party/ooura/readme.txt` permanently). No copy of the original
+`fftsg.c` is carried any more (the test-only reference copy was deleted at
+Decision D6). CMSIS-DSP / CMSIS-Core are
 Apache-2.0 with SPDX headers retained in every file. The canonical statement,
 and the maintainer's reading of what it covers — a judgement call, not legal
 advice — is [`NOTICE.md`](NOTICE.md).

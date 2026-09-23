@@ -39,16 +39,17 @@ set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 
 # No Helium on the M33: the root CMakeLists defaults the CMSIS-DSP Helium FFT
-# backend ON for any Generic+arm system, so pin the Ooura float32 path here
-# (a plain `set` of the cache entry, which the option() then respects; the
-# toolchain is processed inside project(), before that option() runs).
-set(TAP_DSP_FFT_CMSIS OFF CACHE BOOL "No MVE on the Cortex-M33: Ooura float32 FFT")
+# backend ON for any Generic+arm system, so pin the split-radix float32 path
+# here (a plain `set` of the cache entry, which the option() then respects;
+# the toolchain is processed inside project(), before that option() runs).
+set(TAP_DSP_FFT_CMSIS OFF CACHE BOOL "No MVE on the Cortex-M33: split-radix float32 FFT")
 
-# Largest transform the Stage 2a Ooura parity suite runs on this leg
-# (tests/CMakeLists.txt reads it as a cache default): the plan's "parity at
-# N <= 4096" on emulated targets, and what fits the data region (2^20 needs
-# five 8 MB buffers). A plain cache set, so -D on the command line still wins.
-set(TAP_DSP_PARITY_MAX_N 4096 CACHE STRING "Largest FFT size the Ooura parity suite runs on this leg")
+# Largest transform the FFT test sweeps run on this leg (tests/CMakeLists.txt
+# reads it as a cache default): what fits the data region (2^20 needs five
+# 8 MB buffers). Introduced as TAP_DSP_PARITY_MAX_N for the Stage 2a parity
+# sweep, renamed when that gate was retired (Decision D6). A plain cache set,
+# so -D on the command line still wins.
+set(TAP_DSP_TEST_MAX_FFT_N 4096 CACHE STRING "Largest FFT size the test sweeps run on this leg")
 
 # One-shot CTest mode (no argv on bare metal; see tests/CMakeLists.txt).
 set(TAP_DSP_BARE_METAL ON)

@@ -27,9 +27,9 @@
 //
 // Each row pins basic_real_fft<float, Engine> to the reference float engine —
 // detail::split_radix_rdft<float> called directly, the C++20 transliteration
-// of Ooura's rdft_f that is bit-identical to the C it replaced
-// (tests/test_fft_parity_ooura.cpp, against the reference copy under
-// tests/reference/ooura/) — bin-for-bin at the two certified geometries
+// of Ooura's rdft_f that is bit-identical to the C it replaced (the Stage 2a
+// parity gate until D6 deleted the C; tests/test_fft_split_radix_fingerprint.cpp
+// pins it since) — bin-for-bin at the two certified geometries
 // (512-pt canceller, 2048-pt suppressor analysis), and holds it to the
 // alignment-stability and tonal-accuracy gates below at 512 / 2048 / 4096.
 // A static_assert pins that the build's DEFAULT float engine is one of the

@@ -161,8 +161,9 @@ behaviour was measured or reproduced):
 - A. V. Oppenheim and R. W. Schafer, *Discrete-Time Signal Processing*, 3rd
   ed., Sec. 9.7 (round-off in the FFT; block floating point).
 - The real post-pass formulas and the DC/Nyquist glue are transcribed from
-  Ooura's `rdft` / `rftfsub` / `rftbsub` (`third_party/ooura/fftsg.c`); the
-  complex kernel is not Ooura's (D2).
+  Ooura's `rdft` / `rftfsub` / `rftbsub` (`fftsg.c`; the split-radix engine
+  in `fft/split_radix.h` carries the same statements); the complex kernel is
+  not Ooura's (D2).
 
 ### 1. Kernel structure
 
@@ -554,11 +555,16 @@ contracts in every mode, statement-scoped. Neither DspTap nor its consumers set
 contracted differently by default wherever the ISA has FMA (Apple arm64, M55
 VFMA, any x86 built with `-march`). Therefore:
 
-1. The Stage 2a parity target compiles both the C and the C++ with
-   `-ffp-contract=off`, and *that* is the bit-identity gate, for `double` and
+1. The Stage 2a parity target compiled both the C and the C++ with
+   `-ffp-contract=off`, and *that* was the bit-identity gate, for `double` and
    `float`, forward and inverse, at every power of two from 4 to 65536 plus one
-   run at 2^20, same binary and same libm on each host.
-2. The default-flags run is informational and pinned at a *measured* bound —
+   run at 2^20, same binary and same libm on each host. It ran from Stage 2a
+   through Stage 4 and was retired with the reference C at D6; the pinned
+   fingerprints that replaced it (`tests/test_fft_split_radix_fingerprint.cpp`,
+   "The bit-identity record after D6" below) are built at
+   `-ffp-contract=off` for the same reason.
+2. The default-flags run was informational and pinned at a *measured* bound
+   (its target went with the gate at D6; the table stays as the record) —
    a different fusion choice per stage accumulates over `log2 N` stages, and
    "1 ulp" is an assumption, not a number. Measured at Stage 2a on the head
    of tap/DspTap#28 (`8afe6cf`), 2026-09-18, the informational target at
@@ -586,9 +592,9 @@ VFMA, any x86 built with `-march`). Therefore:
    binaries, built Release at default flags, say the same thing: the C and
    the port print identical output checksums on every Ooura key (see the
    instruction-count table). That is a property of these compilers on these
-   statements, not a guarantee, which is why the gate stays at
-   `-ffp-contract=off`. Measured at 2b, and not claimed: x86-64 built with
-   `-march` (FMA). g++ 13.3.0 `-O3 -march=haswell` keeps `double` identical
+   statements, not a guarantee, which is why the gate stayed at
+   `-ffp-contract=off` and the fingerprints are built there. Measured at 2b,
+   and not claimed: x86-64 built with `-march` (FMA). g++ 13.3.0 `-O3 -march=haswell` keeps `double` identical
    and moves `float` at N = 1024, 4096, 16384, 65536 and 2^20 (the two rows
    above: a few float ulp relative to the block's peak, 3.6e-7 in the
    review's harness, large per-value ulp counts only on bins near zero);
@@ -647,7 +653,8 @@ fixed-point twiddle generator lands there) and otherwise out of scope.
 
 These live in the engine header (`include/tap/dsp/fft/split_radix.h`) so the
 next person does not undo them; they are recorded here because they are what
-the parity gate depends on.
+the bit identity depends on (held by the parity gate from Stage 2a until D6,
+by the pinned fingerprints since).
 
 - **Statement fidelity.** Every Ooura statement stays textually intact. Clang
   contracts FMAs within a statement only; GCC contracts across statements after
@@ -1054,7 +1061,8 @@ record. The harness lesson is in audit Part 13.
 - `tests/test_fft_rt.cpp`: `ShareabilityIsTheHeadersNumber` per
   instantiation, with the compiler-checked half.
 - `tests/test_fft_parity_ooura.cpp`: untouched, green on every leg — the
-  proof that no float or double bit moved through the refactor.
+  proof that no float or double bit moved through the refactor (deleted at
+  D6 with the reference C; "The bit-identity record after D6" below).
 - `tests/test_fft_abi_tag.cpp` + `tests/abi/` (hosted, non-Windows): the
   two-image loader test of the tag (above).
 
@@ -1148,8 +1156,8 @@ rdft-reachable text, `--gc-sections`): float 15.7 KB at `-Os`, 19.9 KB at
 **Stage 2c (this PR): the fixed-point scenarios seeded.** Same run as the
 sizes above (35861317022 at `21b3488`), compare mode on every key: the float
 scenarios at +0.00 % against the 2b baselines on all five keys (the C left the
-shipping tree — it remains under `tests/reference/ooura/` as the parity oracle
-until D6's condition is met — and the shipping path did not move), the three
+shipping tree — it remained under `tests/reference/ooura/` as the parity oracle
+until D6 deleted it — and the shipping path did not move), the three
 fixed-point scenarios recorded as new baselines (`bench/README.md`, one row
 per key and scenario). Executed guest instructions for the whole scenario
 binary, as for the float rows: 2^20 samples per direction through `forward()`
@@ -1297,23 +1305,26 @@ AmbiTap/MuTap one. The C++20 port landed at Stage 2a (tap/DspTap#28) as
 the banner below in place; Stage 2b (tap/DspTap#31) routed `basic_real_fft`
 at it; Stage 2c moved the C out of the shipping tree. Since 2c the library is
 header-only (`tap::dsp` a pure INTERFACE target; `tap_dsp_fft` exists only
-under `TAP_DSP_FFT_CMSIS`, carrying the CMSIS objects), and what remains of
-Ooura's package in the repo is `readme.txt` at `third_party/ooura/` plus the
+under `TAP_DSP_FFT_CMSIS`, carrying the CMSIS objects). From 2c until D6 a
 reference copy of `fftsg.c` — with `fftsg_float.c`, because the float half
-of the parity gate compares against `rdft_f` and would otherwise be
-port-vs-port — under `tests/reference/ooura/`, compiled by the gate alone
-(`tests/CMakeLists.txt`) and declared to it by `tests/reference/ooura_rdft.h`.
-See `NOTICE.md` for exactly how the reference file differs from upstream. D6
-retires the reference copy after both MuTap and MuTap-Max pin a tree
-containing 2c; with it goes the gate (`test_fft_parity_ooura.cpp`), leaving
-the routing proof (`test_fft_routing.cpp`) and the independent oracle
-(`test_fft_oracle.cpp`). Provenance stays visible after the port through four
-things: the port header's attribution banner, `NOTICE.md`, the parity test
-against `tests/reference/ooura/fftsg.c` (while it lasts;
-`readme.txt` stays at `third_party/ooura/readme.txt` permanently, D6), and
-one glossary line in MuTap's `docs/itu-compliance.md` mapping "measured on
-Ooura" to "the vendored C at DspTap ≤ `5ca3b1c` and the bit-identical port
-from the Stage 2b SHA onward". Consumer *code* comments drop "Ooura packing"
+of the parity gate compared against `rdft_f` and would otherwise have been
+port-vs-port — lived under `tests/reference/ooura/`, compiled by the gate
+alone and declared to it by `tests/reference/ooura_rdft.h`. D6's condition
+(both MuTap and MuTap-Max pin a tree containing 2c: MuTap `801204d` pins
+DspTap `8350f13`, MuTap-Max `544e756` pins that MuTap) was met after Stage 4,
+and D6 deleted the reference copy, its declaration header and the gate
+(`test_fft_parity_ooura.cpp`, both its targets). What remains of Ooura's
+package in the repo is `readme.txt` at `third_party/ooura/`, permanently, as
+the license record for the derived engine. The bit identity the gate held is
+pinned since by output fingerprints ("The bit-identity record after D6"
+below), beside the routing proof (`test_fft_routing.cpp`) and the
+independent oracle (`test_fft_oracle.cpp`). Provenance stays visible
+through: the port header's attribution banner, `NOTICE.md`, `readme.txt` at
+`third_party/ooura/readme.txt` (D6), the fingerprint pins with the record of
+their equality to the C, and one glossary line in MuTap's
+`docs/itu-compliance.md` mapping "measured on Ooura" to "the vendored C at
+DspTap ≤ `5ca3b1c` and the bit-identical port from the Stage 2b SHA
+onward". Consumer *code* comments drop "Ooura packing"
 in favour of the numeric definition in the Stage 5 view. The engine is named
 for what it is (`detail::split_radix_rdft`, D7), not for its author;
 attribution is carried by the banner and the notices, not the identifier.
@@ -1346,8 +1357,9 @@ bump starts from.
     for `bl=0/1` with the 14 `FINGERPRINT` lines identical).
 
   Nothing replaces the dropped lines: the job's subject is the suppressor's
-  two forms, which never needed the C after 2b; DspTap's own parity gate is
-  the C-vs-port check. Not recommended: compiling the reference files from
+  two forms, which never needed the C after 2b; DspTap's own parity gate was
+  the C-vs-port check (the pinned fingerprints since D6). Not recommended:
+  compiling the reference files from
   `submodules/dsptap/tests/reference/ooura/`, which would re-couple MuTap CI
   to a test fixture D6 deletes.
 - **MuTap `THIRD_PARTY_NOTICES.md`** — rewritten with `NOTICE.md`'s
@@ -1409,6 +1421,153 @@ bump starts from.
   - notices: nothing to write unless MuTap-Max redistributes `NOTICE.md`
     separately (it picks the notice up transitively through MuTap).
 
+- **At the first MuTap bump past D6** (read from MuTap `origin/main` `6a0d260`,
+  2026-09-23): `THIRD_PARTY_NOTICES.md` lines 54–60, the "**Not shipped:**"
+  paragraph, describe the reference copy under
+  `submodules/dsptap/tests/reference/ooura/` as present and D6 as future;
+  after the bump no copy exists. The paragraph becomes one sentence: DspTap
+  carried a test-only reference copy of `fftsg.c` from its Stage 2c to its
+  Decision D6 and carries none since; `readme.txt` is the record. MuTap's
+  `docs/itu-compliance.md` glossary ("measured on Ooura") stays true and
+  does not move. MuTap-Max (`544e756`) names no path under `tests/reference/`.
+
+### The bit-identity record after D6
+
+The parity gate (`tests/test_fft_parity_ooura.cpp`, with an informational
+default-flags twin) ran from Stage 2a (tap/DspTap#28) through Stage 4
+(tap/DspTap#35) on the three hosts and the four QEMU legs, memcmp identity
+between the engine and the reference C at `-ffp-contract=off`. D6 retired it
+with the C. What holds D10 since is `tests/test_fft_split_radix_fingerprint.cpp`
+(own target, `-ffp-contract=off`, MSVC at its default `/fp:precise`): FNV-1a-64
+folds over the IEEE bit patterns of `detail::split_radix_rdft`'s outputs,
+forward and inverse, for `double` and `float`, at every power of two from 4 to
+65536 (the QEMU legs stop at 4096, `TAP_DSP_TEST_MAX_FFT_N`), over four
+libm-free materials; procedure and pins in
+`tests/support/split_radix_fingerprints.h`. Every power of two, not a sample
+of them: Ooura's dispatch branches on N (`cftf040` / `cftb040` at 8,
+`cftf161` and `bitrv216` at 32, `cftfx41` at 64 and 128, the odd-log4 halves
+of `bitrv2` / `bitrv2conj`, `cftleaf`'s 512-point leaf at odd powers ≥ 2048),
+and the first version of this test, at five even powers, left about 480
+lines of the engine unexecuted (gcov) and passed a real rounding change in
+`cftf161` (`y10r = wn4r * (x0r - x0i)` rewritten as
+`wn4r * x0r - wn4r * x0i`) that the full set catches in ten cells (review of
+tap/DspTap#36).
+
+**The invariant: the float row.** `split_radix.h` has no precision-specific
+branch (no `if constexpr`, no `is_same`): every kernel statement is the same
+template code for both precisions. The `float` instantiation rounds each
+double libm result to float, and on every configuration measured that
+absorbed the libm differences, so `float` is one value everywhere — glibc
+under both CPU dispatches, newlib with and without a double-precision FPU,
+the UCRT, Apple's libm, g++ and clang. A float pin that moves is therefore
+always a change to the engine's arithmetic. `double` also agrees everywhere
+up to N = 64 — not because those twiddles are exact (only N = 4 reads none;
+N = 16 already reads cos π/4, ½ cos π/8 and ½ sin π/8) but because every libm
+measured rounds them alike; it first differs at N = 128.
+
+**Why the double rows are per C library build.** The engine builds its
+tables from libm's `cos` / `sin` / `atan` exactly as `fftsg.c` does (D10), so
+a last-bit libm difference moves the `double` outputs — and moved the C's
+identically. A row identifies a libm *build including its run-time
+dispatch*: x86-64 glibc selects FMA/AVX2 or SSE2 implementations of
+`sin` / `cos` / `atan` by CPU, and the two differ from N = 8192 up, so glibc
+is a pair of rows, not one value (a pre-Haswell machine, or a VM that masks
+AVX2/FMA, takes the SSE2 row). A run passes when every cell equals one row,
+and prints which; the linux CI job runs the test a second time under
+`GLIBC_TUNABLES=glibc.cpu.hwcaps=-AVX2,-FMA` and checks that each run matched
+its row, so both are exercised on every run. The rows are keyed on the
+macros that identify the libm (`__GLIBC__` and `__x86_64__`; `__NEWLIB__`,
+`__arm__` and `__ARM_FP & 0x8`; `_MSC_VER` and `_M_X64`; `__APPLE__` and
+`__aarch64__`), not on its version: glibc's row was measured on 2.39 and
+holds until a glibc changes those functions, at which point the failure
+message says so. A platform none of them names fails the double test after
+printing its values, to be recorded, not skipped. A failure message
+distinguishes the two cases: a double cell that matches no row while the
+float pin at the same N holds points at the platform's libm version or
+dispatch (check against the C, below, and add a row); a float pin that
+moves means the kernel changed.
+
+| N | float (one row, every configuration) | double N ≤ 64 (every configuration) |
+|---|---|---|
+| 4 | `ef9b60ebf0e8f587` / `7d9b9e4480f66924` | `f014008109d04382` / `a4e32575aed1c801` |
+| 8 | `96742dab1b577d2c` / `02f73648a60330ca` | `85c71bbb0b4690b6` / `477a3c910df5bca9` |
+| 16 | `a222e5c5b80bba3b` / `3a182210d01399a7` | `ea32e166ad289557` / `4a89b6e54a2b629e` |
+| 32 | `06e774c9f71d5af5` / `68592652a0ecee43` | `b8aec28ef6d673eb` / `e8caa0863bb9b639` |
+| 64 | `31eb423adbb65986` / `9d67d026c4f48ecc` | `5644ff7c7b0e6419` / `4d1bee09c0ebc556` |
+| 128 | `c2f53e32cca6945f` / `d2da49eb3feccae5` | — (per library, below) |
+| 256 | `1dc8ccaa8f8db08d` / `50306aa83541329d` | — (per library, below) |
+| 512 | `3272fd6659a91c9a` / `77384618c779efa6` | — (per library, below) |
+| 1024 | `fd0ffea8357b8ddd` / `526e4272bdaab623` | — (per library, below) |
+| 2048 | `2e8a6f5fb458520d` / `23fc4df37b433aec` | — (per library, below) |
+| 4096 | `6723317886e7c1f2` / `7a318e19506b1c24` | — (per library, below) |
+| 8192 | `a5edafd7ec823192` / `530ea64869bf67ae` | — (per library, below) |
+| 16384 | `e562a21922c4c589` / `ed246b24b4c2f3df` | — (per library, below) |
+| 32768 | `5ce3d674258b6035` / `3ad5668f242936a3` | — (per library, below) |
+| 65536 | `141744d674ac1c64` / `8c9d260bedee7129` | — (per library, below) |
+
+| double, N | glibc, FMA/AVX2 dispatch | glibc, SSE2 dispatch | newlib, soft double (M4, M4F, M33) | newlib, DP FPU (M55) | MSVC x64, UCRT | arm64 macOS |
+|---|---|---|---|---|---|---|
+| 128 | `6a7199cab6054194` / `e27bedfa6fec4919` | `6a7199cab6054194` / `e27bedfa6fec4919` | `f94fa452b6b6631b` / `73c4adb6801f242a` | `f94fa452b6b6631b` / `73c4adb6801f242a` | `f94fa452b6b6631b` / `73c4adb6801f242a` | `f94fa452b6b6631b` / `73c4adb6801f242a` |
+| 256 | `4e70f1158efcfe3d` / `b5d51404f905fea6` | `4e70f1158efcfe3d` / `b5d51404f905fea6` | `e59fe4d3e6326eb3` / `43318e1983699fd3` | `5c6c45c5898a558a` / `43318e1983699fd3` | `cabb356393c2dac7` / `5c0eeb0579868a88` | `1a682072ef54d745` / `a9e60433894b7013` |
+| 512 | `21e35dd0330a809a` / `d5c2231d159d4698` | `21e35dd0330a809a` / `d5c2231d159d4698` | `5c2479007e97b9c6` / `00306b85c97aee64` | `8b67b1235ed466a9` / `b5065c9484181d81` | `5563d637de5e961d` / `10e1a0bd60bce082` | `d0a19e500f844c5c` / `76d38e82464248af` |
+| 1024 | `f24f19a7fe3274a8` / `54dce063fb4161eb` | `f24f19a7fe3274a8` / `54dce063fb4161eb` | `878a01ec9aa4e1bd` / `068c7471dbde8796` | `f5992e25957ac958` / `6c2e7e635f21adf7` | `dd44bf873268ba83` / `abc8af10c100bee6` | `5cb137231c0a46e9` / `ff6e0741acfebeb3` |
+| 2048 | `f3a7d6278d939926` / `1c95174b8f085c8e` | `f3a7d6278d939926` / `1c95174b8f085c8e` | `4f5075e73328a14a` / `731f6158e19aadd7` | `c1c49092ec9a4212` / `6ee7a9907f767089` | `e8a241c435bb2601` / `ca0d22bb81356f5a` | `379d6b9eef0fbe66` / `f80a8d3a5cf07d68` |
+| 4096 | `753d7cfca461e82b` / `8c9e917a44067ff2` | `753d7cfca461e82b` / `8c9e917a44067ff2` | `58c61a3b29d4b55e` / `2d0482b12bc4e246` | `c42e9fb613c1c2c9` / `81d554f525c82f66` | `4e0db6e49731d286` / `bcbcc885236c3585` | `7909ca3d02d78252` / `4a9a5c439158323d` |
+| 8192 | `6165e9ec3f1269a7` / `32d82388dc2a21fc` | `cc1adb16b8385bf9` / `655eced7f8b256f4` | not run | not run | `25213b8387ce17df` / `184a6995c63e5507` | `dab35c43e9136ed6` / `503f3b059e7ac263` |
+| 16384 | `b54f372489309a93` / `3efc33f7c7e1e0ad` | `22e9355d131725ac` / `e8b892b022107e49` | not run | not run | `2e24dc611386f95a` / `b6f8aab7dc17962d` | `bb8b79e8470c05cf` / `0496245fe2a1a0e4` |
+| 32768 | `59c3d563577f7644` / `7d40ace7f287957e` | `0b12f1160600a08b` / `33cb520f47ba6d5b` | not run | not run | `128e42969938f8d4` / `1fdf8d272bf2b6a1` | `588bd3585488aef2` / `032c156afe537e02` |
+| 65536 | `b7909fad30a275af` / `e72fb50d719ef181` | `23f50b8c94aecb5b` / `aa919e1c04c85b21` | not run | not run | `b02d408a57e2ebde` / `288c58dad9580f4b` | `bae4e82f8d79d549` / `bfa3a82a87bbe16d` |
+
+**How the pins were shown to be the C's.** (1) Locally, on the tree of
+`6f6f77f` (the last `main` that carried the C) with a scratch TU that ran
+this procedure on the reference C's `rdft` / `rdft_f` beside the engine,
+built with the gate's own reference library at `-ffp-contract=off`, and then
+again on the retiring PR's own commits with the C present: C equal to engine
+in every cell on x86-64 g++ 13.3.0 and clang++ 18.1.3 (identical), under
+both glibc dispatches, and on the M4 soft-float, M4F, M33 and M55 QEMU legs
+(arm-none-eabi-gcc 13.2.1, QEMU 8.2.2). (2) In CI, the retiring PR kept the
+C through its pinning commits and added
+`fft_parity_ooura.ReferenceCHasThePinnedFingerprints` to the gate — the same
+procedure on the C at all fifteen sizes, required equal to the engine's, to
+the float row and to one of the platform's double rows — and ran it
+verbosely on every leg. The Windows and macOS rows were taken from that
+run (CI run 35920111160; both sides printed, equal in every cell), and the
+commit that pinned them (`df187b0`) asserted the C against every pin on all
+seven legs before the C was deleted. (3) Upstream: `fftsg.c` from a fresh
+download of Ooura's `fft.tgz`, unmodified, compiled with a float
+instantiation made the way `fftsg_float.c` made it, reproduces both glibc
+rows (default and under the tunable above) and the float row at all fifteen
+sizes.
+
+**Re-verifying against upstream, if it is ever needed** (a pin moves, a new
+platform, a doubt):
+
+1. Download `fft.tgz` from Ooura's published page (currently
+   `https://www.kurims.kyoto-u.ac.jp/~ooura/fft.tgz`; the 2001 address in the
+   notice, `http://momonga.t.u-tokyo.ac.jp/~ooura/fft.html`, is historical).
+   The archive checked at D6: `fft.tgz` SHA-256
+   `52bb637c70b971958ec79c9c8752b1df5ff0218a4db4510e60826e0cb79b5296` (gzip
+   header dated 2006-12-28), `fft/fftsg.c` SHA-256
+   `21f8ea961f13284b0272798af99c5ad6081cd30f339c5d4bcf82c05b19fbdc2a`. The
+   copy DspTap carried (`tests/reference/ooura/fftsg.c` at `6f6f77f`, git
+   blob `5cc0a00196b483438b591525e0574f1582e0c07b`, SHA-256
+   `063df78915a0fb66d788d8c3866b97b0fe9c4a54f9d2b1d86a137406ed761c26`)
+   differs from it only by Tap's banner at the top and stripped trailing
+   whitespace (checked with a whitespace-insensitive diff at D6).
+2. Compile `fftsg.c` as C at `-ffp-contract=off`, and a float instantiation
+   of it: `#define double float` plus the `_f` renames of every external
+   function around `#include "fftsg.c"`, as `fftsg_float.c` did (`git show
+   6f6f77f:tests/reference/ooura/fftsg_float.c`, blob
+   `8640dea39184851d1cb23e0cf298227805c55d33`).
+3. Run `tap::dsp::test::fingerprint_of` (the support header) over a thin
+   adapter that calls `rdft` / `rdft_f` with `ip[0] = 0` on the first call
+   and the workspace geometry `readme.txt` prescribes (the adapter the
+   parity gate had: `git show 6f6f77f:tests/test_fft_parity_ooura.cpp`),
+   compiled at `-ffp-contract=off`, and compare with the pins for that
+   platform (`matching_double_row` picks the row; on x86-64 glibc run it
+   under both dispatches). Alternatively check out `6f6f77f` whole and run
+   its gate beside the engine under test.
+
 ### The licensing statement
 
 `NOTICE.md` is the canonical statement — it is what ships — and this section
@@ -1416,8 +1575,8 @@ gives the reasoning behind it. When the reasoning changes, `NOTICE.md`
 changes in the same PR.
 
 Ooura's terms are stated in `third_party/ooura/readme.txt`, the only upstream
-license text (the banner at the top of the vendored `fftsg.c` is Tap's copy of
-it; the upstream file carries no notice of its own). They are:
+license text (the banner at the top of the formerly vendored `fftsg.c` was
+Tap's copy of it; the upstream file carries no notice of its own). They are:
 
 > You may use, copy, modify this code for any purpose and without fee. You
 > may distribute this ORIGINAL package.
@@ -1427,16 +1586,18 @@ and without fee; and distribution of the *original* package. Distribution of a
 modified derivative is not expressly granted.
 
 Until Stage 2c DspTap shipped one source file of the package, `fftsg.c`, plus
-its `readme.txt`; since 2c it ships `readme.txt` and carries `fftsg.c` outside
-the shipping tree, under `tests/reference/ooura/`, for the parity gate. The
-reference `fftsg.c` is textually identical to the 2006-12-28 `fft.tgz` except
-for a provenance banner Tap added at the top (the upstream file carries no
-notice of its own; the notice lives in `readme.txt`; the banner's pointer to
-the readme was updated when the file moved) and stripped trailing
-whitespace. That is a partial copy of the original package with the notice
-attached, not a modified transform; the maintainer's reading is that it is
+its `readme.txt`; from 2c until D6 it shipped `readme.txt` and carried
+`fftsg.c` outside the shipping tree, under `tests/reference/ooura/`, for the
+parity gate; since D6 it carries `readme.txt` alone. The reference `fftsg.c`
+was textually identical to the 2006-12-28 `fft.tgz` except for a provenance
+banner Tap added at the top (the upstream file carries no notice of its own;
+the notice lives in `readme.txt`) and stripped trailing whitespace (checked
+at D6 against a fresh download; hashes in "The bit-identity record after
+D6"). That was a partial copy of the original package with the notice
+attached, not a modified transform; the maintainer's reading was that it was
 within the intent of the distribution grant, and the draft email below puts
-the question to the author.
+the question to the author. With the copy gone, only the derivative question
+below remains.
 
 What ships, the C++20 port of `rdft`, is a **derivative work, not the
 ORIGINAL package**, and its redistribution relies on the **modification grant**
@@ -1455,8 +1616,8 @@ for the wrapper and DspTap's additions), and a line stating that it is a
 derivative work with the modifications copyright and date.
 `third_party/ooura/readme.txt` stays at that path permanently as the license
 record for the derived code; `fftsg.c` moved to the test reference tree at
-Stage 2c (with `fftsg_float.c`, for the float half of the gate) and is retired
-afterwards (D6). "permissive" and "public" — the words the earlier notice
+Stage 2c (with `fftsg_float.c`, for the float half of the gate) and was
+deleted at D6. "permissive" and "public" — the words the earlier notice
 used — overstated the grant and are not used.
 
 This is a maintainer judgement call, not legal advice.
@@ -1521,7 +1682,7 @@ the `fft2d` readme), then `ooura@mmm.t.u-tokyo.ac.jp` (the address in the
 >
 > Thank you for the General Purpose FFT Package. I maintain DspTap, a small
 > open-source (MIT) library of DSP primitives for audio, at
-> https://github.com/tap/DspTap. It has carried your `fftsg.c` for some time,
+> https://github.com/tap/DspTap. It carried your `fftsg.c` for some time,
 > textually unchanged apart from a provenance comment we added at the top,
 > with your `readme.txt` alongside.
 >
@@ -1569,3 +1730,4 @@ byte-identical.
 | tap/DspTap#31 (`bbfa48d` on `main`) | 2b | `double`, `float` | **no output bit**: `basic_real_fft` routes to `detail::split_radix_rdft` instead of the vendored C (bit-identical, both precisions); tables built in the constructor (no first-call cost); `forward(const float*, float*)` / `inverse(const float*, float*)` on the double engine `[[deprecated]]` (D5); fp-contraction policy stated (D9: no export) | MuTap fingerprint harness: 14 rows byte-identical, float rows included; `test_float32`, `test_g168`, `test_nn_suppressor` unchanged; DspTap icount baselines re-recorded to the port's counts (`bench/README.md`) |
 | tap/DspTap#32 (`8350f13` on `main`) | 2c | none numerically | **no output bit and no contract point**: the vendored C leaves the shipping tree (`fftsg.c` and `fftsg_float.c` to `tests/reference/ooura/`, D6); `tap::dsp` is a pure INTERFACE target and `tap_dsp_fft` exists only under `TAP_DSP_FFT_CMSIS`; the `extern "C"` `rdft`/`cdft`/`rdft_f`/`cdft_f` declarations leave `fft.h` (a consumer that took them from there no longer links — none did: MuTap and MuTap-Max were grepped); the capi's `dsptap_fft_backend()` returns `"split_radix"` where it returned `"ooura"`; the Q15/Q31 ratchet scenarios are seeded and the `.text` ceilings set | MuTap fingerprint harness (scratch build of MuTap `0f6a7f0` with this tree as the submodule, `-DMUTAP_WERROR=ON`): 14 rows byte-identical to the current pin `b08f6c6`; DspTap icount at +0.00 % on every float key |
 | tap/DspTap#35 | 4 | none numerically | **no output bit** (the Ooura gate and the class-vs-engine memcmp are green on every leg; fixed-point icount checksums identical): `basic_real_fft`'s second template argument is the engine for the floating profiles (default `default_real_fft_engine_t<Sample>`); `k_min_size` / `k_max_size` / `supports_size` / `k_is_shareable` added; construction requires `supports_size(size)` (`TAP_EXPECTS`, debug) — the one narrowing is the CMSIS engine's 32 … 4096, which was already the library's behaviour (undefined outside it); `basic_real_fft`, `basic_pvoc`, `basic_log_mel` and the aliases move into `inline namespace fft_split_radix | fft_cmsis | fft_vdsp` (mangled names change: every consumer image is rebuilt on its bump, and two images with different defaults no longer share symbols); backends move to `fft/backends/`; the Q31 engine's transforms are `const`. Fingerprint A/B of this tree vs `main` (`tools/fingerprint`, 12 lines, review 35b): identical at g++ default flags, at `-O3 -DNDEBUG`, at `-O3 -DNDEBUG -march=x86-64-v3`, and on the Cortex-M33 leg | none yet (MuTap's bump: fingerprints must be byte-identical; its own embedders adopt the tag in `tap::mu` — checklist above) |
+| tap/DspTap#36 | D6 | none numerically | **no output bit and no contract point**: the reference C (`tests/reference/ooura/`), its declaration header and the parity gate with its informational twin are deleted; `tests/test_fft_split_radix_fingerprint.cpp` pins the engine's output bits at every power of two from 4 to 65536 (one float row; double per C library build, glibc as an FMA/SSE2 dispatch pair), measured equal to the C's on every leg ("The bit-identity record after D6"); nothing under `include/` changes but comments; the test-only cache variable `TAP_DSP_PARITY_MAX_N` is renamed `TAP_DSP_TEST_MAX_FFT_N` | none needed (no shipping code changed; icount ratchet expected +0.00 % on every key) |

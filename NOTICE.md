@@ -1,11 +1,9 @@
 # Third-party notices
 
-DspTap's own code — everything outside `third_party/` and the one Ooura file
-under `tests/reference/ooura/` (`fftsg.c`; `fftsg_float.c` beside it, which
-is `#define` renames around `#include "fftsg.c"` and carries no Ooura text,
-the directory-local `.clang-format` beside them and the declaration header
-`tests/reference/ooura_rdft.h` above them are DspTap's): `include/tap/dsp/`,
-`tests/`, `tools/`, `notebooks/`, `bench/`, `scripts/`, `cmake/`, `platform/`
+DspTap's own code — everything outside `third_party/`, except the portion
+of `include/tap/dsp/fft/split_radix.h` derived from Ooura's package (below):
+`include/tap/dsp/`, `tests/`, `tools/`, `notebooks/`, `bench/`, `scripts/`,
+`cmake/`, `platform/`
 (the bare-metal startup file and linker scripts the QEMU legs link, carried
 from, or written beside, MuTap's MIT copies; `platform/README.md` records
 their origin), `docs/` and the build files — is licensed under the MIT
@@ -17,23 +15,22 @@ text:
 ## Ooura General Purpose FFT Package
 
 - Paths: `third_party/ooura/readme.txt` (the package's readme: the only
-  upstream license text, kept at this path permanently) and, **outside the
-  shipping tree**, `tests/reference/ooura/` (`fftsg.c`, the split-radix "Fast
-  Version III", and beside it `fftsg_float.c`, DspTap's own MIT wrapper that
-  `#include`s it under a type remap): the reference copy that the parity gate
-  `tests/test_fft_parity_ooura.cpp` compiles and compares the shipping C++20
-  port against. Nothing that ships compiles these two files; since Stage 2c
-  of `docs/audit-fft-and-code-smells.md` (Decision D6) the library is
+  upstream license text, kept at this path permanently as the license record
+  for the derived code) and `include/tap/dsp/fft/split_radix.h` (the derived
+  C++20 port, below). No source file of the package is carried any more:
+  since Stage 2c of `docs/audit-fft-and-code-smells.md` the library is
   header-only and no vendored C is part of it (the one compiled library,
   `tap_dsp_fft`, exists only under `TAP_DSP_FFT_CMSIS` and carries the
-  CMSIS-DSP objects below). D6 retires the reference copy after both MuTap
-  and MuTap-Max pin a tree containing 2c; `readme.txt` stays.
+  CMSIS-DSP objects below), and the test-only reference copy of `fftsg.c`
+  (with DspTap's `fftsg_float.c` wrapper) that the parity gate compiled under
+  `tests/reference/ooura/` from 2c on was deleted at Decision D6, once both
+  MuTap and MuTap-Max pinned a tree containing 2c.
 - Author: Takuya Ooura. Copyright(C) 1996-2001 Takuya OOURA.
 - License: the package's own terms, stated in `readme.txt`, the only upstream
-  license text (the banner at the top of the reference `fftsg.c` is Tap's
-  copy of it; the upstream file carries no notice of its own). There is no
-  other license text; in particular the package is neither public domain nor
-  under a named open-source license. The full grant reads:
+  license text (the banner that was at the top of the reference `fftsg.c`
+  was Tap's copy of it; the upstream file carries no notice of its own).
+  There is no other license text; in particular the package is neither
+  public domain nor under a named open-source license. The full grant reads:
 
   > You may use, copy, modify this code for any purpose and without fee. You
   > may distribute this ORIGINAL package.
@@ -45,11 +42,13 @@ text:
 - What DspTap ships and relies on: the C++20 port of `rdft`
   (`include/tap/dsp/fft/split_radix.h`, a statement-for-statement
   transliteration). It landed at Stage 2a (tap/DspTap#28) beside the vendored
-  C, bit-identical to it for both precisions under the parity gate
-  (`tests/test_fft_parity_ooura.cpp`); Stage 2b (tap/DspTap#31) routed
-  `basic_real_fft` at it, so every floating transform a consumer runs is the
-  port; Stage 2c moved the C out of the shipping tree. The port is a
-  **derivative work, not the ORIGINAL package**, and its redistribution
+  C, bit-identical to it for both precisions under the parity gate that ran
+  until D6 (pinned since as output fingerprints,
+  `tests/test_fft_split_radix_fingerprint.cpp`); Stage 2b (tap/DspTap#31)
+  routed `basic_real_fft` at it, so every floating transform a consumer runs
+  is the port; Stage 2c moved the C out of the shipping tree and D6 deleted
+  the test-only reference copy. The port is a **derivative work, not the
+  ORIGINAL package**, and its redistribution
   relies on the **modification grant** ("modify this code for any purpose").
   Precedent exists but is not relied on: WebRTC/Chromium ship a modified
   `fft4g.c` under `common_audio/third_party/ooura/`, and their `LICENSE`
@@ -58,15 +57,15 @@ text:
   to this package when you modify this code." — that is not in the `fft.tgz`
   readme. DspTap has not traced the origin of that text and does not rely on
   it.
-- What DspTap still carries from the package itself: `readme.txt`, and the
-  reference `fftsg.c` under `tests/reference/ooura/` for the gate. The
-  reference `fftsg.c` is textually identical to the 2006-12-28 `fft.tgz`
-  except for a provenance banner Tap added at the top (the upstream file
-  carries no notice of its own; the notice lives in `readme.txt`; the banner's
-  pointer to the readme was updated when the file moved at 2c) and stripped
-  trailing whitespace. That is a partial copy of the original package with
-  the notice attached, not a modified transform; the maintainer's reading is
-  that it is within the intent of the distribution grant.
+- What DspTap still carries from the package itself: `readme.txt` alone.
+  Until D6 it also carried the reference `fftsg.c` for the gate, textually
+  identical to the 2006-12-28 `fft.tgz` except for a provenance banner Tap
+  added at the top and stripped trailing whitespace — a partial copy of the
+  original package with the notice attached, which the maintainer read as
+  within the intent of the distribution grant; with that copy gone, the
+  derivative (the port) is the only question the grant has to answer.
+  `docs/fft-design.md` ("The bit-identity record after D6") records the
+  upstream file's hash and how to re-verify the port against it.
 - Contact with the author (audit Part 5: "before Stage 2c merges, attempt the
   address in the notice for an explicit statement on derivative distribution
   and record the outcome either way"): **not yet attempted as of

@@ -130,7 +130,7 @@ namespace tap::dsp::detail {
     }
 
     /// Q1.30 coefficients of the real post-pass (Ooura's rftfsub / rftbsub
-    /// formulas, fftsg.c: the reference copy is tests/reference/ooura/fftsg.c),
+    /// formulas, fftsg.c; the same statements are in fft/split_radix.h),
     /// for a real transform of length n.
     ///
     /// Ooura's makect stores 0.5*cos(2*pi*j/n) and reads the pair

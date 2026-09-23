@@ -39,11 +39,12 @@
 
 // Header-only. No vendored C is compiled into what ships: the split-radix
 // engine replaced Ooura's rdft at Stage 2b, and Stage 2c moved the C out of
-// the shipping tree (docs/audit-fft-and-code-smells.md, Part 3; Decision
-// D6). The reference copy lives under tests/reference/ooura/ and is compiled
-// only by tests/test_fft_parity_ooura.cpp, the bit-identity gate for the
-// engine. tap::dsp is a pure INTERFACE target unless TAP_DSP_FFT_CMSIS is
-// on, in which case it links the CMSIS-DSP objects (root CMakeLists.txt).
+// the shipping tree (docs/audit-fft-and-code-smells.md, Part 3); Decision D6
+// then deleted the reference copy the bit-identity gate compiled, and the
+// engine's identity to the C is pinned since as output fingerprints
+// (tests/test_fft_split_radix_fingerprint.cpp). tap::dsp is a pure INTERFACE
+// target unless TAP_DSP_FFT_CMSIS is on, in which case it links the CMSIS-DSP
+// objects (root CMakeLists.txt).
 
 // ----------------------------------------------------------------------------
 // THE ONE PLACE the build selects the float default engine and, with it, the
@@ -241,8 +242,9 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///     predicate on every leg. Per engine:
     ///       split-radix (double, float)   4 … 2^30  (the int-indexing bound
     ///                                     of Ooura's arithmetic; bit identity
-    ///                                     is gated to 2^20, the oracle sweeps
-    ///                                     to 65536)
+    ///                                     to the C was gated to 2^20 until
+    ///                                     D6 and is fingerprinted to 65536,
+    ///                                     the oracle sweeps to 65536)
     ///       vDSP (float, Apple)           4 … 2^20  (fft/backends/accelerate.h)
     ///       CMSIS-DSP (float, Cortex-M55) 32 … 4096 (CMSIS's own table; below
     ///                                     32 or above 4096 the library's init
@@ -314,9 +316,9 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///                host can build — same-binary on macOS).
     ///   - Q15/Q31 -> detail::fixed_point_rdft (the specialization below).
     /// The split-radix engine is the C++20 transliteration of Ooura's rdft
-    /// and is BIT-IDENTICAL to the C it replaced for both precisions (the
-    /// reference copy under tests/reference/ooura/, compiled by the gate
-    /// tests/test_fft_parity_ooura.cpp alone since Stage 2c; Decision D10),
+    /// and is BIT-IDENTICAL to the C it replaced for both precisions
+    /// (Decision D10: gated against the reference C from Stage 2a until D6
+    /// deleted it, pinned since by tests/test_fft_split_radix_fingerprint.cpp),
     /// so the flip changed no output bit of any consumer built at default
     /// fp-contraction (measured on every CI platform) or with clang and FMA;
     /// the one measured exception is a g++ x86-64 build with -march (FMA),
@@ -371,21 +373,23 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     /// -ffp-contract setting to its consumers and this header sets none: the
     /// engine's arithmetic is compiled under whatever contraction the
     /// consumer's compiler applies, alike for every instantiation in that
-    /// build. The bit-identity gate against the reference C runs at
-    /// -ffp-contract=off on both sides, and at default flags the identity was
-    /// MEASURED to hold as well on every CI platform (0 ulp on linux, windows
-    /// and macOS arm64 and on the Cortex-M4, M4F, M33 and M55 legs, three of
-    /// them VFMA; identical bench checksums between the C and the engine on
-    /// every Ooura bench key; MuTap's fingerprint rows byte-identical through
-    /// the flip, float rows included, with no flag set anywhere), because the
+    /// build. The bit-identity gate against the reference C ran at
+    /// -ffp-contract=off on both sides (Stage 2a until D6; the fingerprints
+    /// that replaced it are built the same way), and at default flags the
+    /// identity was MEASURED to hold as well on every CI platform (0 ulp on
+    /// linux, windows and macOS arm64 and on the Cortex-M4, M4F, M33 and M55
+    /// legs, three of them VFMA; identical bench checksums between the C and
+    /// the engine on every bench key while the C was built there; MuTap's
+    /// fingerprint rows byte-identical through the flip, float rows
+    /// included, with no flag set anywhere), because the
     /// engine's statements are textually the C's and each compiler fuses both
     /// sides alike. That is an observation, not a guarantee: g++ on x86-64
     /// built with -march (FMA) is measured to fuse the two sides differently
     /// (float moves by a few ulp at N >= 1024; clang with the same flags is
     /// identical) and is not claimed. That is the first experiment, the
-    /// engine-vs-reference-C gate: bit-identical at -ffp-contract=off on both
-    /// sides and, at default flags, on every CI platform including MSVC and
-    /// the four QEMU legs.
+    /// engine-vs-reference-C gate (retired at D6): bit-identical at
+    /// -ffp-contract=off on both sides and, at default flags, on every CI
+    /// platform including MSVC and the four QEMU legs.
     ///
     /// The second experiment, stronger, measured on tap/DspTap#34 (Stage 6,
     /// which touches neither fft.h nor fft/), is a fingerprint A/B of pvoc

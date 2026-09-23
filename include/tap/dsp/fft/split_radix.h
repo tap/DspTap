@@ -25,12 +25,20 @@
 // ---------------------------------------------------------------------------
 // TRANSLITERATION RULES — read before editing anything below the class
 // docstring. The engine is BIT-IDENTICAL to the C it replaced (fftsg.c for
-// double, fftsg_float.c for float; since Stage 2c the reference copy under
-// tests/reference/ooura/, no longer part of what ships, Decision D6) and
-// tests/test_fft_parity_ooura.cpp is the gate that holds it there: memcmp
-// identity, forward and inverse, at every power of two from 4 to 65536 plus
-// 2^20, both precisions, with both sides compiled at -ffp-contract=off.
-// These rules are what the gate depends on
+// double, fftsg_float.c for float). From Stage 2a until Decision D6 a parity
+// gate compiled a reference copy of that C beside the engine and required
+// memcmp identity, forward and inverse, at every power of two from 4 to
+// 65536 plus 2^20, both precisions, both sides at -ffp-contract=off. D6
+// deleted the C; tests/test_fft_split_radix_fingerprint.cpp holds the
+// identity since, as FNV-1a-64 fingerprints of the engine's outputs at the
+// same powers of two up to 65536, measured equal to the C's: one float row
+// on every configuration (this file has no precision-specific branch, so a
+// float pin that moves is a change here) and double rows per C library
+// build, because the tables come from libm. No C is left in the tree to
+// re-derive them from: an edit
+// that moves a fingerprint is a numeric change to the engine, not a
+// refactor, and docs/fft-design.md says how to re-verify against upstream
+// fftsg.c. These rules are what the identity depends on
 // (docs/audit-fft-and-code-smells.md, Part 4; docs/fft-design.md).
 //
 // 1. STATEMENT FIDELITY. Every Ooura arithmetic statement stays textually
@@ -126,9 +134,10 @@ namespace tap::dsp::detail {
     ///     engine, Stage 4): k_min_size = 4; k_max_size = 2^30, the bound of
     ///     Ooura's int indexing — n is an int and every index and table
     ///     offset the transliterated statements form stays below 2^31 up to
-    ///     that size. The bit-identity gate exercises 4 … 65536 and 2^20,
-    ///     the oracle 4 … 65536; above 2^20 the transform is the same
-    ///     statements over larger tables and is not separately measured.
+    ///     that size. The bit-identity gate exercised 4 … 65536 and 2^20
+    ///     until D6, the fingerprints pin every power of two from 4 to
+    ///     65536, the oracle sweeps 4 … 65536; above 2^20 the transform is the same statements over
+    ///     larger tables and is not separately measured.
     ///
     /// The transforms' arithmetic is Ooura's, statement for statement; the
     /// class adds the geometry check, the table build and the const surface.

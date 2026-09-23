@@ -54,7 +54,9 @@ import sys
 # Both M4 flavours (soft-float and M4F) run on the same board model; the
 # difference is the toolchain's -mfloat-abi. m55 and m55-ooura likewise share
 # the AN547: the key records which float32 backend the binaries were built
-# with (CMSIS-DSP Helium, the deployed profile, or the Ooura fallback).
+# with (CMSIS-DSP Helium, the deployed profile, or the split-radix fallback;
+# the "-ooura" key name predates the Stage 2b port and the baselines are
+# keyed on it).
 MACHINES = {
     "m4-softfp": "mps2-an386",
     "m4f": "mps2-an386",

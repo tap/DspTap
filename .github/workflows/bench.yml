@@ -10,6 +10,7 @@ name: Bench
 #   m33        Cortex-M33, no MVE            (mps2-an505)  split-radix float32
 #   m55        Cortex-M55, Helium            (mps3-an547)  CMSIS-DSP (deployed profile)
 #   m55-ooura  Cortex-M55, TAP_DSP_FFT_CMSIS=OFF (mps3-an547)  split-radix float32 fallback
+#              (the key's name predates the Stage 2b port; baselines are keyed on it)
 #
 # Every key measures what ships through tap::dsp::basic_real_fft: since
 # Stage 2b (docs/audit-fft-and-code-smells.md, Part 3) the C++20 split-radix
@@ -22,8 +23,10 @@ name: Bench
 # against the vendored C called directly (a `_c` key suffix, informational,
 # never gated) so the job log carried the C/port ratio and whether the two
 # output checksums agreed; Stage 2c retired the C from the shipping tree
-# (the reference copy under tests/reference/ooura/ serves the parity gate
-# alone) and the pairs with it. bench/README.md keeps the record.
+# and the pairs with it, and Decision D6 deleted the reference copy the
+# parity gate compiled (the engine's bit identity to the C is pinned since
+# by tests/test_fft_split_radix_fingerprint.cpp). bench/README.md keeps the
+# record.
 #
 # Toolchain files come from the Stage 1 CI-legs PR (cmake/arm-cortex-m4-mps2.cmake
 # with TAP_DSP_M4_FPU, cmake/arm-cortex-m33-mps2.cmake, cmake/arm-cortex-m55-mps3.cmake);

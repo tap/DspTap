@@ -19,10 +19,12 @@
 //     engine's fidelity to the split-radix contract is test_fft_backend.cpp's
 //     job, at float epsilon).
 //
-// Why this is a test and not a reading of fft.h. The bit-identity gate
-// (tests/test_fft_parity_ooura.cpp) proves the ENGINE is the vendored C; it
-// deliberately does not go through basic_real_fft. This file closes the
-// remaining gap. Together the two files say what the Stage 2b PR claims:
+// Why this is a test and not a reading of fft.h. The bit-identity gate (the
+// Stage 2a parity TU until D6 deleted the C; since then the pinned
+// fingerprints of tests/test_fft_split_radix_fingerprint.cpp) proves the
+// ENGINE is the vendored C; it deliberately does not go through
+// basic_real_fft. This file closes the remaining gap. Together the two files
+// say what the Stage 2b PR claims:
 // every consumer's output through basic_real_fft is the C's, bit for bit,
 // on every profile that routes to the split-radix engine.
 //

@@ -42,7 +42,7 @@
 // a -V run records the current value beside the pin. Fixed seeds, no wall clock, no filesystem, no
 // <random>: the battery runs unchanged on the four QEMU legs (Part 10), where
 // N <= 2048 fixed point is cheap and the double golden model is the expensive
-// part, so sizes are kept modest and TAP_DSP_PARITY_MAX_N caps the sweeps.
+// part, so sizes are kept modest and TAP_DSP_TEST_MAX_FFT_N caps the sweeps.
 
 #include <algorithm>
 #include <array>
@@ -64,8 +64,8 @@
 #include "tap/dsp/fft/fft_arith.h"
 #include "tap/dsp/fft/tables.h"
 
-#ifndef TAP_DSP_PARITY_MAX_N
-#define TAP_DSP_PARITY_MAX_N 65536
+#ifndef TAP_DSP_TEST_MAX_FFT_N
+#define TAP_DSP_TEST_MAX_FFT_N 65536
 #endif
 
 namespace {
@@ -172,7 +172,7 @@ namespace {
     // ------------------------------------------------------------------------
     // Small helpers.
     // ------------------------------------------------------------------------
-    constexpr std::size_t k_max_n = std::min<std::size_t>(65536, TAP_DSP_PARITY_MAX_N);
+    constexpr std::size_t k_max_n = std::min<std::size_t>(65536, TAP_DSP_TEST_MAX_FFT_N);
 
     constexpr int log2_size(std::size_t n) {
         int l = 0;

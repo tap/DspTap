@@ -4,10 +4,11 @@
 // THE INDEPENDENT ORACLE for tap::dsp::basic_real_fft (Stage 2a of
 // docs/audit-fft-and-code-smells.md; Part 9 names this file).
 //
-// test_fft_parity_ooura.cpp proves the port IS Ooura, bit for bit. It cannot
-// prove Ooura is a Fourier transform: if the reference C and the port shared a
-// defect, parity would be green. This file answers that with two references
-// that share nothing with fftsg.c:
+// The Stage 2a parity gate proved the port IS Ooura, bit for bit, and since
+// D6 deleted the reference C, test_fft_split_radix_fingerprint.cpp pins the
+// C's output bits. Neither can prove Ooura is a Fourier transform: if the
+// reference C and the port shared a defect, both would be green. This file
+// answers that with two references that share nothing with fftsg.c:
 //
 //   1. Closed-form vectors whose transforms are known exactly — an impulse
 //      (flat spectrum), DC (N in slot 0), the Nyquist alternation (N in slot
@@ -59,8 +60,8 @@
 #include "tap/dsp/fft.h"
 #include "tap/dsp/fft/fft_arith.h"
 
-#ifndef TAP_DSP_PARITY_MAX_N
-#define TAP_DSP_PARITY_MAX_N (1 << 20)
+#ifndef TAP_DSP_TEST_MAX_FFT_N
+#define TAP_DSP_TEST_MAX_FFT_N (1 << 20)
 #endif
 
 namespace {
@@ -136,8 +137,8 @@ namespace {
     // 4096 on the M55 leg, where the constructor now checks
     // arm_rfft_fast_init_f32's status instead of ignoring it; vDSP 4 … 2^20;
     // fixed point 4 … 65536). The sweeps here are capped at 2^20 on top of
-    // that — the parity gate's ceiling, and what a sweep's buffers can be —
-    // and at TAP_DSP_PARITY_MAX_N by sizes_up_to below. Until Stage 4 this
+    // that — the retired parity gate's ceiling, and what a sweep's buffers can be —
+    // and at TAP_DSP_TEST_MAX_FFT_N by sizes_up_to below. Until Stage 4 this
     // file carried the CMSIS range itself under #if TAP_DSP_FFT_CMSIS, which
     // is how the range was found (a HardFault at N = 4 on the QEMU M55 leg);
     // the responsibility is the header's now and this file only reads it
@@ -490,14 +491,14 @@ namespace {
     }
 
     /// Powers of two from the profile's minimum up to min(limit,
-    /// TAP_DSP_PARITY_MAX_N, the profile's maximum). The cap is the same knob
-    /// the parity gate uses (tests/CMakeLists.txt); the QEMU legs set 4096
+    /// TAP_DSP_TEST_MAX_FFT_N, the profile's maximum). The cap is the knob
+    /// every FFT sweep reads (tests/CMakeLists.txt); the QEMU legs set 4096
     /// because a 65536-point double sweep needs several 512 KB buffers that
     /// the MPS2 data region does not have.
     template <typename Sample>
     std::vector<std::size_t> sizes_up_to(std::size_t limit) {
         const std::size_t top =
-            std::min({limit, static_cast<std::size_t>(TAP_DSP_PARITY_MAX_N), profile<Sample>::k_max_n});
+            std::min({limit, static_cast<std::size_t>(TAP_DSP_TEST_MAX_FFT_N), profile<Sample>::k_max_n});
         std::vector<std::size_t> s;
         for (std::size_t n = profile<Sample>::k_min_n; n <= top; n *= 2) {
             s.push_back(n);
