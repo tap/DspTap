@@ -13,6 +13,7 @@
 
 #include <gtest/gtest.h>
 
+#include "support/signals.h"
 #include "tap/dsp/fir_kernels.h"
 
 namespace {
@@ -22,14 +23,10 @@ namespace {
     using tap::dsp::dot_rows_frame_major;
     using tap::dsp::sample_traits;
 
-    // Deterministic pseudo-random generator (xorshift), mapped per sample type
-    // to well-inside-full-scale values so no test depends on saturation.
-    inline std::uint32_t next(std::uint32_t& s) {
-        s ^= s << 13;
-        s ^= s >> 17;
-        s ^= s << 5;
-        return s;
-    }
+    // Deterministic pseudo-random draws (the shared xorshift32's raw state),
+    // mapped per sample type to well-inside-full-scale values so no test
+    // depends on saturation.
+    using tap::dsp::test::xorshift32;
 
     template <typename S>
     S sample_from(std::uint32_t r);
@@ -68,12 +65,12 @@ namespace {
         using sample                           = TypeParam;
         using tr                               = sample_traits<sample>;
         constexpr std::size_t           k_taps = 48;
-        std::uint32_t                   seed   = 0x12345678u;
+        xorshift32                      rng(0x12345678u);
         std::vector<sample>             hist(k_taps);
         std::vector<typename tr::coeff> row(k_taps);
         for (std::size_t t = 0; t < k_taps; ++t) {
-            hist[t] = sample_from<sample>(next(seed));
-            row[t]  = coeff_from<sample>(next(seed));
+            hist[t] = sample_from<sample>(rng.next_u32());
+            row[t]  = coeff_from<sample>(rng.next_u32());
         }
         typename tr::accum acc{};
         for (std::size_t t = 0; t < k_taps; ++t) {
@@ -91,14 +88,14 @@ namespace {
         using tr                     = sample_traits<sample>;
         constexpr std::size_t k_taps = 48;
         for (std::size_t channels : {1u, 2u, 3u, 4u, 7u, 8u, 11u, 12u, 16u}) {
-            std::uint32_t                   seed = 0x9e3779b9u + static_cast<std::uint32_t>(channels);
+            xorshift32                      rng(0x9e3779b9u + static_cast<std::uint32_t>(channels));
             std::vector<sample>             x(k_taps * channels); // frame-major
             std::vector<typename tr::coeff> row(k_taps);
             for (auto& v : x) {
-                v = sample_from<sample>(next(seed));
+                v = sample_from<sample>(rng.next_u32());
             }
             for (auto& c : row) {
-                c = coeff_from<sample>(next(seed));
+                c = coeff_from<sample>(rng.next_u32());
             }
             std::vector<sample> out(channels);
             dot_rows_frame_major<sample>(row.data(), x.data(), k_taps, channels, out.data());
@@ -122,12 +119,12 @@ namespace {
         using sample = TypeParam;
         using tr     = sample_traits<sample>;
         for (const std::size_t taps : {44u, 48u, 33u, 1u, 2u}) {
-            std::uint32_t                   seed = 0x2545f491u + static_cast<std::uint32_t>(taps);
+            xorshift32                      rng(0x2545f491u + static_cast<std::uint32_t>(taps));
             std::vector<sample>             hist(taps);
             std::vector<typename tr::coeff> row(taps);
             for (std::size_t t = 0; t < taps; ++t) {
-                hist[t] = sample_from<sample>(next(seed));
-                row[t]  = coeff_from<sample>(next(seed));
+                hist[t] = sample_from<sample>(rng.next_u32());
+                row[t]  = coeff_from<sample>(rng.next_u32());
             }
             std::vector<typename tr::coeff> mirrored(row.rbegin(), row.rend());
             EXPECT_EQ(dot_row_reversed<sample>(row.data(), hist.data(), taps),
@@ -142,12 +139,12 @@ namespace {
         using sample                           = TypeParam;
         using tr                               = sample_traits<sample>;
         constexpr std::size_t           k_taps = 33;
-        std::uint32_t                   seed   = 0xdeadbeefu;
+        xorshift32                      rng(0xdeadbeefu);
         std::vector<sample>             hist(k_taps);
         std::vector<typename tr::coeff> row(k_taps);
         for (std::size_t t = 0; t < k_taps; ++t) {
-            hist[t] = sample_from<sample>(next(seed));
-            row[t]  = coeff_from<sample>(next(seed));
+            hist[t] = sample_from<sample>(rng.next_u32());
+            row[t]  = coeff_from<sample>(rng.next_u32());
         }
         typename tr::accum acc{};
         for (std::size_t t = 0; t < k_taps; ++t) {

@@ -239,8 +239,8 @@ arithmetic on the float path: the RP2350's Cortex-M33 has no FP64.
 ## `tap::dsp::decimate` — fixed-ratio decimators to 16 kHz
 
 `include/tap/dsp/decimate.h` is the host-rate stage in front of the 16 kHz
-front end: `basic_decimator<Sample, M>` for M = 2, 3, 6 (32 / 48 / 96 kHz in),
-in RatioTap's pattern — ratio as a type, Kaiser-windowed sinc from
+front end: `basic_decimator<S, M>` (S a `sample_type`) for M = 2, 3, 6
+(32 / 48 / 96 kHz in), in RatioTap's pattern — ratio as a type, Kaiser-windowed sinc from
 `kaiser.h` with the cutoff at the output Nyquist and DC gain exactly 1,
 `fir_kernels.h`'s `dot_row` over the `sample_traits.h` formats (double golden,
 float embedded, Q15 / Q31 with row-sum-preserving quantization). It is deliberately not
@@ -282,9 +282,10 @@ allocation-free. `k_contract_version` stamps the formulas.
 
 ```cpp
 using namespace tap::dsp::nn;
-dense32 din(w_in, b_in, 64, 56, activation::tanh);     // float embedded profile; dense/gru are the double golden model
-gru32   cell(w_ih, w_hh, b_ih, b_hh, 96, 64);
-dense32 dout(w_out, b_out, 26, 96, activation::sigmoid);
+// Weights are taken by value and moved in: std::move hands the loaded vectors over without a copy.
+dense32 din(std::move(w_in), std::move(b_in), 64, 56, activation::tanh); // float embedded profile; dense/gru are the double golden model
+gru32   cell(std::move(w_ih), std::move(w_hh), std::move(b_ih), std::move(b_hh), 96, 64);
+dense32 dout(std::move(w_out), std::move(b_out), 26, 96, activation::sigmoid);
 din.apply(features, hidden);  cell.step(hidden);  dout.apply(cell.state(), gains);
 ```
 
@@ -318,7 +319,8 @@ FFT), which turns branch-DC uniformity into exact transmission zeros at every
 multiple of the sample rate. Runtime design in double, deliberately not
 constexpr (the header's design note does the arithmetic); run it in a
 constructor, off the audio path. Also exports `solve_dense`, the small dense
-solver the compensated design and the analysis instruments share.
+solver the compensated design and the analysis instruments share (noexcept and
+allocation-free: it pivots by exchanging rows in the caller's buffers).
 
 ### `tap/dsp/sample_traits.h` — sample formats: double, float, Q15, Q31
 

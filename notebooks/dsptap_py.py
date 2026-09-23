@@ -60,6 +60,8 @@ def load() -> ctypes.CDLL:
         _build_lib()
     lib = ctypes.CDLL(str(_lib_path()))
 
+    # Every handle is an opaque pointer to a library-private struct (dsptap_capi.h: typedef struct
+    # dsptap_fft_s* dsptap_fft, ...): one pointer at the ABI, so c_void_p carries each of them.
     vp = ctypes.c_void_p
     f64p = ctypes.POINTER(ctypes.c_double)
     i32p = ctypes.POINTER(ctypes.c_int)

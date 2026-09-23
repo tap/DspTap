@@ -3,10 +3,12 @@
 //
 // Same-host A/B fingerprint of the primitives whose output must not move when
 // their internals do. Runs tap::dsp::basic_pvoc (float and double, ratio 1.0
-// and 1.5, formant off and on; N = 1024) and tap::dsp::basic_log_mel (float
-// and double, plain log and PCEN; the default geometry) over one fixed corpus
-// (xorshift32 noise plus two tones, 48000 samples) and prints the FNV-1a-64
-// hash of each case's raw output bytes, one line per case.
+// and 1.5, formant off and on; N = 1024), tap::dsp::basic_log_mel (float and
+// double, plain log and PCEN; the default geometry) and tap::dsp::basic_psola
+// (float and double, ratio 1.0 and 1.5 at the 220 Hz tone's period; max
+// period 900) over one fixed corpus (xorshift32 noise plus two tones, 48000
+// samples) and prints the FNV-1a-64 hash of each case's raw output bytes (the
+// samples' IEEE bit patterns), one line per case.
 //
 // HOW TO READ THE NUMBERS. A hash is a function of the source tree AND of the
 // host, the compiler, its flags and its libm: pvoc runs atan2/sin/cos in
@@ -14,10 +16,11 @@
 // hashes are never golden values, never committed, never asserted in a test
 // (a pinned hash would fail on two of the three CI hosts by design). They are
 // diffed: build this tool against the tree before a change and the tree after
-// it, on the same host with the same compiler and flags, and the twelve lines
+// it, on the same host with the same compiler and flags, and the sixteen lines
 // must be identical when the change claims bit identity (the gate for every
-// migration of pvoc.h or log_mel.h: the packed-spectrum view, the FFT port's
-// routing flip, the engine parameter, the Hann/pi consolidation).
+// migration of pvoc.h, log_mel.h or psola.h: the packed-spectrum view, the FFT
+// port's routing flip, the engine parameter, the Hann/pi consolidation of
+// Stage 6, which added the psola lines).
 //
 //     cmake -B build_fp -S tools/fingerprint -DCMAKE_BUILD_TYPE=Release
 //     cmake --build build_fp && build_fp/dsptap_fingerprint > before.txt
@@ -27,6 +30,29 @@
 // Every case is a chain of noexcept process() calls, so an assert-enabled
 // (Debug) build of the same tree exercises the preconditions as well; its
 // hashes are comparable only with another Debug build.
+//
+// ONE TRANSLATION UNIT, AND WHAT THAT MEANS UNDER CONTRACTION. All three
+// primitives are compiled here together, so they share one instantiation of
+// the float and double real FFT. Where the compiler contracts a*b+c into an
+// FMA after inlining (g++ at its GNU-mode default -ffp-contract=fast on FMA
+// hardware), the FFT's last bits depend on the TU's inlining decisions, and a
+// change to one header in this TU can move ANOTHER primitive's lines with no
+// change to that primitive's arithmetic. Measured at Stage 6: with g++ 13 -O3
+// -march=x86-64-v3 the log_mel.h Hann call-site change moved the four pvoc
+// float lines while pvoc.h's own change, alone, did not. The move depends on
+// the TU's contents: appending ~30 lines that hash raw basic_real_fft output
+// made main and head identical again, and disassembly locates the difference
+// in split_radix_rdft::cftrec4 / cftleaf inlining (float and double codegen
+// both moved), not in pvoc. The same A/B was identical on all sixteen lines
+// with linux g++ 13 at its default x86-64 flags (-O3, and -O0), g++ -O2
+// -march=x86-64-v3, g++ -O3 -march=x86-64-v3 -ffp-contract=off, clang++ 18
+// -O3 with and without -march=x86-64-v3 and with -ffp-contract=fast, and the
+// QEMU builds M33 and M55 (MinSizeRel, the CI build type) and M33 and M4F
+// (Release, VFMA). MSVC and AppleClang were not A/B'd. This is fft.h's
+// fp-contraction policy (D9) seen from a consumer TU, not a property of this
+// tool: read an A/B at FMA-with-fast-contraction flags as "a codegen change",
+// and prove arithmetic identity at -ffp-contract=off or at flags that do not
+// contract across statements.
 
 #include <cstddef>
 #include <cstdint>
@@ -35,6 +61,7 @@
 #include <vector>
 
 #include "tap/dsp/log_mel.h"
+#include "tap/dsp/psola.h"
 #include "tap/dsp/pvoc.h"
 
 namespace {
@@ -100,6 +127,17 @@ namespace {
     }
 
     template <typename Sample>
+    void fingerprint_psola(const std::vector<double>& x, const char* profile, double ratio, const char* config) {
+        tap::dsp::basic_psola<Sample> shifter(900);
+        const Sample                  period = static_cast<Sample>(k_sample_rate / 220.0);
+        std::vector<Sample>           out(x.size());
+        for (std::size_t i = 0; i < x.size(); ++i) {
+            out[i] = shifter.process(static_cast<Sample>(x[i]), period, static_cast<Sample>(ratio));
+        }
+        print("psola", profile, config, fnv1a64(out.data(), out.size() * sizeof(Sample)));
+    }
+
+    template <typename Sample>
     void fingerprint_log_mel(const std::vector<double>& x, const char* profile, bool pcen, const char* config) {
         tap::dsp::log_mel_geometry g;
         g.pcen.enabled = pcen;
@@ -122,6 +160,8 @@ namespace {
         fingerprint_pvoc<Sample>(x, profile, 1.5, true, "ratio=1.5 formant=on");
         fingerprint_log_mel<Sample>(x, profile, false, "log");
         fingerprint_log_mel<Sample>(x, profile, true, "pcen");
+        fingerprint_psola<Sample>(x, profile, 1.0, "ratio=1.0");
+        fingerprint_psola<Sample>(x, profile, 1.5, "ratio=1.5");
     }
 
 } // namespace

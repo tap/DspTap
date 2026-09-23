@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <new>
 #include <type_traits>
@@ -21,17 +22,84 @@
 #include "tap/dsp/sample_traits.h"
 #include "tap/dsp/yin.h"
 
+// The handle types the header declares incomplete (typedef struct dsptap_*_s* dsptap_*), defined
+// here and only here. The two polymorphic seams ARE the handle types, so a create function
+// returns its derived object through an implicit upcast and every other entry point uses the
+// handle directly: no void*, no cast anywhere at the boundary. The other four wrap their object
+// by value.
+
+// One virtual seam over the six FFT profiles (four sample types, two scaling policies for the
+// fixed-point ones), implemented by fft_impl below. The double entry points run the double engine
+// directly; the float profile stages through a float buffer allocated at construction; the
+// fixed-point profiles stage through a native buffer, quantizing at the boundary by the
+// substrate's round_sat and reading back as fractions times 2^e, so every transform stays
+// allocation-free. The raw entry points hand the native buffer straight to the header's in-place
+// transforms, with no conversion, so the notebooks measure the profile's own arithmetic; the seam
+// returns the exponent (0 for the floating profiles) and the C entry points decide how to present
+// it (the *_exp variants write it out; the legacy raw pair refuses fixed-point handles).
+struct dsptap_fft_s {
+    dsptap_fft_s()                                               = default;
+    dsptap_fft_s(const dsptap_fft_s&)                            = delete;
+    dsptap_fft_s& operator=(const dsptap_fft_s&)                 = delete;
+    virtual ~dsptap_fft_s()                                      = default;
+    virtual int  size() const noexcept                           = 0;
+    virtual int  profile() const noexcept                        = 0;
+    virtual bool is_fixed_point() const noexcept                 = 0;
+    virtual int  sample_bytes() const noexcept                   = 0;
+    virtual int  fixed_scaling_exponent() const noexcept         = 0;
+    virtual int  forward(const double* in, double* out) noexcept = 0; ///< returns e
+    virtual int  inverse(const double* in, double* out) noexcept = 0; ///< returns e
+    virtual int  forward_inplace_raw(void* data) noexcept        = 0; ///< returns e
+    virtual int  inverse_inplace_raw(void* data) noexcept        = 0; ///< returns e
+};
+
+/// One virtual seam over the three decimation ratios (decimator_impl below).
+struct dsptap_decimator_s {
+    dsptap_decimator_s()                                                                                    = default;
+    dsptap_decimator_s(const dsptap_decimator_s&)                                                           = delete;
+    dsptap_decimator_s& operator=(const dsptap_decimator_s&)                                                = delete;
+    virtual ~dsptap_decimator_s()                                                                           = default;
+    virtual int         taps() const noexcept                                                               = 0;
+    virtual int         latency() const noexcept                                                            = 0;
+    virtual void        reset() noexcept                                                                    = 0;
+    virtual std::size_t outputs_for(std::size_t n) const noexcept                                           = 0;
+    virtual std::size_t process(const double* in, std::size_t n, double* out, std::size_t max_out) noexcept = 0;
+};
+
+struct dsptap_yin_s {
+    explicit dsptap_yin_s(std::size_t window, std::size_t tau_min, std::size_t tau_max)
+        : impl(window, tau_min, tau_max) {}
+    tap::dsp::yin impl;
+};
+
+struct dsptap_psola_s {
+    explicit dsptap_psola_s(std::size_t max_period)
+        : impl(max_period) {}
+    tap::dsp::psola impl;
+};
+
+struct dsptap_pvoc_s {
+    explicit dsptap_pvoc_s(std::size_t fft_size)
+        : impl(fft_size) {}
+    tap::dsp::pvoc impl;
+};
+
+/// log_mel's geometry is fixed at construction; the C ABI setters rebuild.
+struct dsptap_log_mel_s {
+    tap::dsp::log_mel_geometry         geometry;
+    std::unique_ptr<tap::dsp::log_mel> fe;
+};
+
+// The point of the typed handles: six distinct pointer types, so passing one primitive's handle to
+// another's function is a compile error in C++ and a diagnosed incompatible-pointer conversion in C.
+static_assert(!std::is_same_v<dsptap_fft, dsptap_yin> && !std::is_same_v<dsptap_yin, dsptap_psola>
+                  && !std::is_same_v<dsptap_psola, dsptap_pvoc> && !std::is_same_v<dsptap_pvoc, dsptap_log_mel>
+                  && !std::is_same_v<dsptap_log_mel, dsptap_decimator> && !std::is_same_v<dsptap_decimator, dsptap_fft>
+                  && !std::is_convertible_v<dsptap_yin, dsptap_pvoc> && !std::is_convertible_v<void*, dsptap_fft>,
+              "each primitive has its own opaque handle type");
+
 namespace {
 
-    // One virtual seam over the six FFT profiles (four sample types, two scaling policies for
-    // the fixed-point ones). The double entry points run the double engine directly; the float
-    // profile stages through a float buffer allocated at construction; the fixed-point profiles
-    // stage through a native buffer, quantizing at the boundary by the substrate's round_sat and
-    // reading back as fractions times 2^e, so every transform stays allocation-free. The raw
-    // entry points hand the native buffer straight to the header's in-place transforms, with no
-    // conversion, so the notebooks measure the profile's own arithmetic; the seam returns the
-    // exponent (0 for the floating profiles) and the C entry points decide how to present it
-    // (the *_exp variants write it out; the legacy raw pair refuses fixed-point handles).
     template <typename>
     inline constexpr bool k_always_false = false;
 
@@ -60,20 +128,8 @@ namespace {
         }
     }
 
-    struct fft_base {
-        virtual ~fft_base()                                          = default;
-        virtual int  size() const noexcept                           = 0;
-        virtual int  profile() const noexcept                        = 0;
-        virtual bool is_fixed_point() const noexcept                 = 0;
-        virtual int  sample_bytes() const noexcept                   = 0;
-        virtual int  fixed_scaling_exponent() const noexcept         = 0;
-        virtual int  forward(const double* in, double* out) noexcept = 0; ///< returns e
-        virtual int  inverse(const double* in, double* out) noexcept = 0; ///< returns e
-        virtual int  forward_inplace_raw(void* data) noexcept        = 0; ///< returns e
-        virtual int  inverse_inplace_raw(void* data) noexcept        = 0; ///< returns e
-    };
     template <typename Sample, typename Scaling = tap::dsp::scaling::fixed>
-    struct fft_impl final : fft_base {
+    struct fft_impl final : dsptap_fft_s {
         static constexpr bool k_fixed_point = tap::dsp::sample_traits<Sample>::k_is_fixed_point;
 
         explicit fft_impl(std::size_t n)
@@ -181,9 +237,6 @@ namespace {
         tap::dsp::basic_real_fft<Sample, Scaling> fft;
         std::vector<Sample>                       buf;
     };
-    fft_base* as_fft(dsptap_fft h) noexcept {
-        return static_cast<fft_base*>(h);
-    }
 
     // The fixed-point profiles' size bound, read from the header (fft/fixed_point.h asserts it
     // in the constructor, which a noexcept C entry point cannot turn into NULL): the same
@@ -205,60 +258,57 @@ namespace {
                || profile == DSPTAP_FFT_PROFILE_Q15_BFP || profile == DSPTAP_FFT_PROFILE_Q31_BFP;
     }
 
-    tap::dsp::yin* as_yin(dsptap_yin h) {
-        return static_cast<tap::dsp::yin*>(h);
-    }
-    tap::dsp::psola* as_psola(dsptap_psola h) {
-        return static_cast<tap::dsp::psola*>(h);
-    }
-    tap::dsp::pvoc* as_pvoc(dsptap_pvoc h) {
-        return static_cast<tap::dsp::pvoc*>(h);
-    }
-
-    // log_mel's geometry is fixed at construction; the C ABI setters rebuild.
-    struct log_mel_handle {
-        tap::dsp::log_mel_geometry         geometry;
-        std::unique_ptr<tap::dsp::log_mel> fe;
-    };
-    log_mel_handle* as_log_mel(dsptap_log_mel h) {
-        return static_cast<log_mel_handle*>(h);
-    }
-
-    // One virtual seam over the three ratio types; the boundary converts to the float golden model.
-    struct decimator_base {
-        virtual ~decimator_base()                                                                      = default;
-        virtual int         taps() const                                                               = 0;
-        virtual int         latency() const                                                            = 0;
-        virtual void        reset()                                                                    = 0;
-        virtual std::size_t outputs_for(std::size_t n) const                                           = 0;
-        virtual std::size_t process(const double* in, std::size_t n, double* out, std::size_t max_out) = 0;
-    };
+    // The double boundary stages through float buffers sized here, once: process() walks the
+    // input in k_block-sample blocks (decimate.h's process() is chunking-invariant, bit for bit),
+    // so no call allocates, whatever n is.
     template <std::size_t M>
-    struct decimator_impl final : decimator_base {
+    struct decimator_impl final : dsptap_decimator_s {
+        static constexpr std::size_t k_block = 4096;
+
         explicit decimator_impl(const tap::dsp::decimate_profile& p)
-            : dec(p) {}
-        int         taps() const override { return static_cast<int>(dec.taps()); }
-        int         latency() const override { return static_cast<int>(dec.latency_input_samples()); }
-        void        reset() override { dec.reset(); }
-        std::size_t outputs_for(std::size_t n) const override { return dec.outputs_for(n); }
-        std::size_t process(const double* in, std::size_t n, double* out, std::size_t max_out) override {
-            fin.resize(n);
-            for (std::size_t i = 0; i < n; ++i) {
-                fin[i] = static_cast<float>(in[i]);
+            : dec(p)
+            , fin(k_block)
+            , fout(k_block / M + 1) {}
+        int         taps() const noexcept override { return static_cast<int>(dec.taps()); }
+        int         latency() const noexcept override { return static_cast<int>(dec.latency_input_samples()); }
+        void        reset() noexcept override { dec.reset(); }
+        std::size_t outputs_for(std::size_t n) const noexcept override { return dec.outputs_for(n); }
+        std::size_t process(const double* in, std::size_t n, double* out, std::size_t max_out) noexcept override {
+            std::size_t kept = 0;
+            for (std::size_t done = 0; done < n;) {
+                const std::size_t len = (n - done) < k_block ? (n - done) : k_block;
+                for (std::size_t i = 0; i < len; ++i) {
+                    fin[i] = static_cast<float>(in[done + i]);
+                }
+                // outputs_for(len) <= ceil(len / M) <= k_block / M + 1 == fout.size().
+                const std::size_t made = dec.process(fin.data(), len, fout.data());
+                for (std::size_t i = 0; i < made && kept < max_out; ++i) {
+                    out[kept++] = static_cast<double>(fout[i]);
+                }
+                done += len;
             }
-            fout.resize(dec.outputs_for(n));
-            const std::size_t made = dec.process(fin.data(), n, fout.data());
-            const std::size_t keep = made < max_out ? made : max_out;
-            for (std::size_t i = 0; i < keep; ++i) {
-                out[i] = static_cast<double>(fout[i]);
-            }
-            return keep;
+            return kept;
         }
         tap::dsp::basic_decimator<float, M> dec;
-        std::vector<float>                  fin, fout;
+        std::vector<float>                  fin;
+        std::vector<float>                  fout;
     };
-    decimator_base* as_decimator(dsptap_decimator h) {
-        return static_cast<decimator_base*>(h);
+
+    /// Rebuild h's front end at geometry g, or report -1 and leave h untouched: validate, build
+    /// the new object, and only then commit both fields (neither assignment can throw).
+    int rebuild_log_mel(dsptap_log_mel h, const tap::dsp::log_mel_geometry& g) noexcept {
+        if (!g.valid()) {
+            return -1;
+        }
+        try {
+            auto fe     = std::make_unique<tap::dsp::log_mel>(g);
+            h->geometry = g;
+            h->fe       = std::move(fe);
+            return 0;
+        }
+        catch (...) {
+            return -1;
+        }
     }
 
 } // namespace
@@ -274,33 +324,24 @@ dsptap_fft dsptap_fft_create(int size, int profile) DSPTAP_NOEXCEPT {
     if (is_fixed_point_profile(profile) && size > k_fixed_point_max_size) {
         return nullptr; // the header's documented maximum for the fixed-point profiles
     }
+    const auto n = static_cast<std::size_t>(size);
     try {
-        // Erase the BASE pointer, so as_fft() recovers exactly what was stored (a derived pointer
-        // through void* is not a valid upcast on a polymorphic type, even where it happens to work).
-        fft_base* p = nullptr;
         switch (profile) {
         case DSPTAP_FFT_PROFILE_DOUBLE:
-            p = new fft_impl<double>(static_cast<std::size_t>(size));
-            break;
+            return new fft_impl<double>(n);
         case DSPTAP_FFT_PROFILE_FLOAT:
-            p = new fft_impl<float>(static_cast<std::size_t>(size));
-            break;
+            return new fft_impl<float>(n);
         case DSPTAP_FFT_PROFILE_Q15:
-            p = new fft_impl<std::int16_t>(static_cast<std::size_t>(size));
-            break;
+            return new fft_impl<std::int16_t>(n);
         case DSPTAP_FFT_PROFILE_Q31:
-            p = new fft_impl<std::int32_t>(static_cast<std::size_t>(size));
-            break;
+            return new fft_impl<std::int32_t>(n);
         case DSPTAP_FFT_PROFILE_Q15_BFP:
-            p = new fft_impl<std::int16_t, tap::dsp::scaling::block_floating>(static_cast<std::size_t>(size));
-            break;
+            return new fft_impl<std::int16_t, tap::dsp::scaling::block_floating>(n);
         case DSPTAP_FFT_PROFILE_Q31_BFP:
-            p = new fft_impl<std::int32_t, tap::dsp::scaling::block_floating>(static_cast<std::size_t>(size));
-            break;
+            return new fft_impl<std::int32_t, tap::dsp::scaling::block_floating>(n);
         default: // anything else is a bad argument
-            break;
+            return nullptr;
         }
-        return p;
     }
     catch (...) {
         return nullptr;
@@ -308,27 +349,27 @@ dsptap_fft dsptap_fft_create(int size, int profile) DSPTAP_NOEXCEPT {
 }
 
 void dsptap_fft_destroy(dsptap_fft h) DSPTAP_NOEXCEPT {
-    delete as_fft(h);
+    delete h;
 }
 
 int dsptap_fft_size(dsptap_fft h) DSPTAP_NOEXCEPT {
-    return h == nullptr ? -1 : as_fft(h)->size();
+    return h == nullptr ? -1 : h->size();
 }
 
 int dsptap_fft_num_bins(dsptap_fft h) DSPTAP_NOEXCEPT {
-    return h == nullptr ? -1 : as_fft(h)->size() / 2 + 1;
+    return h == nullptr ? -1 : h->size() / 2 + 1;
 }
 
 int dsptap_fft_profile(dsptap_fft h) DSPTAP_NOEXCEPT {
-    return h == nullptr ? -1 : as_fft(h)->profile();
+    return h == nullptr ? -1 : h->profile();
 }
 
 int dsptap_fft_sample_bytes(dsptap_fft h) DSPTAP_NOEXCEPT {
-    return h == nullptr ? -1 : as_fft(h)->sample_bytes();
+    return h == nullptr ? -1 : h->sample_bytes();
 }
 
 int dsptap_fft_fixed_scaling_exponent(dsptap_fft h) DSPTAP_NOEXCEPT {
-    return h == nullptr ? -1 : as_fft(h)->fixed_scaling_exponent();
+    return h == nullptr ? -1 : h->fixed_scaling_exponent();
 }
 
 const char* dsptap_fft_backend(void) DSPTAP_NOEXCEPT {
@@ -349,7 +390,7 @@ int dsptap_fft_forward(dsptap_fft h, const double* in, double* out) DSPTAP_NOEXC
     if (h == nullptr || in == nullptr || out == nullptr) {
         return -1;
     }
-    (void)as_fft(h)->forward(in, out); // out already carries 2^e
+    (void)h->forward(in, out); // out already carries 2^e
     return 0;
 }
 
@@ -357,7 +398,7 @@ int dsptap_fft_inverse(dsptap_fft h, const double* in, double* out) DSPTAP_NOEXC
     if (h == nullptr || in == nullptr || out == nullptr) {
         return -1;
     }
-    (void)as_fft(h)->inverse(in, out);
+    (void)h->inverse(in, out);
     return 0;
 }
 
@@ -365,7 +406,7 @@ int dsptap_fft_forward_exp(dsptap_fft h, const double* in, double* out, int* exp
     if (h == nullptr || in == nullptr || out == nullptr || exponent == nullptr) {
         return -1;
     }
-    *exponent = as_fft(h)->forward(in, out);
+    *exponent = h->forward(in, out);
     return 0;
 }
 
@@ -373,23 +414,23 @@ int dsptap_fft_inverse_exp(dsptap_fft h, const double* in, double* out, int* exp
     if (h == nullptr || in == nullptr || out == nullptr || exponent == nullptr) {
         return -1;
     }
-    *exponent = as_fft(h)->inverse(in, out);
+    *exponent = h->inverse(in, out);
     return 0;
 }
 
 int dsptap_fft_forward_inplace_raw(dsptap_fft h, void* data) DSPTAP_NOEXCEPT {
-    if (h == nullptr || data == nullptr || as_fft(h)->is_fixed_point()) {
+    if (h == nullptr || data == nullptr || h->is_fixed_point()) {
         return -1; // a fixed-point transform's exponent has nowhere to go here: use the _exp variant
     }
-    (void)as_fft(h)->forward_inplace_raw(data); // e == 0 for the floating profiles
+    (void)h->forward_inplace_raw(data); // e == 0 for the floating profiles
     return 0;
 }
 
 int dsptap_fft_inverse_inplace_raw(dsptap_fft h, void* data) DSPTAP_NOEXCEPT {
-    if (h == nullptr || data == nullptr || as_fft(h)->is_fixed_point()) {
+    if (h == nullptr || data == nullptr || h->is_fixed_point()) {
         return -1;
     }
-    (void)as_fft(h)->inverse_inplace_raw(data);
+    (void)h->inverse_inplace_raw(data);
     return 0;
 }
 
@@ -397,7 +438,7 @@ int dsptap_fft_forward_inplace_raw_exp(dsptap_fft h, void* data, int* exponent) 
     if (h == nullptr || data == nullptr || exponent == nullptr) {
         return -1;
     }
-    *exponent = as_fft(h)->forward_inplace_raw(data);
+    *exponent = h->forward_inplace_raw(data);
     return 0;
 }
 
@@ -405,143 +446,161 @@ int dsptap_fft_inverse_inplace_raw_exp(dsptap_fft h, void* data, int* exponent) 
     if (h == nullptr || data == nullptr || exponent == nullptr) {
         return -1;
     }
-    *exponent = as_fft(h)->inverse_inplace_raw(data);
+    *exponent = h->inverse_inplace_raw(data);
     return 0;
 }
 
 // -- yin --------------------------------------------------------------------------------------
 
-dsptap_yin dsptap_yin_create(int window, int tau_min, int tau_max) {
+dsptap_yin dsptap_yin_create(int window, int tau_min, int tau_max) DSPTAP_NOEXCEPT {
     if (tau_min < 2 || tau_min >= tau_max || window < tau_max) {
+        return nullptr; // yin.h's @pre, which the header only asserts
+    }
+    if (window > std::numeric_limits<int>::max() - tau_max) {
+        return nullptr; // yin.h's @pre: window + tau_max (frame_size(), an int sum) must fit an int
+    }
+    try {
+        return new dsptap_yin_s(static_cast<std::size_t>(window), static_cast<std::size_t>(tau_min),
+                                static_cast<std::size_t>(tau_max));
+    }
+    catch (...) {
         return nullptr;
     }
-    return new tap::dsp::yin(static_cast<size_t>(window), static_cast<size_t>(tau_min), static_cast<size_t>(tau_max));
 }
 
-void dsptap_yin_destroy(dsptap_yin h) {
-    delete as_yin(h);
+void dsptap_yin_destroy(dsptap_yin h) DSPTAP_NOEXCEPT {
+    delete h;
 }
 
-int dsptap_yin_set_threshold(dsptap_yin h, double threshold) {
+int dsptap_yin_set_threshold(dsptap_yin h, double threshold) DSPTAP_NOEXCEPT {
     if (h == nullptr) {
         return -1;
     }
-    as_yin(h)->set_threshold(threshold);
+    h->impl.set_threshold(threshold);
     return 0;
 }
 
-int dsptap_yin_frame_size(dsptap_yin h) {
+int dsptap_yin_frame_size(dsptap_yin h) DSPTAP_NOEXCEPT {
     if (h == nullptr) {
         return -1;
     }
-    return static_cast<int>(as_yin(h)->frame_size());
+    return static_cast<int>(h->impl.frame_size());
 }
 
-int dsptap_yin_analyze(dsptap_yin h, const double* frame, double* period, double* aperiodicity) {
+int dsptap_yin_analyze(dsptap_yin h, const double* frame, double* period, double* aperiodicity) DSPTAP_NOEXCEPT {
     if (h == nullptr || frame == nullptr || period == nullptr || aperiodicity == nullptr) {
         return -1;
     }
-    const auto r  = as_yin(h)->analyze(frame);
+    const auto r  = h->impl.analyze(frame);
     *period       = r.period;
     *aperiodicity = r.aperiodicity;
     return 0;
 }
 
-int dsptap_yin_track(dsptap_yin h, const double* x, int n, int hop, double* periods, int max_out) {
+int dsptap_yin_track(dsptap_yin h, const double* x, int n, int hop, double* periods, int max_out) DSPTAP_NOEXCEPT {
     if (h == nullptr || x == nullptr || periods == nullptr || hop < 1) {
         return -1;
     }
-    auto*     det   = as_yin(h);
-    const int frame = static_cast<int>(det->frame_size());
-    int       count = 0;
-    for (int start = 0; start + frame <= n && count < max_out; start += hop) {
-        periods[count++] = det->analyze(x + start).period;
+    // Frame starts in 64-bit so start + hop cannot overflow for any int n and hop.
+    const auto frame = static_cast<std::int64_t>(h->impl.frame_size());
+    int        count = 0;
+    for (std::int64_t start = 0; start + frame <= n && count < max_out; start += hop) {
+        periods[count++] = h->impl.analyze(x + start).period;
     }
     return count;
 }
 
 // -- psola ------------------------------------------------------------------------------------
 
-dsptap_psola dsptap_psola_create(int max_period) {
-    if (max_period < 16) {
+dsptap_psola dsptap_psola_create(int max_period) DSPTAP_NOEXCEPT {
+    if (max_period < 16 || max_period >= (1 << 26)) {
+        return nullptr; // psola.h's @pre: 16 <= max_period < 2^26
+    }
+    try {
+        return new dsptap_psola_s(static_cast<std::size_t>(max_period));
+    }
+    catch (...) {
         return nullptr;
     }
-    return new tap::dsp::psola(static_cast<size_t>(max_period));
 }
 
-void dsptap_psola_destroy(dsptap_psola h) {
-    delete as_psola(h);
+void dsptap_psola_destroy(dsptap_psola h) DSPTAP_NOEXCEPT {
+    delete h;
 }
 
-int dsptap_psola_latency(dsptap_psola h) {
+int dsptap_psola_latency(dsptap_psola h) DSPTAP_NOEXCEPT {
     if (h == nullptr) {
         return -1;
     }
-    return static_cast<int>(as_psola(h)->latency());
+    return static_cast<int>(h->impl.latency());
 }
 
-int dsptap_psola_clear(dsptap_psola h) {
+int dsptap_psola_clear(dsptap_psola h) DSPTAP_NOEXCEPT {
     if (h == nullptr) {
         return -1;
     }
-    as_psola(h)->clear();
+    h->impl.clear();
     return 0;
 }
 
-int dsptap_psola_process(dsptap_psola h, const double* in, double* out, int n, double period, double ratio) {
+int dsptap_psola_process(dsptap_psola h, const double* in, double* out, int n, double period,
+                         double ratio) DSPTAP_NOEXCEPT {
     if (h == nullptr || in == nullptr || out == nullptr || n < 0) {
         return -1;
     }
-    auto* shifter = as_psola(h);
     for (int i = 0; i < n; ++i) {
-        out[i] = shifter->process(in[i], period, ratio);
+        out[i] = h->impl.process(in[i], period, ratio);
     }
     return 0;
 }
 
 // -- pvoc -------------------------------------------------------------------------------------
 
-dsptap_pvoc dsptap_pvoc_create(int fft_size) {
-    if (fft_size < 64 || (fft_size & (fft_size - 1)) != 0) {
+dsptap_pvoc dsptap_pvoc_create(int fft_size) DSPTAP_NOEXCEPT {
+    if (fft_size < 64 || fft_size > (1 << 28) || (fft_size & (fft_size - 1)) != 0) {
+        return nullptr; // pvoc.h's @pre: a power of two in [64, 2^28]
+    }
+    try {
+        return new dsptap_pvoc_s(static_cast<std::size_t>(fft_size));
+    }
+    catch (...) {
         return nullptr;
     }
-    return new tap::dsp::pvoc(static_cast<size_t>(fft_size));
 }
 
-void dsptap_pvoc_destroy(dsptap_pvoc h) {
-    delete as_pvoc(h);
+void dsptap_pvoc_destroy(dsptap_pvoc h) DSPTAP_NOEXCEPT {
+    delete h;
 }
 
-int dsptap_pvoc_latency(dsptap_pvoc h) {
+int dsptap_pvoc_latency(dsptap_pvoc h) DSPTAP_NOEXCEPT {
     if (h == nullptr) {
         return -1;
     }
-    return static_cast<int>(as_pvoc(h)->latency());
+    return static_cast<int>(h->impl.latency());
 }
 
-int dsptap_pvoc_set_formant(dsptap_pvoc h, int on) {
+int dsptap_pvoc_set_formant(dsptap_pvoc h, int on) DSPTAP_NOEXCEPT {
     if (h == nullptr) {
         return -1;
     }
-    as_pvoc(h)->set_formant(on != 0);
+    h->impl.set_formant(on != 0);
     return 0;
 }
 
-int dsptap_pvoc_clear(dsptap_pvoc h) {
+int dsptap_pvoc_clear(dsptap_pvoc h) DSPTAP_NOEXCEPT {
     if (h == nullptr) {
         return -1;
     }
-    as_pvoc(h)->clear();
+    h->impl.clear();
     return 0;
 }
 
-int dsptap_pvoc_process(dsptap_pvoc h, const double* in, double* out, int n, double ratio) {
+int dsptap_pvoc_process(dsptap_pvoc h, const double* in, double* out, int n, double ratio) DSPTAP_NOEXCEPT {
     if (h == nullptr || in == nullptr || out == nullptr || n < 0) {
         return -1;
     }
-    auto* shifter = as_pvoc(h);
     for (int i = 0; i < n; ++i) {
-        out[i] = shifter->process(in[i], ratio);
+        out[i] = h->impl.process(in[i], ratio);
     }
     return 0;
 }
@@ -549,151 +608,151 @@ int dsptap_pvoc_process(dsptap_pvoc h, const double* in, double* out, int n, dou
 // -- log_mel ----------------------------------------------------------------------------------
 
 dsptap_log_mel dsptap_log_mel_create(double sample_rate, int frame, int hop, int fft_size, int bands, double fmin_hz,
-                                     double fmax_hz, int sqrt_window, double preemphasis) {
+                                     double fmax_hz, int sqrt_window, double preemphasis) DSPTAP_NOEXCEPT {
     if (frame < 1 || hop < 1 || fft_size < 4 || bands < 1) {
         return nullptr;
     }
-    auto h                  = std::make_unique<log_mel_handle>();
-    h->geometry.sample_rate = sample_rate;
-    h->geometry.frame       = static_cast<size_t>(frame);
-    h->geometry.hop         = static_cast<size_t>(hop);
-    h->geometry.fft_size    = static_cast<size_t>(fft_size);
-    h->geometry.bands       = static_cast<size_t>(bands);
-    h->geometry.fmin_hz     = fmin_hz;
-    h->geometry.fmax_hz     = fmax_hz;
-    h->geometry.window      = sqrt_window != 0 ? tap::dsp::mel_window::sqrt_hann : tap::dsp::mel_window::hann;
-    h->geometry.preemphasis = preemphasis;
-    if (!h->geometry.valid()) {
+    tap::dsp::log_mel_geometry g;
+    g.sample_rate = sample_rate;
+    g.frame       = static_cast<std::size_t>(frame);
+    g.hop         = static_cast<std::size_t>(hop);
+    g.fft_size    = static_cast<std::size_t>(fft_size);
+    g.bands       = static_cast<std::size_t>(bands);
+    g.fmin_hz     = fmin_hz;
+    g.fmax_hz     = fmax_hz;
+    g.window      = sqrt_window != 0 ? tap::dsp::mel_window::sqrt_hann : tap::dsp::mel_window::hann;
+    g.preemphasis = preemphasis;
+    if (!g.valid()) {
         return nullptr;
     }
-    h->fe = std::make_unique<tap::dsp::log_mel>(h->geometry);
-    return h.release();
+    try {
+        auto h      = std::make_unique<dsptap_log_mel_s>();
+        h->geometry = g;
+        h->fe       = std::make_unique<tap::dsp::log_mel>(g);
+        return h.release();
+    }
+    catch (...) {
+        return nullptr;
+    }
 }
 
-void dsptap_log_mel_destroy(dsptap_log_mel h) {
-    delete as_log_mel(h);
+void dsptap_log_mel_destroy(dsptap_log_mel h) DSPTAP_NOEXCEPT {
+    delete h;
 }
 
-int dsptap_log_mel_set_log(dsptap_log_mel h, double floor, double shift, double scale) {
+int dsptap_log_mel_set_log(dsptap_log_mel h, double floor, double shift, double scale) DSPTAP_NOEXCEPT {
     if (h == nullptr) {
         return -1;
     }
-    auto* lm    = as_log_mel(h);
-    auto  g     = lm->geometry;
+    auto g      = h->geometry;
     g.log_floor = floor;
     g.log_shift = shift;
     g.log_scale = scale;
-    if (!g.valid()) {
-        return -1;
-    }
-    lm->geometry = g;
-    lm->fe       = std::make_unique<tap::dsp::log_mel>(g);
-    return 0;
+    return rebuild_log_mel(h, g);
 }
 
 int dsptap_log_mel_set_pcen(dsptap_log_mel h, int enabled, double smoother, double alpha, double delta, double power,
-                            double epsilon) {
+                            double epsilon) DSPTAP_NOEXCEPT {
     if (h == nullptr) {
         return -1;
     }
-    auto* lm        = as_log_mel(h);
-    auto  g         = lm->geometry;
+    auto g          = h->geometry;
     g.pcen.enabled  = enabled != 0;
     g.pcen.smoother = smoother;
     g.pcen.alpha    = alpha;
     g.pcen.delta    = delta;
     g.pcen.power    = power;
     g.pcen.epsilon  = epsilon;
-    if (!g.valid()) {
+    return rebuild_log_mel(h, g);
+}
+
+int dsptap_log_mel_reset(dsptap_log_mel h) DSPTAP_NOEXCEPT {
+    if (h == nullptr) {
         return -1;
     }
-    lm->geometry = g;
-    lm->fe       = std::make_unique<tap::dsp::log_mel>(g);
+    h->fe->reset();
     return 0;
 }
 
-int dsptap_log_mel_reset(dsptap_log_mel h) {
+int dsptap_log_mel_bands(dsptap_log_mel h) DSPTAP_NOEXCEPT {
     if (h == nullptr) {
         return -1;
     }
-    as_log_mel(h)->fe->reset();
-    return 0;
+    return static_cast<int>(h->fe->bands());
 }
 
-int dsptap_log_mel_bands(dsptap_log_mel h) {
+int dsptap_log_mel_latency(dsptap_log_mel h) DSPTAP_NOEXCEPT {
     if (h == nullptr) {
         return -1;
     }
-    return static_cast<int>(as_log_mel(h)->fe->bands());
+    return static_cast<int>(h->fe->latency_samples());
 }
 
-int dsptap_log_mel_latency(dsptap_log_mel h) {
-    if (h == nullptr) {
-        return -1;
-    }
-    return static_cast<int>(as_log_mel(h)->fe->latency_samples());
-}
-
-int dsptap_log_mel_contract_version(void) {
+int dsptap_log_mel_contract_version(void) DSPTAP_NOEXCEPT {
     return static_cast<int>(tap::dsp::log_mel_geometry::k_contract_version);
 }
 
-int dsptap_log_mel_process(dsptap_log_mel h, const double* x, int n, double* features, int max_frames) {
+int dsptap_log_mel_process(dsptap_log_mel h, const double* x, int n, double* features, int max_frames) DSPTAP_NOEXCEPT {
     if (h == nullptr || x == nullptr || features == nullptr || n < 0 || max_frames < 0) {
         return -1;
     }
     return static_cast<int>(
-        as_log_mel(h)->fe->process(x, static_cast<size_t>(n), features, static_cast<size_t>(max_frames)));
+        h->fe->process(x, static_cast<std::size_t>(n), features, static_cast<std::size_t>(max_frames)));
 }
 
 // -- decimate ---------------------------------------------------------------------------------
 
-dsptap_decimator dsptap_decimator_create(int ratio, int transparent) {
+dsptap_decimator dsptap_decimator_create(int ratio, int transparent) DSPTAP_NOEXCEPT {
     const auto p = transparent != 0 ? tap::dsp::decimate_profile::transparent() : tap::dsp::decimate_profile::economy();
-    switch (ratio) {
-    case 2:
-        return new decimator_impl<2>(p);
-    case 3:
-        return new decimator_impl<3>(p);
-    case 6:
-        return new decimator_impl<6>(p);
-    default:
+    try {
+        switch (ratio) {
+        case 2:
+            return new decimator_impl<2>(p);
+        case 3:
+            return new decimator_impl<3>(p);
+        case 6:
+            return new decimator_impl<6>(p);
+        default:
+            return nullptr;
+        }
+    }
+    catch (...) {
         return nullptr;
     }
 }
 
-void dsptap_decimator_destroy(dsptap_decimator h) {
-    delete as_decimator(h);
+void dsptap_decimator_destroy(dsptap_decimator h) DSPTAP_NOEXCEPT {
+    delete h;
 }
 
-int dsptap_decimator_taps(dsptap_decimator h) {
-    return h == nullptr ? -1 : as_decimator(h)->taps();
+int dsptap_decimator_taps(dsptap_decimator h) DSPTAP_NOEXCEPT {
+    return h == nullptr ? -1 : h->taps();
 }
 
-int dsptap_decimator_latency(dsptap_decimator h) {
-    return h == nullptr ? -1 : as_decimator(h)->latency();
+int dsptap_decimator_latency(dsptap_decimator h) DSPTAP_NOEXCEPT {
+    return h == nullptr ? -1 : h->latency();
 }
 
-int dsptap_decimator_reset(dsptap_decimator h) {
+int dsptap_decimator_reset(dsptap_decimator h) DSPTAP_NOEXCEPT {
     if (h == nullptr) {
         return -1;
     }
-    as_decimator(h)->reset();
+    h->reset();
     return 0;
 }
 
-int dsptap_decimator_outputs_for(dsptap_decimator h, int n) {
+int dsptap_decimator_outputs_for(dsptap_decimator h, int n) DSPTAP_NOEXCEPT {
     if (h == nullptr || n < 0) {
         return -1;
     }
-    return static_cast<int>(as_decimator(h)->outputs_for(static_cast<size_t>(n)));
+    return static_cast<int>(h->outputs_for(static_cast<std::size_t>(n)));
 }
 
-int dsptap_decimator_process(dsptap_decimator h, const double* in, int n, double* out, int max_out) {
+int dsptap_decimator_process(dsptap_decimator h, const double* in, int n, double* out, int max_out) DSPTAP_NOEXCEPT {
     if (h == nullptr || in == nullptr || out == nullptr || n < 0 || max_out < 0) {
         return -1;
     }
-    return static_cast<int>(as_decimator(h)->process(in, static_cast<size_t>(n), out, static_cast<size_t>(max_out)));
+    return static_cast<int>(h->process(in, static_cast<std::size_t>(n), out, static_cast<std::size_t>(max_out)));
 }
 
 } // extern "C"

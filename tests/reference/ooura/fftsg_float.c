@@ -1,4 +1,7 @@
-/* Single-precision instantiation of Ooura's fftsg.c.
+/* SPDX-License-Identifier: MIT
+ * Copyright 2026 Timothy Place and the DspTap contributors.
+ *
+ * Single-precision instantiation of Ooura's fftsg.c.
  *
  * fftsg.c is written for double throughout. Embedded targets in MuTap's
  * real-time profile (e.g. Cortex-M55, whose FPU is single-precision only)
@@ -10,8 +13,9 @@
  * declarations keep their real prototypes; fftsg.c's own include then
  * becomes a no-op via the header guard.
  *
- * The underlying algorithm and code remain Takuya Ooura's; see
- * third_party/ooura/readme.txt for the license/attribution terms. Since
+ * This file is DspTap's glue (the renames and the #include), MIT like the
+ * rest of DspTap; the algorithm and code it compiles, fftsg.c, remain Takuya
+ * Ooura's under that file's terms; see third_party/ooura/readme.txt. Since
  * Stage 2c this file lives under tests/reference/ beside fftsg.c: the float
  * half of the parity gate (tests/test_fft_parity_ooura.cpp) compares the
  * port's float instantiation against rdft_f, so the two files move together.

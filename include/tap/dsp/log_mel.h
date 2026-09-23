@@ -71,10 +71,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <numbers>
 #include <type_traits>
 #include <vector>
 
+#include "tap/dsp/detail/math.h"
 #include "tap/dsp/fft.h"
 #include "tap/dsp/fft/spectrum.h"
 
@@ -256,9 +256,8 @@ namespace tap::dsp {
         };
 
         void build_window() {
-            const auto n = static_cast<double>(m_g.frame);
             for (std::size_t i = 0; i < m_g.frame; ++i) {
-                const double w = 0.5 - 0.5 * std::cos(2.0 * std::numbers::pi * static_cast<double>(i) / n);
+                const double w = detail::periodic_hann(i, m_g.frame);
                 m_window[i]    = static_cast<Sample>(m_g.window == mel_window::sqrt_hann ? std::sqrt(w) : w);
             }
         }

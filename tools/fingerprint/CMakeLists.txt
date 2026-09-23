@@ -1,9 +1,10 @@
 # Same-host A/B fingerprint tool for the DspTap primitives whose output must not
-# move when their internals do (pvoc, log_mel). Prints one FNV-1a-64 line per
-# case; build it against two trees on ONE host with ONE compiler and flag set,
-# and diff the two outputs. The hashes are host + compiler + flags specific
-# (pvoc goes through atan2/sin/cos in libm; contraction changes them too), so
-# they are never committed as golden values and never asserted in a test.
+# move when their internals do (pvoc, log_mel, psola). Prints one FNV-1a-64 line
+# per case; build it against two trees on ONE host with ONE compiler and flag
+# set, and diff the two outputs. The hashes are host + compiler + flags specific
+# (pvoc goes through atan2/sin/cos in libm; contraction changes them too, see
+# fingerprint.cpp on g++ with FMA), so they are never committed as golden values
+# and never asserted in a test.
 # Builds on its own:
 #
 #     cmake -B build_fp -S tools/fingerprint -DCMAKE_BUILD_TYPE=Release

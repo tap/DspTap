@@ -32,7 +32,12 @@ on macOS arm64 against the committed header: <= 1.4e-15 on the log path,
 <= 1.2e-14 on the PCEN path, the decimator vectors bit-identical — which the
 C++ pins at 1e-13 absorb. Commit a regenerated header only when a contract
 changes; a refactor of this script is checked by regenerating before and
-after it in one environment and diffing.
+after it in one environment and diffing. (Stage 6 added the clang-format
+off/on markers that way: numpy 2.4.6 on Linux x86-64 reproduces the committed
+frontend_vectors.h byte for byte, so that file IS the regenerated output; it
+moves the last digit of 1,422 lines of frontend_vectors_tuned.h, so the
+committed tuned file is the previous committed bytes plus the six marker and
+comment lines, inserted by hand, not a regeneration.)
 
 decimate: for each ratio (2, 3, 6) and profile, the minimal odd tap count
 whose Kaiser design meets the profile's stopband spec with >= 1 dB margin on
@@ -309,6 +314,11 @@ HEADER = [
     "// SPDX-License-Identifier: MIT",
     "// Copyright 2026 Timothy Place and the DspTap contributors.",
     "// NOLINTBEGIN(readability-identifier-naming)",
+    "// Generated data, laid out by fmt_array() four values to a line; clang-format",
+    "// would re-pack the float tables, so the file opts out rather than changing",
+    "// what the generator writes. (A directory-local .clang-format is not used:",
+    "// tests/reference/ooura_rdft.h shares this directory and is formatted.)",
+    "// clang-format off",
     "#pragma once",
     "",
     "#include <array>",
@@ -317,7 +327,7 @@ HEADER = [
     "namespace frontend_ref {",
     "",
 ]
-FOOTER = ["} // namespace frontend_ref", "// NOLINTEND(readability-identifier-naming)"]
+FOOTER = ["} // namespace frontend_ref", "// clang-format on", "// NOLINTEND(readability-identifier-naming)"]
 
 
 def write(path: pathlib.Path, parts: list[str]) -> None:

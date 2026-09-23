@@ -58,6 +58,7 @@
 
 #include <gtest/gtest.h>
 
+#include "support/db.h"
 #include "support/signals.h"
 #include "tap/dsp/fft.h"
 #include "tap/dsp/fft/fft_arith.h"
@@ -194,7 +195,7 @@ namespace {
     }
 
     double db(double power) {
-        return 10.0 * std::log10(std::max(power, 1e-300));
+        return tap::dsp::test::power_db(std::max(power, 1e-300));
     }
 
     template <typename Sample>

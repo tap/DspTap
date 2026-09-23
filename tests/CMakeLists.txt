@@ -302,3 +302,62 @@ target_link_libraries(tap_dsp_analysis_typed PRIVATE
 # ==============================================================================
 # END Stage 3c addition
 # ==============================================================================
+
+# ==============================================================================
+# BEGIN Stage 6 addition: the tidy gate's view of bench/ and tools/.
+# The style job (.github/workflows/style.yml, a taphouse file) configures the
+# compile database with -DTAP_DSP_BUILD_TESTS=ON only, so the TUs behind
+# TAP_DSP_BUILD_BENCH (bench/) and TAP_DSP_BUILD_CAPI (tools/capi/), and the
+# standalone fingerprint tool (tools/fingerprint/), were never in it and never
+# saw clang-tidy. Declared here as OBJECT libraries excluded from ALL: they
+# land in compile_commands.json (which is all the tidy gate reads) and are
+# never compiled by `cmake --build`, so the hosted battery's build time and
+# everything the QEMU legs build are unchanged. Only where the real targets are
+# absent (a configuration that builds them already lists them) and never on
+# bare metal. icount_main.cpp is listed twice, floating (precision 0) and fixed
+# point (precision 2), because its body is two preprocessor branches and
+# clang-tidy checks every compile command a file has.
+# ==============================================================================
+if(NOT TAP_DSP_BARE_METAL)
+    # Each entry is name:path-from-the-project-root:definition ("-" for none).
+    # Relative paths, because an absolute Windows path's drive colon would split
+    # the entry. The definition is the one the TU's real target passes: the
+    # icount scenario's precision, or DSPTAP_BUILDING for the capi library.
+    #
+    # Ordering: this file is add_subdirectory'd before the root CMakeLists.txt
+    # declares option(TAP_DSP_BUILD_BENCH) and option(TAP_DSP_BUILD_CAPI), so
+    # the tests below read the cache (a -D on the command line) or, when neither
+    # was given, an undefined variable, which if(NOT ...) treats as OFF, the
+    # options' default. Moving those option() calls above add_subdirectory(tests)
+    # would not change the result.
+    set(_tap_dsp_tidy_only_tus)
+    if(NOT TAP_DSP_BUILD_BENCH)
+        list(APPEND _tap_dsp_tidy_only_tus
+            bench_fft:bench/bench_fft.cpp:-
+            size_probe:bench/size_probe.cpp:-
+            icount_float:bench/icount/icount_main.cpp:TAP_DSP_SC_PRECISION=0
+            icount_fixed:bench/icount/icount_main.cpp:TAP_DSP_SC_PRECISION=2)
+    endif()
+    if(NOT TAP_DSP_BUILD_CAPI)
+        list(APPEND _tap_dsp_tidy_only_tus
+            capi:tools/capi/dsptap_capi.cpp:DSPTAP_BUILDING
+            capi_reference:tools/capi/test_capi_reference.cpp:-)
+    endif()
+    list(APPEND _tap_dsp_tidy_only_tus fingerprint:tools/fingerprint/fingerprint.cpp:-)
+    foreach(_tu IN LISTS _tap_dsp_tidy_only_tus)
+        string(REPLACE ":" ";" _parts "${_tu}")
+        list(GET _parts 0 _name)
+        list(GET _parts 1 _src)
+        list(GET _parts 2 _definition)
+        add_library(tap_dsp_tidy_only_${_name} OBJECT EXCLUDE_FROM_ALL ${PROJECT_SOURCE_DIR}/${_src})
+        target_include_directories(tap_dsp_tidy_only_${_name} PRIVATE
+            ${PROJECT_SOURCE_DIR}/bench ${PROJECT_SOURCE_DIR}/tools/capi)
+        if(NOT _definition STREQUAL "-")
+            target_compile_definitions(tap_dsp_tidy_only_${_name} PRIVATE ${_definition})
+        endif()
+        target_link_libraries(tap_dsp_tidy_only_${_name} PRIVATE tap::dsp tap_dsp_warnings)
+    endforeach()
+endif()
+# ==============================================================================
+# END Stage 6 addition
+# ==============================================================================

@@ -4,7 +4,8 @@ This is a **minimal subset** of Arm's CMSIS-DSP and CMSIS-Core, vendored so
 the optional Cortex-M55 (Helium/MVE) FFT backend can be built without a
 submodule or network fetch. It is compiled **only** when the `TAP_DSP_FFT_CMSIS`
 CMake option is ON (ARM cross builds); nothing here is touched by the default
-desktop/Hexagon builds, which stay on the Ooura FFT.
+desktop/Apple/Hexagon builds, which run the split-radix engine
+(`include/tap/dsp/fft/split_radix.h`).
 
 ## Provenance
 
@@ -13,7 +14,10 @@ desktop/Hexagon builds, which stay on the Ooura FFT.
 | CMSIS-DSP  | github.com/ARM-software/CMSIS-DSP          | `918014f0ba96` | 2026-07-17 |
 | CMSIS-Core | github.com/ARM-software/CMSIS_6 (Core)     | `7f62ddc8ab8e` | 2026-06-30 |
 
-License: Apache-2.0 (see `LICENSE`; SPDX headers retained in every file).
+License: Apache-2.0 (see `LICENSE`). Every file keeps its upstream header:
+an SPDX Apache-2.0 header in all of them except
+`PrivateInclude/arm_compiler_specific.h`, which has none upstream at the
+pinned commit either.
 
 ## Contents (why each file is here)
 
@@ -36,7 +40,9 @@ The closure was computed with `gcc -M` over the eight compiled sources for
 ## Refreshing
 
 To bump versions: re-clone both repos at the new commits, re-run the `gcc -M`
-closure (see `bench/README.md` / the FFT-backend section of
-`docs/optimization.md`), copy the resulting file list here, update the table
-above, and re-run the parity harness (`tests/test_fft_backend.cpp`) plus the
-full float32 battery on the M55 leg. Do **not** hand-edit vendored sources.
+closure over the eight compiled sources with the M55 leg's flags
+(`cmake/arm-cortex-m55-mps3.cmake`), copy the resulting file list here, update
+the table above, and re-run the backend parity suite
+(`tests/test_fft_backend.cpp`) plus the full float32 battery on the M55 leg
+(`.github/workflows/ci.yml`, `embedded`), and the `m55` icount key
+(`bench/README.md`). Do **not** hand-edit vendored sources.

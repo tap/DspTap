@@ -71,6 +71,8 @@ namespace tap::dsp {
 
         /// @pre 2 <= tau_min < tau_max, window >= tau_max (the paper's W >= tau_max
         /// keeps every searched lag fully supported by the integration window).
+        /// @pre window + tau_max <= INT_MAX: the geometry is held in int, and
+        /// frame_size() is that sum.
         basic_yin(size_t window, size_t tau_min, size_t tau_max)
             : m_window(static_cast<int>(window))
             , m_tau_min(static_cast<int>(tau_min))

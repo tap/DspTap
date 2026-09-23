@@ -17,6 +17,12 @@ if (NOT TARGET tap::dsp)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../.. ${CMAKE_CURRENT_BINARY_DIR}/dsptap)
 endif ()
 target_link_libraries(dsptap_capi PRIVATE tap::dsp)
+# dsptap_capi.h exports its symbols while this library builds and imports them everywhere else
+# (the __declspec(dllexport) / dllimport split on Windows; visibility("default") elsewhere).
+target_compile_definitions(dsptap_capi PRIVATE DSPTAP_BUILDING)
+if (TARGET tap_dsp_warnings)
+    target_link_libraries(dsptap_capi PRIVATE tap_dsp_warnings)
+endif ()
 
 set_target_properties(dsptap_capi PROPERTIES
     CXX_STANDARD 20
@@ -31,8 +37,18 @@ set_target_properties(dsptap_capi PROPERTIES
 # next to the shared library on every platform (Windows needs the DLL beside the .exe).
 if (TAP_DSP_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
     enable_language(C)
-    add_executable(dsptap_capi_smoke test_capi.c)
-    target_link_libraries(dsptap_capi_smoke PRIVATE dsptap_capi $<$<NOT:$<PLATFORM_ID:Windows>>:m>)
-    set_target_properties(dsptap_capi_smoke PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON)
+    # test_capi_reference.cpp is the smoke test's independent reference (decimate.h called once over
+    # a whole stream); it links tap::dsp directly and never goes into the shared library.
+    add_executable(dsptap_capi_smoke test_capi.c test_capi_reference.cpp)
+    target_link_libraries(dsptap_capi_smoke PRIVATE dsptap_capi tap::dsp $<$<NOT:$<PLATFORM_ID:Windows>>:m>)
+    if (TARGET tap_dsp_warnings)
+        target_link_libraries(dsptap_capi_smoke PRIVATE tap_dsp_warnings)
+    endif ()
+    set_target_properties(dsptap_capi_smoke PROPERTIES
+        C_STANDARD 99
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON)
     add_test(NAME dsptap_capi_smoke COMMAND dsptap_capi_smoke)
 endif ()

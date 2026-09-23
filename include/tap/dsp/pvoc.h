@@ -41,6 +41,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "tap/dsp/detail/math.h"
 #include "tap/dsp/fft.h"
 #include "tap/dsp/fft/spectrum.h"
 
@@ -97,7 +98,8 @@ namespace tap::dsp {
 
             m_window.assign(static_cast<size_t>(m_n_size), Sample(0));
             for (int i = 0; i < m_n_size; ++i) {
-                m_window[static_cast<size_t>(i)] = static_cast<Sample>(0.5 - 0.5 * std::cos(2.0 * k_pi * i / m_n_size));
+                m_window[static_cast<size_t>(i)] =
+                    static_cast<Sample>(detail::periodic_hann(static_cast<size_t>(i), static_cast<size_t>(m_n_size)));
             }
 
             // COLA normalization: steady-state sum of window^2 at the hop stride
@@ -220,7 +222,7 @@ namespace tap::dsp {
             // phases: bin_engineering() conjugates the packed spectrum's exp(+i)
             // imaginary parts on unpack)
             const packed_spectrum<const Sample> analysis(m_frame.data(), m_fft.size());
-            const double expected = 2.0 * k_pi * static_cast<double>(m_hop) / static_cast<double>(m_n_size);
+            const double expected = 2.0 * detail::k_pi * static_cast<double>(m_hop) / static_cast<double>(m_n_size);
             for (int k = 1; k < m_bins - 1; ++k) {
                 const std::complex<Sample> bin   = analysis.bin_engineering(static_cast<size_t>(k));
                 const double               re    = static_cast<double>(bin.real());
@@ -229,7 +231,7 @@ namespace tap::dsp {
 
                 double delta = phase - static_cast<double>(m_prev_phase[static_cast<size_t>(k)]) - expected * k;
                 m_prev_phase[static_cast<size_t>(k)] = static_cast<Sample>(phase);
-                delta -= 2.0 * k_pi * std::round(delta / (2.0 * k_pi));
+                delta -= 2.0 * detail::k_pi * std::round(delta / (2.0 * detail::k_pi));
 
                 m_mag[static_cast<size_t>(k)]      = std::sqrt(re * re + im * im);
                 m_true_bin[static_cast<size_t>(k)] = static_cast<double>(k) + delta / expected;
@@ -282,7 +284,7 @@ namespace tap::dsp {
                 // Keyed by the region's target bin for frame-to-frame continuity.
                 const double resid = expected * fp * (r - 1.0);
                 double       psi   = static_cast<double>(m_psi[static_cast<size_t>(c)]) + resid;
-                psi -= 2.0 * k_pi * std::round(psi / (2.0 * k_pi));
+                psi -= 2.0 * detail::k_pi * std::round(psi / (2.0 * detail::k_pi));
                 m_psi[static_cast<size_t>(c)] = static_cast<Sample>(psi);
 
                 const double cs = std::cos(psi);
@@ -378,8 +380,6 @@ namespace tap::dsp {
                 m_env[static_cast<size_t>(k)] = 1.0 / std::max(std::sqrt(re * re + im * im), k_env_floor);
             }
         }
-
-        static constexpr double k_pi = 3.14159265358979323846;
 
         int                    m_n_size;
         int                    m_hop;

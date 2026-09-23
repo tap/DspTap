@@ -15,12 +15,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <numbers>
-#include <random>
 #include <type_traits>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "support/signals.h"
 #include "tap/dsp/fft.h"
 #include "tap/dsp/fft/spectrum.h"
 
@@ -47,17 +47,6 @@ namespace {
         for (std::size_t j = 0; j < n; ++j) {
             const double arg = w * static_cast<double>(j);
             x[j]             = static_cast<Sample>(sine ? std::sin(arg) : std::cos(arg));
-        }
-        return x;
-    }
-
-    template <typename Sample>
-    std::vector<Sample> random_signal(std::size_t n, unsigned seed) {
-        std::mt19937                           gen(seed);
-        std::uniform_real_distribution<double> dist(-1.0, 1.0);
-        std::vector<Sample>                    x(n);
-        for (auto& v : x) {
-            v = static_cast<Sample>(dist(gen));
         }
         return x;
     }
@@ -248,7 +237,7 @@ namespace {
         // The power() docstring's formula, with no hidden factor 2 or 1/N:
         // sum x^2 = (1/N) (power(0) + power(N/2) + 2 sum_{1..N/2-1} power(k)).
         constexpr std::size_t n = 512;
-        const auto            x = random_signal<TypeParam>(n, 1234);
+        const auto            x = tap::dsp::test::mt19937_signal<TypeParam>(n, 1234);
 
         double time_energy = 0.0;
         for (std::size_t i = 0; i < n; ++i) {

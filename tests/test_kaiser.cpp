@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include "support/db.h"
 #include "tap/dsp/kaiser.h"
 
 namespace {
@@ -75,7 +76,7 @@ namespace {
             const double ang = -2.0 * std::numbers::pi * f * static_cast<double>(m) / proto_rate;
             acc += h[m] * std::polar(1.0, ang);
         }
-        return 20.0 * std::log10(std::abs(acc) / static_cast<double>(num_phases));
+        return tap::dsp::test::amplitude_db(std::abs(acc) / static_cast<double>(num_phases));
     }
 
     void check_prototype_meets_spec(const proto_spec& spec, double fs) {

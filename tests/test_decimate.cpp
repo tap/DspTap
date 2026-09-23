@@ -25,6 +25,7 @@
 #include <gtest/gtest.h>
 
 #include "reference/frontend_vectors.h"
+#include "support/db.h"
 #include "tap/dsp/decimate.h"
 
 namespace {
@@ -175,7 +176,7 @@ namespace {
             const double w = -2.0 * std::numbers::pi * f_hz * static_cast<double>(n) / fs;
             acc += static_cast<double>(h[n]) * std::complex<double>{std::cos(w), std::sin(w)};
         }
-        return 20.0 * std::log10(std::abs(acc) + 1e-300);
+        return tap::dsp::test::amplitude_db(std::abs(acc) + 1e-300);
     }
 
     template <std::size_t M>

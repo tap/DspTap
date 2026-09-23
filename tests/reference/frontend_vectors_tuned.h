@@ -4,6 +4,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 Timothy Place and the DspTap contributors.
 // NOLINTBEGIN(readability-identifier-naming)
+// Generated data, laid out by fmt_array() four values to a line; clang-format
+// would re-pack the float tables, so the file opts out rather than changing
+// what the generator writes. (A directory-local .clang-format is not used:
+// tests/reference/ooura_rdft.h shares this directory and is formatted.)
+// clang-format off
 #pragma once
 
 #include <array>
@@ -1639,4 +1644,5 @@ namespace frontend_ref {
     };
 
 } // namespace frontend_ref
+// clang-format on
 // NOLINTEND(readability-identifier-naming)

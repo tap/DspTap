@@ -35,6 +35,8 @@
 #include <type_traits>
 #include <vector>
 
+#include "tap/dsp/detail/math.h"
+
 namespace tap::dsp {
 
     /// TD-PSOLA pitch shifter, parameterized over the sample type. Both
@@ -208,7 +210,7 @@ namespace tap::dsp {
             const long   an    = static_cast<long>(m_accum.size());
             for (long o = first; o <= last; ++o) {
                 const double delta = static_cast<double>(o) - s; // (-t, t)
-                const double w     = 0.5 + 0.5 * std::cos(k_pi * delta * inv_t);
+                const double w     = 0.5 + 0.5 * std::cos(detail::k_pi * delta * inv_t);
                 const size_t slot  = static_cast<size_t>(((o % an) + an) % an);
                 m_accum[slot] += gain * static_cast<Sample>(w) * read_hermite(m + delta);
             }
@@ -232,8 +234,6 @@ namespace tap::dsp {
             const Sample f    = static_cast<Sample>(frac);
             return (((a * f - b) * f + c) * f + x0);
         }
-
-        static constexpr double k_pi = 3.14159265358979323846;
 
         /// Span of the sample clock: clock_wrap() is the largest multiple of the
         /// ring size not above this (or one ring, if the ring is larger). The
