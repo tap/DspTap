@@ -26,19 +26,21 @@ folds several per-target files (each with one target filled in) into one,
 which is how the seeding commit is assembled from the job's artifacts.
 
 Informational scenarios. A scenario whose key ends in INFORMATIONAL_SUFFIX
-("_port": the Stage 2a C++20 port built beside the vendored C, until Stage 2c
-retires the C) is counted and printed with its ratio to the sibling scenario
-(the key without the suffix) but is never a gate entry: it never enters the
-verdict (a `_port` binary that times out, faults or does not print ok=1 is
-reported as "informational binary failed: <reason>" and the run continues to
-the gated scenarios' verdict, where only a gated binary's failure aborts the
-run), --update never writes it to the baselines, a baseline that names it is
-reported and ignored, and --record files it under a separate top-level
-"informational" key that --merge skips (--merge also drops a `_port` key
-found under a real target, so a hand-edited record file cannot seed one).
-This is what lets a pull request show the port/C ratio in the job log without
-seeding anything (nothing is ratcheted at the port until Stage 2b routes it
-and the bare key measures it).
+("_c": the vendored Ooura C called directly, built beside the shipping
+split-radix engine from Stage 2b until Stage 2c retires the C) is counted and
+printed with its ratio to the sibling scenario (the key without the suffix)
+and whether the two output checksums agree, but is never a gate entry: it
+never enters the verdict (a `_c` binary that times out, faults or does not
+print ok=1 is reported as "informational binary failed: <reason>" and the run
+continues to the gated scenarios' verdict, where only a gated binary's
+failure aborts the run), --update never writes it to the baselines, a
+baseline that names it is reported and ignored, and --record files it under
+a separate top-level "informational" key that --merge skips (--merge also
+drops a `_c` key found under a real target, so a hand-edited record file
+cannot seed one). This is what keeps the C-vs-port comparison honest in every
+job log until 2c deletes the C: the gated bare key measures what ships, and
+the `_c` sibling is the C it replaced. (Before 2b the same mechanism ran the
+other way round, as `_port`: the port beside the shipping C.)
 
 The QEMU machine per target, the binary prefix and the output markers are
 DspTap's; the gate logic is MuTap's.
@@ -67,7 +69,7 @@ PREFIX = "tap_dsp_icount_"
 DONE_MARKER = "TAP_DSP_ICOUNT_DONE ok=1"
 COUNT_RE = re.compile(r"TAP_DSP_INSN_COUNT (\d+)")
 DONE_RE = re.compile(r"TAP_DSP_ICOUNT_DONE ok=1 (.*)")
-INFORMATIONAL_SUFFIX = "_port"
+INFORMATIONAL_SUFFIX = "_c"
 INFORMATIONAL_KEY = "informational"
 
 
@@ -120,7 +122,7 @@ def merge(path: pathlib.Path, files: list[str]) -> int:
         for target, scenarios in json.loads(pathlib.Path(f).read_text()).items():
             if target == INFORMATIONAL_KEY:
                 continue  # never a gate entry (see the module docstring)
-            # Nor is a `_port` key nested under a real target: --update and
+            # Nor is a `_c` key nested under a real target: --update and
             # --record never write one there, so it can only come from a
             # hand-edited file, and it is dropped rather than seeded.
             gated = {k: v for k, v in scenarios.items() if not k.endswith(INFORMATIONAL_SUFFIX)}
@@ -141,8 +143,8 @@ def describe(fields: dict[str, str]) -> str:
 def report_informational(informational: dict, failed: dict, measured: dict, fields: dict) -> None:
     if not informational and not failed:
         return
-    print(f"--- informational: '{INFORMATIONAL_SUFFIX}' scenarios (counted, never gated, "
-          "never baselined; Stage 2a until 2c) ---")
+    print(f"--- informational: '{INFORMATIONAL_SUFFIX}' scenarios (the vendored C beside what ships; "
+          "counted, never gated, never baselined; Stage 2b until 2c) ---")
     for scenario, reason in sorted(failed.items()):
         print(f"{scenario}: informational binary failed: {reason}")
     for scenario, count in sorted(informational.items()):
