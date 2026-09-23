@@ -69,6 +69,9 @@ PREFIX = "tap_dsp_icount_"
 DONE_MARKER = "TAP_DSP_ICOUNT_DONE ok=1"
 COUNT_RE = re.compile(r"TAP_DSP_INSN_COUNT (\d+)")
 DONE_RE = re.compile(r"TAP_DSP_ICOUNT_DONE ok=1 (.*)")
+# Two characters, tested with endswith(): a future GATED key that happened to
+# end in "_c" would be classified informational. None does (the gated keys
+# are rfft_<precision>_<n>); the suffix goes with the C at Stage 2c.
 INFORMATIONAL_SUFFIX = "_c"
 INFORMATIONAL_KEY = "informational"
 

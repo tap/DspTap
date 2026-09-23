@@ -24,6 +24,18 @@
 # icount/).
 set(TAP_DSP_BENCH_ENGINE basic_real_fft CACHE STRING
     "FFT engine the benchmark scenarios measure (basic_real_fft or reference_c)")
+# Said in every configure log, because the value reference_c kept its
+# spelling across the flip with a new meaning: a build directory configured
+# before Stage 2b carries it as the old default (then: the class as built)
+# and would otherwise measure the C on the gated keys without a word.
+if(TAP_DSP_BENCH_ENGINE STREQUAL "reference_c")
+    message(STATUS "TAP_DSP_BENCH_ENGINE=reference_c: the bare-keyed bench binaries measure the vendored C "
+                   "directly and no `_c` pair is built; a cache from before Stage 2b holds this value as its "
+                   "old default, so reconfigure with -UTAP_DSP_BENCH_ENGINE to measure what ships")
+else()
+    message(STATUS "TAP_DSP_BENCH_ENGINE=${TAP_DSP_BENCH_ENGINE}: the bare-keyed bench binaries measure what ships "
+                   "(basic_real_fft as built); the `_c` pairs measure the vendored C")
+endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Generic")
     set(_tap_dsp_bench_host_class OFF)
