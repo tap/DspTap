@@ -193,7 +193,12 @@ class RealFFT:
                              f"(or the codes {sorted(self.PROFILES.values())}), not {profile!r}")
         self._h = _lib.dsptap_fft_create(size, code)
         if not self._h:
-            raise ValueError(f"size must be a power of two >= 4, not {size!r}")
+            # The C ABI returns NULL for a size the profile does not support: the fixed-point
+            # profiles are bounded at 65536 (fft/fixed_point.h, k_max_size; the capi reads the
+            # constant from the header and refuses above it, so the header's assert is never
+            # reached from Python).
+            bound = " in [4, 65536] (the fixed-point profiles' bound)" if code >= 2 else " >= 4"
+            raise ValueError(f"size must be a power of two{bound}, not {size!r}")
         self.size = size
         self.profile = next(k for k, v in self.PROFILES.items() if v == code)
         self.dtype = np.dtype(self._DTYPES[code])
@@ -309,9 +314,14 @@ class RealFFT:
             raise ValueError(f"expected a 1-D array of length {self.size}, got shape {a.shape}")
 
     def _check_raw(self, data: np.ndarray) -> None:
+        # The ABI's raw buffers must be aligned for the native type (dsptap_capi.h): an int16
+        # view at an odd byte offset is contiguous and writeable but not aligned, so the flag
+        # is checked too.
         if (not isinstance(data, np.ndarray) or data.dtype != self.dtype or data.ndim != 1
-                or data.size != self.size or not data.flags.c_contiguous or not data.flags.writeable):
-            raise TypeError(f"raw buffers must be 1-D, contiguous, writeable {self.dtype} of length {self.size}")
+                or data.size != self.size or not data.flags.c_contiguous or not data.flags.writeable
+                or not data.flags.aligned):
+            raise TypeError(f"raw buffers must be 1-D, contiguous, aligned, writeable {self.dtype} "
+                            f"of length {self.size}")
 
     @staticmethod
     def unpack(packed: np.ndarray) -> np.ndarray:
