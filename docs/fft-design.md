@@ -796,12 +796,14 @@ rdft-reachable text, `--gc-sections`): float 15.7 KB at `-Os`, 19.9 KB at
 
 **Stage 2c (this PR): the fixed-point scenarios seeded.** Same run as the
 sizes above (35861317022 at `21b3488`), compare mode on every key: the float
-scenarios at +0.00 % against the 2b baselines on all five keys (the C is gone
-from the tree and the shipping path did not move), the three fixed-point
-scenarios recorded as new baselines (`bench/README.md`, one row per key and
-scenario). Executed guest instructions for the whole scenario binary, as for
-the float rows: 2^20 samples per direction through `forward()` + `inverse()`
-with the exponent folded after each block, construction and the checksum.
+scenarios at +0.00 % against the 2b baselines on all five keys (the C left the
+shipping tree — it remains under `tests/reference/ooura/` as the parity oracle
+until D6's condition is met — and the shipping path did not move), the three
+fixed-point scenarios recorded as new baselines (`bench/README.md`, one row
+per key and scenario). Executed guest instructions for the whole scenario
+binary, as for the float rows: 2^20 samples per direction through `forward()`
++ `inverse()` with the exponent folded after each block, construction and the
+checksum.
 
 | Scenario | `m4-softfp` | `m4f` | `m33` | `m55` | `m55-ooura` |
 |---|---|---|---|---|---|
@@ -943,7 +945,7 @@ Ooura's package in the repo is `readme.txt` at `third_party/ooura/` plus the
 reference copy of `fftsg.c` — with `fftsg_float.c`, because the float half
 of the parity gate compares against `rdft_f` and would otherwise be
 port-vs-port — under `tests/reference/ooura/`, compiled by the gate alone
-(`tests/CMakeLists.txt`) and declared to it by `tests/reference/ooura/rdft.h`.
+(`tests/CMakeLists.txt`) and declared to it by `tests/reference/ooura_rdft.h`.
 See `NOTICE.md` for exactly how the reference file differs from upstream. D6
 retires the reference copy after both MuTap and MuTap-Max pin a tree
 containing 2c; with it goes the gate (`test_fft_parity_ooura.cpp`), leaving
@@ -961,25 +963,94 @@ attribution is carried by the banner and the notices, not the identifier.
 
 ### Consumer follow-ups
 
-Ride the pin bumps; none is DspTap's to make.
+Ride the pin bumps; none is DspTap's to make. Line numbers below were read
+from MuTap `origin/main` `0f6a7f0` and MuTap-Max `origin/main` `8850144` on
+2026-09-23 (`git show origin/main:<path>`); re-verify against the tree each
+bump starts from.
 
-- **MuTap `THIRD_PARTY_NOTICES.md`** — rewritten in the Stage 2c bump with
-  `NOTICE.md`'s statement, because the notice now lives in a header compiled
-  into every external and no `submodules/dsptap/third_party/ooura/fftsg*.c`
-  exists to cite (its Ooura section names those paths; `README.md`'s tree
-  listing and `docs/optimization.md` cite `third_party/ooura/` too). The
-  Stage 2c PR body carries the replacement text.
+- **MuTap `.github/workflows/ci.yml`**, job `branchless-parity` (lines
+  360–392; its `run:` block starts at 369) — compiles
+  `submodules/dsptap/third_party/ooura/fftsg*.c` by path, so it breaks by
+  construction at the 2c bump (the files moved) and is rewritten header-only.
+  What changes, all inside the `run:` block:
+  - lines 373–375, the comment "Compiles DspTap's C by path; Stage 2c (P18)
+    rewrites this job when the C goes. Ooura is C: compile with gcc so g++
+    does not name-mangle rdft/rdft_f." — goes (this is that rewrite);
+  - lines 376–377, `gcc -O2 -c submodules/dsptap/third_party/ooura/fftsg.c -o
+    /tmp/fftsg.o` and `gcc -O2 -c
+    submodules/dsptap/third_party/ooura/fftsg_float.c -o /tmp/fftsg_float.o`
+    — go;
+  - line 380, the `g++` line: `/tmp/fftsg.o /tmp/fftsg_float.o` — go, so the
+    compile line reads `g++ -std=c++20 -O2 -DMUTAP_SUPPRESSOR_BRANCHLESS=$bl
+    -Iinclude -Isubmodules/dsptap/include tests/fingerprint_harness.cpp -o
+    /tmp/parity_$bl` (the harness is `tests/fingerprint_harness.cpp`; it
+    never references `rdft`/`rdft_f`, and hostile review B of tap/DspTap#32
+    verified that it compiles, links and runs header-only against this tree
+    for `bl=0/1` with the 14 `FINGERPRINT` lines identical).
+
+  Nothing replaces the dropped lines: the job's subject is the suppressor's
+  two forms, which never needed the C after 2b; DspTap's own parity gate is
+  the C-vs-port check. Not recommended: compiling the reference files from
+  `submodules/dsptap/tests/reference/ooura/`, which would re-couple MuTap CI
+  to a test fixture D6 deletes.
+- **MuTap `THIRD_PARTY_NOTICES.md`** — rewritten with `NOTICE.md`'s
+  statement, because the notice now lives in a header compiled into every
+  external and no `submodules/dsptap/third_party/ooura/fftsg*.c` exists to
+  cite: line 10 ("the Ooura FFT, which compiles into every consumer via
+  `MuTap::fft`") becomes "via the header `tap::dsp` provides"; the section
+  "Ooura FFT — `third_party/ooura/fftsg.c`" (lines 16–30) names what ships
+  (the C++20 port `submodules/dsptap/include/tap/dsp/fft/split_radix.h`, a
+  derivative work under `LicenseRef-Ooura AND MIT` whose redistribution
+  relies on the modification grant), quotes the notice verbatim, points at
+  `submodules/dsptap/third_party/ooura/readme.txt`, drops the "permissive
+  grant" sentence (lines 28–30) and names the reference C under
+  `submodules/dsptap/tests/reference/ooura/` as not shipped.
+- **MuTap `README.md`** — lines 8–10, "Header-only C++20 apart from one tiny
+  static target (`MuTap::fft`, the vendored Ooura `fftsg.c`)", is false twice
+  over after 2c (MuTap's CMake has no `MuTap::fft` target and nothing
+  compiled ships): "Header-only C++20." Line 375 of the tree listing,
+  `third_party/ooura/   vendored Ooura FFT (see THIRD_PARTY_NOTICES.md)`,
+  is re-pointed at what the submodule carries (the port under
+  `submodules/dsptap/include/tap/dsp/fft/`, the readme at
+  `submodules/dsptap/third_party/ooura/readme.txt`).
+- **MuTap `docs/optimization.md`** — line 15 cites "DspTap's
+  `third_party/ooura/fftsg_float.c`" for the autovectorization measurement;
+  that was the vendored C at that pin, so it is cited as history ("the
+  vendored Ooura C, since replaced by the bit-identical port
+  `fft/split_radix.h`"), not by a path that no longer exists.
 - **MuTap `docs/itu-compliance.md`** — the glossary line above, at the
   Stage 2b bump.
-- **MuTap `ci.yml`** (the `branchless-parity` job, which compiles
-  `submodules/dsptap/third_party/ooura/fftsg*.c` by path, lines 319–324) —
-  breaks by construction at the 2c bump (the files moved) and is rewritten
-  header-only: the two `gcc -c` lines and the two object files on the `g++`
-  line go, nothing replaces them (the job's subject is the suppressor's two
-  forms, which never needed the C after 2b; DspTap's own parity gate is the
-  C-vs-port check). The Stage 2c PR body carries the replacement job text.
-- **MuTap-Max** — picks everything up transitively through MuTap; nothing to
-  write unless it redistributes `NOTICE.md` separately.
+- **MuTap CMake** — no change: MuTap links `tap::dsp`, now INTERFACE-only,
+  and never named `tap_dsp_fft`/`tap::dsp_fft` (grepped; MuTap-Max neither),
+  so no alias is kept.
+- **MuTap-Max** — audit Part 4 keeps MuTap-Max's per-external comments
+  "until a bump proves they can go", and Part 8 item 7 asks for that proof;
+  this PR is it: with `TAP_DSP_FFT_CMSIS` off (every MuTap-Max build)
+  `tap::dsp` is a pure INTERFACE target with no C source under it (consumer
+  link line `c++ -O3 -DNDEBUG main.cpp.o -o consumer`, no `.a` under the
+  subdirectory). At the MuTap-Max re-pin, on `origin/main` `8850144`:
+  - comments premised on a compiled Ooura target, to drop or rewrite as
+    "header-only; `tap::dsp` is INTERFACE": `CMakeLists.txt` lines 74–75
+    ("Header-only apart from the vendored Ooura FFT (MuTap::fft), which the
+    `mutap` interface target carries") and 83–84 ("`mutap` (interface
+    target: headers + cxx_std_20 + MuTap::fft)", "`MuTap::fft` (the vendored
+    Ooura rdft the FDAF core calls)"), and
+    `source/projects/mutap.aec_tilde/CMakeLists.txt` /
+    `mutap.afc_tilde/CMakeLists.txt` lines 22–24 ("tap::dsp (the vendored
+    Ooura rdft that tap::mu::basic_real_fft calls)");
+  - two Windows workarounds whose stated reason is gone, to re-justify or
+    remove in the bump's Windows build: `CMakeLists.txt` lines 21–25,
+    `CMAKE_MSVC_RUNTIME_LIBRARY` forced to the static CRT "because the MuTap
+    core's Ooura FFT target uses CMP0091-NEW, so it would otherwise default
+    to the dynamic /MD and clash (LNK4098)" — no policy-NEW compiled target
+    exists under `tap::dsp` any more; if min-api or another target still
+    needs it the comment says which, otherwise the line goes; and lines
+    29–34, `/FIalgorithm` guarded to `COMPILE_LANGUAGE:CXX` because
+    "force-including a C++ STL header into the C sources (Ooura FFT) trips
+    STL1003" — no C TU remains under `tap::dsp`; keep the guard only if
+    another C source is in the build, and reword the comment either way;
+  - notices: nothing to write unless MuTap-Max redistributes `NOTICE.md`
+    separately (it picks the notice up transitively through MuTap).
 
 ### The licensing statement
 
