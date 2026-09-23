@@ -86,9 +86,9 @@ parity suite runs for real. Each leg builds `tap_dsp_tests` one-shot (`tests/bar
 with the `MAIN_FILTER` in `tests/CMakeLists.txt` naming what the emulation budget excludes, plus
 the FFT parity gate at `TAP_DSP_PARITY_MAX_N=4096`. The instruction-count ratchet (`bench.yml`,
 `bench/README.md`) runs the same four cores under five baseline keys at ±3 %, with `.text`
-ceilings per profile; a red ratchet is a failing check. No Arm toolchain is needed locally —
-`cmake -S . -B build-m33 -DCMAKE_TOOLCHAIN_FILE=cmake/arm-cortex-m33-mps2.cmake` reproduces a leg
-where `gcc-arm-none-eabi` and QEMU are installed.
+ceilings per profile; a red ratchet is a failing check. The hosted build and battery need no Arm
+toolchain; where `gcc-arm-none-eabi` and `qemu-system-arm` are installed,
+`cmake -S . -B build-m33 -DCMAKE_TOOLCHAIN_FILE=cmake/arm-cortex-m33-mps2.cmake` reproduces a leg.
 
 ## Verification layer (C ABI + notebooks)
 

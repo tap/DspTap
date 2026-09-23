@@ -19,7 +19,7 @@ project(DspTap VERSION 0.1.0 LANGUAGES C CXX)
 # (docs/audit-fft-and-code-smells.md, Part 3; Decision D6) no vendored C is
 # compiled into what ships: the reference copy of Ooura's fftsg.c lives under
 # tests/reference/ooura/ and is compiled only by the parity gate in tests/.
-# The one compiled object library, tap_dsp_fft, exists only when
+# The one compiled (static) library, tap_dsp_fft, exists only when
 # TAP_DSP_FFT_CMSIS is ON and carries the CMSIS-DSP objects (below).
 # ==============================================================================
 
