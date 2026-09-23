@@ -226,15 +226,15 @@ namespace tap::dsp::test {
     inline constexpr std::array<double_row, 1> k_double_rows{{
         {"x64 MSVC, UCRT", {{
             TAP_DSP_FINGERPRINT_DOUBLE_TO_64,
-            {0, 0},                                         //   128
+            {0xf94fa452b6b6631bull, 0x73c4adb6801f242aull}, //   128
             {0xcabb356393c2dac7ull, 0x5c0eeb0579868a88ull}, //   256
-            {0, 0},                                         //   512
-            {0, 0},                                         //  1024
-            {0, 0},                                         //  2048
+            {0x5563d637de5e961dull, 0x10e1a0bd60bce082ull}, //   512
+            {0xdd44bf873268ba83ull, 0xabc8af10c100bee6ull}, //  1024
+            {0xe8a241c435bb2601ull, 0xca0d22bb81356f5aull}, //  2048
             {0x4e0db6e49731d286ull, 0xbcbcc885236c3585ull}, //  4096
-            {0, 0},                                         //  8192
-            {0, 0},                                         // 16384
-            {0, 0},                                         // 32768
+            {0x25213b8387ce17dfull, 0x184a6995c63e5507ull}, //  8192
+            {0x2e24dc611386f95aull, 0xb6f8aab7dc17962dull}, // 16384
+            {0x128e42969938f8d4ull, 0x1fdf8d272bf2b6a1ull}, // 32768
             {0xb02d408a57e2ebdeull, 0x288c58dad9580f4bull}, // 65536
         }}},
     }};
@@ -243,15 +243,15 @@ namespace tap::dsp::test {
     inline constexpr std::array<double_row, 1> k_double_rows{{
         {"arm64 macOS", {{
             TAP_DSP_FINGERPRINT_DOUBLE_TO_64,
-            {0, 0},                                         //   128
+            {0xf94fa452b6b6631bull, 0x73c4adb6801f242aull}, //   128
             {0x1a682072ef54d745ull, 0xa9e60433894b7013ull}, //   256
-            {0, 0},                                         //   512
-            {0, 0},                                         //  1024
-            {0, 0},                                         //  2048
+            {0xd0a19e500f844c5cull, 0x76d38e82464248afull}, //   512
+            {0x5cb137231c0a46e9ull, 0xff6e0741acfebeb3ull}, //  1024
+            {0x379d6b9eef0fbe66ull, 0xf80a8d3a5cf07d68ull}, //  2048
             {0x7909ca3d02d78252ull, 0x4a9a5c439158323dull}, //  4096
-            {0, 0},                                         //  8192
-            {0, 0},                                         // 16384
-            {0, 0},                                         // 32768
+            {0xdab35c43e9136ed6ull, 0x503f3b059e7ac263ull}, //  8192
+            {0xbb8b79e8470c05cfull, 0x0496245fe2a1a0e4ull}, // 16384
+            {0x588bd3585488aef2ull, 0x032c156afe537e02ull}, // 32768
             {0xbae4e82f8d79d549ull, 0xbfa3a82a87bbe16dull}, // 65536
         }}},
     }};
