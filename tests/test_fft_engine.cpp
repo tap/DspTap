@@ -262,8 +262,10 @@ namespace {
         for (std::size_t i = 0; i < n; ++i) {
             worst = std::fmax(worst, std::fabs(back[i] - x[i]));
         }
-        std::printf("[ measured ] ConstructsAtTheRangeBounds: %s N=%zu worst |back - x| = %.3e (pin %.3e)\n",
-                    typeid(typename Fft::engine).name(), n, static_cast<double>(worst),
+        // %lu with a cast rather than %zu: newlib's printf on the QEMU legs
+        // does not parse %zu and shifts the arguments that follow it.
+        std::printf("[ measured ] ConstructsAtTheRangeBounds: %s N=%lu worst |back - x| = %.3e (pin %.3e)\n",
+                    typeid(typename Fft::engine).name(), static_cast<unsigned long>(n), static_cast<double>(worst),
                     static_cast<double>(k_round_trip_pin));
         EXPECT_LT(worst, k_round_trip_pin) << "n=" << n;
     }
