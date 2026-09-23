@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <numbers>
 #include <vector>
 
 #include "tap/dsp/fft.h"
@@ -131,8 +132,7 @@ double tap_dsp_abi_image_pvoc_checksum() {
     double           sum = 0.0;
     for (std::size_t i = 0; i < 8 * k_n; ++i) {
         const float x =
-            0.5f
-            * static_cast<float>(std::sin(2.0 * 3.14159265358979323846 * 440.0 * static_cast<double>(i) / 48000.0));
+            0.5f * static_cast<float>(std::sin(2.0 * std::numbers::pi * 440.0 * static_cast<double>(i) / 48000.0));
         sum += static_cast<double>(shifter.process(x, 1.5f));
     }
     return sum;
@@ -148,7 +148,7 @@ double tap_dsp_abi_image_log_mel_checksum() {
             const std::size_t t = frame * g.hop + i;
             hop[i]              = 0.25f
                      * static_cast<float>(
-                         std::sin(2.0 * 3.14159265358979323846 * 1000.0 * static_cast<double>(t) / g.sample_rate));
+                         std::sin(2.0 * std::numbers::pi * 1000.0 * static_cast<double>(t) / g.sample_rate));
         }
         front_end.process_hop(hop.data(), features.data());
         for (const float f : features) {

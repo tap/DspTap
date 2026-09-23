@@ -322,8 +322,6 @@ target_link_libraries(tap_dsp_analysis_typed PRIVATE
 # bare metal. icount_main.cpp is listed twice, floating (precision 0) and fixed
 # point (precision 2), because its body is two preprocessor branches and
 # clang-tidy checks every compile command a file has.
-# =======================================================================# ==============================================================================
-
 # ==============================================================================
 if(NOT TAP_DSP_BARE_METAL)
     # Each entry is name:path-from-the-project-root:definition ("-" for none).
@@ -367,7 +365,9 @@ if(NOT TAP_DSP_BARE_METAL)
 endif()
 # ==============================================================================
 # END Stage 6 addition
-=======
+# ==============================================================================
+
+# ==============================================================================
 # BEGIN Stage 4 addition (docs/audit-fft-and-code-smells.md, D4; audit F4): the
 # two-image test of the ABI tag. One translation unit, tests/abi/abi_tag_image.cpp,
 # built into two loadable modules — image A with the configured build's own
