@@ -203,8 +203,10 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     /// engine beside the accelerated default in the same binary, which is
     /// what makes engine parity a test rather than a CI-matrix property),
     /// basic_real_fft<std::int16_t> / <std::int32_t, scaling::block_floating>
-    /// (the fixed-point profiles, unchanged), and basic_real_fft<float,
-    /// scaling::fixed> / <double, scaling::fixed>, the spelling all four
+    /// (the fixed-point profiles, unchanged; note that `int` is std::int32_t
+    /// on every CI target, so basic_real_fft<int> compiles and IS the Q31
+    /// profile — the docstrings say std::int32_t and mean it), and
+    /// basic_real_fft<float, scaling::fixed> / <double, scaling::fixed>, the spelling all four
     /// profiles shared before Stage 4 (the capi's generic seam writes it):
     /// for a floating Sample, scaling::fixed in the second position names the
     /// selected engine. That legacy spelling is a distinct type from
@@ -255,12 +257,18 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///     are built in the constructor and its transforms are const) and for
     ///     Q31 (no mutable state during a transform); false for the two
     ///     accelerated engines (per-object scratch) and for Q15 (the int32
-    ///     work buffer behind the in-place int16 API). A shareable engine's
-    ///     transforms are const, and the class static_asserts that, so the
-    ///     trait is compiler-checked; this class's own transforms stay
+    ///     work buffer behind the in-place int16 API). Shareable IMPLIES
+    ///     const: a shareable engine's transforms are const, and the class
+    ///     static_asserts that, so that half of the trait is
+    ///     compiler-checked. The converse is not asserted — an engine may
+    ///     declare const transforms over mutable scratch and say
+    ///     k_is_shareable = false, which is honest — and is a convention the
+    ///     tests pin: for the six shipped instantiations const and shareable
+    ///     coincide (`ShareabilityIsTheHeadersNumber`, tests/test_fft_rt.cpp
+    ///     and tests/test_fft_engine.cpp). This class's own transforms stay
     ///     non-const on every profile (audit N11: the public API's constness
     ///     must not depend on the selected engine) — the trait, not the
-    ///     signature, is the statement. `ShareabilityIsTheHeadersNumber`.
+    ///     signature, is the statement.
     ///
     /// The ABI tag (Stage 4, audit F4). basic_real_fft<float>'s layout follows
     /// the selected engine (its m_engine IS the engine), and so does the

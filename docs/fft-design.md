@@ -806,12 +806,17 @@ instead of carrying the CMSIS range under `#if`.
 
 `k_is_shareable` (the plan's `is_shareable`, under the house `k_` prefix):
 split-radix true, Q31 true, vDSP / CMSIS / Q15 false. Decision on constness
-across engines: an engine's transforms are `const` exactly when it is
-shareable, and the class `static_assert`s it, so the trait is what the
-compiler sees rather than a comment — the Q31 fixed-point transforms became
-`const` behind `requires`-constrained overloads (`k_widens` selects the
-Q15 pair, which goes through the per-object work buffer and stays
-non-const). The class's own transforms stay non-const on every profile
+across engines: **shareable implies const** — a shareable engine's
+transforms are `const`, and the class `static_assert`s it, so that half of
+the trait is what the compiler sees rather than a comment; the converse is
+not asserted (an engine with const transforms over `mutable` scratch that
+says `k_is_shareable = false` is accepted, and honest) and is a convention
+the tests pin: for the six shipped instantiations const and shareable
+coincide (`test_fft_rt.cpp`, `test_fft_engine.cpp`). The Q31 fixed-point
+transforms became `const` behind `requires`-constrained overloads
+(`k_widens` selects the Q15 pair, which goes through the per-object work
+buffer and stays non-const). Also noted (35a/F7): `int` is `std::int32_t` on
+every CI target, so `basic_real_fft<int>` compiles and is the Q31 profile. The class's own transforms stay non-const on every profile
 (audit N11: the public API's constness must not depend on the selected
 engine). The `std::span` overloads Part 9 listed were not added: Stage 4
 added no overload to the transform surface, so there is nothing to equate

@@ -14,9 +14,11 @@ RatioTap:
 `W = exp(+2πi/N)` sign convention, the unnormalized in-place inverse, the
 numbers in the tables below — over four sample types, with the engine behind
 each floating profile a **template parameter** since Stage 4 of the audit
-(`basic_real_fft<Sample, Engine = default_real_fft_engine_t<Sample>>`; the
-default is chosen once by the sample type and the build, and any engine can
-be named explicitly beside it in the same binary), and each engine stating
+(`basic_real_fft<Sample, Policy = detail::default_real_fft_policy_t<Sample>>`,
+where the second argument is the engine for `float` / `double` — defaulting
+to `default_real_fft_engine_t<Sample>`, chosen once by the sample type and
+the build — and the scaling policy for Q15 / Q31; any engine can be named
+explicitly beside the default in the same binary), and each engine stating
 its size range and shareability as contract numbers:
 
 | Engine | Profiles | Selected by | Size range | Shareable | What it is |

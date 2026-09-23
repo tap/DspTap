@@ -25,7 +25,13 @@
 // substitute its own policy (a release-mode terminate, a logging hook). The
 // definition must be the same in every translation unit of an image: the
 // macro expands inside inline and template functions, and two definitions
-// in one image are an ODR violation.
+// in one image are an ODR violation. Across images the same shape recurs
+// as the cross-image hazard fft.h describes for layouts (audit F4), here
+// code-only: two images that define TAP_EXPECTS differently and both
+// instantiate the same inline function export two weak definitions under
+// one name, and a loader that coalesces them makes one image run the
+// other's precondition policy. Same remedy: keep the definition uniform
+// across the images of one process, or hide visibility.
 
 #pragma once
 
