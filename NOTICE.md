@@ -1,14 +1,15 @@
 # Third-party notices
 
-DspTap's own code — everything outside `third_party/` and the two Ooura
-files under `tests/reference/ooura/` (`fftsg.c`, `fftsg_float.c`; the
-directory-local `.clang-format` beside them and the declaration header
+DspTap's own code — everything outside `third_party/` and the one Ooura file
+under `tests/reference/ooura/` (`fftsg.c`; `fftsg_float.c` beside it, which
+is `#define` renames around `#include "fftsg.c"` and carries no Ooura text,
+the directory-local `.clang-format` beside them and the declaration header
 `tests/reference/ooura_rdft.h` above them are DspTap's): `include/tap/dsp/`,
 `tests/`, `tools/`, `notebooks/`, `bench/`, `scripts/`, `cmake/`, `platform/`
 (the bare-metal startup file and linker scripts the QEMU legs link, carried
-from MuTap's MIT copies; `platform/README.md` records their origin), `docs/`
-and the build files — is licensed under the MIT License — see
-[`LICENSE`](LICENSE).
+from, or written beside, MuTap's MIT copies; `platform/README.md` records
+their origin), `docs/` and the build files — is licensed under the MIT
+License — see [`LICENSE`](LICENSE).
 
 It bundles the following third-party code, each retaining its own license
 text:
@@ -18,7 +19,7 @@ text:
 - Paths: `third_party/ooura/readme.txt` (the package's readme: the only
   upstream license text, kept at this path permanently) and, **outside the
   shipping tree**, `tests/reference/ooura/` (`fftsg.c`, the split-radix "Fast
-  Version III", and `fftsg_float.c`, a 65-line DspTap wrapper that
+  Version III", and beside it `fftsg_float.c`, DspTap's own MIT wrapper that
   `#include`s it under a type remap): the reference copy that the parity gate
   `tests/test_fft_parity_ooura.cpp` compiles and compares the shipping C++20
   port against. Nothing that ships compiles these two files; since Stage 2c
