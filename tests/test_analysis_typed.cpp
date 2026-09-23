@@ -23,6 +23,7 @@
 #include <cstring>
 #include <numbers>
 #include <span>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -56,7 +57,15 @@ namespace {
     // the header is the bare cast the legacy code evaluated (the first
     // version multiplied by an exact 1.0 step, and the macOS arm64 leg moved
     // residual_rms by one ulp through a fused multiply-subtract), and this
-    // TU is compiled with -ffp-contract=off (file comment).
+    // TU is compiled with -ffp-contract=off (file comment). What the pass
+    // does NOT prove: the "no multiply, not even by 1.0" rule of the header
+    // is enforced by this same-binary A/B only under the flags this target
+    // compiles with. Reintroducing `* 1.0` in the floating read passes every
+    // test here under -ffp-contract=off (there is nothing to fuse) and under
+    // clang++ -mfma -ffp-contract=on on x86-64 (measured 2026-09-23); it
+    // failed only on the macOS arm64 leg at GCC-style cross-statement
+    // contraction. The rule stands on the header's comment and that record,
+    // not on a red test.
     // ------------------------------------------------------------------------
     namespace legacy {
 
@@ -322,14 +331,33 @@ namespace {
         EXPECT_LT(dc_dev_lsb, dc_max_lsb);
 
         // The scale exponent: the same block read at 2^e is the same fit at
-        // 2^e times the level (snr unchanged), for e of either sign.
+        // 2^e times the level (snr unchanged), for e of either sign, through
+        // both entry points (the tracked fit forwards the exponent to its
+        // final fit; a dropped forwarding is caught here and nowhere else),
+        // and equal in every field to the fit of the pre-scaled fractions,
+        // which is what "reported for x * 2^e" promises.
+        const double       nu_off  = nu * (1.0 + 5e-6);
+        const an::sine_fit track_q = an::fit_sine_tracked(q, nu_off);
         for (const int e : {-3, 2}) {
-            const an::sine_fit fit_e = an::fit_sine(q, nu, e);
-            const double       k     = std::ldexp(1.0, e);
-            EXPECT_TRUE(same_bits(fit_e.amplitude, fit_q.amplitude * k));
-            EXPECT_TRUE(same_bits(fit_e.residual_rms, fit_q.residual_rms * k));
-            EXPECT_TRUE(same_bits(fit_e.dc, fit_q.dc * k));
-            EXPECT_TRUE(same_bits(fit_e.phase, fit_q.phase));
+            const double k = std::ldexp(1.0, e);
+            for (const auto& [fit_e, fit_0, tracked] :
+                 {std::tuple{an::fit_sine(q, nu, e), fit_q, false},
+                  std::tuple{an::fit_sine_tracked(q, nu_off, e), track_q, true}}) {
+                EXPECT_TRUE(same_bits(fit_e.amplitude, fit_0.amplitude * k)) << "tracked " << tracked << " e " << e;
+                EXPECT_TRUE(same_bits(fit_e.residual_rms, fit_0.residual_rms * k))
+                    << "tracked " << tracked << " e " << e;
+                EXPECT_TRUE(same_bits(fit_e.dc, fit_0.dc * k)) << "tracked " << tracked << " e " << e;
+                EXPECT_TRUE(same_bits(fit_e.phase, fit_0.phase)) << "tracked " << tracked << " e " << e;
+                EXPECT_TRUE(same_bits(fit_e.freq_norm, fit_0.freq_norm)) << "tracked " << tracked << " e " << e;
+            }
+            std::vector<double> scaled = fractions(q);
+            for (double& v : scaled) {
+                v *= k;
+            }
+            EXPECT_TRUE(fits_are_bit_identical(an::fit_sine(q, nu, e), an::fit_sine(scaled, nu))) << "e " << e;
+            EXPECT_TRUE(
+                fits_are_bit_identical(an::fit_sine_tracked(q, nu_off, e), an::fit_sine_tracked(scaled, nu_off)))
+                << "e " << e;
         }
     }
 
@@ -348,6 +376,19 @@ namespace {
     // Measured 2026-09-23 (x86-64 Linux, glibc 2.39, GCC 13.3.0 -O3), 12 pink
     // tones, 32768 samples at 48 kHz, peak sum 0.5: Q15 83.86 dB, Q31
     // 180.15 dB (the float tail 151.88 dB); pinned at -1 dB.
+    //
+    // What the integer-read comparison below does and does not pin:
+    // program_weighted_snr_db is exactly scale-invariant (its result is a
+    // ratio; joint_fit_residual_power and solve_dense carry no absolute
+    // epsilon, and the value is bit-identical for tails scaled by 2^-60 ...
+    // 2^40, measured 2026-09-23), which is why it takes no exponent. The
+    // same invariance means the equality with the fractions cannot tell a
+    // Q0.15 / Q0.31 fraction read from a raw-integer read: a prologue that
+    // read `static_cast<double>(ts[i])` would pass it too. The fraction read
+    // itself is pinned by the sine tests above (their amplitude and dc are
+    // in fraction units and would be off by 2^15 / 2^31); this comparison
+    // pins that the integer instantiations go through the same double
+    // instrument, nothing more.
     TEST(MultitoneAnalysisTyped, TypedTailsMatchTheDoubleInstrumentAndReachTheirQuantisationFloor) {
         const an::tone_comb comb = an::tone_comb::pink(12, 40.0, 20000.0, 0.5);
         std::vector<double> exact(32768);

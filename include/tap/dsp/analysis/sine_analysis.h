@@ -12,18 +12,32 @@
 // Sample types (Stage 3c of docs/audit-fft-and-code-smells.md): every entry
 // point takes a contiguous range of Sample — std::span<const Sample>,
 // std::vector<Sample>, a std::array — for Sample float, double, std::int16_t
-// or std::int32_t. Floating samples are read as they are, exactly as before
-// the instruments were typed (pinned bit for bit by test_analysis_typed.cpp,
-// `FloatingSpansAreBitIdenticalToThePreTemplateInstrument`); integer samples
-// are read as Q0.15 / Q0.31 fractions of full scale through
-// sample_traits<Sample>::k_sample_frac_bits, so a Q15 converter tail or a
-// fixed-point FFT's time-domain output is scored in the same units (1.0 =
-// full scale) as the floating profiles. The optional `exponent` is for data
-// that carries a scale exponent, i.e. the output of a fixed-point real FFT
-// (fft.h): the fit is reported as if the samples were x * 2^exponent, so a
-// block-floating inverse's reconstruction is scored at its true level. The
-// fit's numbers (amplitude, dc, residual_rms) are in those fraction units;
-// snr_db is scale-free.
+// or std::int32_t (exactly those four; long double is not admitted, since it
+// would be read through a narrowing cast). Floating samples are read as they
+// are, exactly as before the instruments were typed: the float and double
+// instantiations are bit-identical to the pre-template std::span<const float>
+// instrument under -ffp-contract=off (the flag test_analysis_typed.cpp's
+// target carries, `FloatingSpansAreBitIdenticalToThePreTemplateInstrument`)
+// and on compilers that contract per statement (clang at `on` and `fast`,
+// MSVC); under GCC's default cross-statement -ffp-contract=fast on FMA
+// hardware they differ from it by at most one ulp (measured 2026-09-23,
+// g++ 13.3 -O3 -mfma: amplitude and phase of the tracked float fit each moved
+// one ulp; g++ with -ffp-contract=off, g++ without FMA, and clang++ -mfma at
+// `on` and `fast` were identical). Integer samples are read as Q0.15 / Q0.31
+// fractions of full scale through sample_traits<Sample>::k_sample_frac_bits,
+// so a Q15 converter tail or a fixed-point FFT's time-domain output is scored
+// in the same units (1.0 = full scale) as the floating profiles. The optional
+// `exponent` is for data that carries a scale exponent, i.e. the output of a
+// fixed-point real FFT (fft.h): the fit is reported as if the samples were
+// x * 2^exponent, so a block-floating inverse's reconstruction is scored at
+// its true level. The fit's numbers (amplitude, dc, residual_rms) are in
+// those fraction units; snr_db is scale-free.
+//
+// Source compatibility: every call site that passed a std::span<const float>,
+// a vector or an array by name still compiles unchanged. The one shape that
+// no longer deduces is a braced span built in the call, `fit_sine({ptr, n},
+// nu)`; spell it `fit_sine(std::span<const float>(ptr, n), nu)`. No caller in
+// DspTap or MuTap used it.
 //
 // How the read is done matters for bit identity, so it is stated: a
 // floating sample enters the arithmetic as the bare static_cast<double> it
@@ -35,6 +49,13 @@
 // into a later add cannot change a bit either); and the exponent is applied
 // to the three magnitude fields after the fit, an exact power-of-two scale,
 // never to the samples. The hot loops stay the plain double loops they were.
+//
+// Includes: the range concept is written over std::data / std::size, which
+// <span> already provides ([iterator.range]), rather than over <ranges> or
+// <iterator>: measured on one TU including only this header (-std=c++20 -O2
+// -c, best of three, 2026-09-23), g++ 13.3 takes 0.19 s on the pre-Stage-3c
+// header, 0.40 s with <ranges>, 0.35 s with <iterator> and 0.19 s as written;
+// clang++ 18.1 0.23 / 0.58 / 0.44 / 0.23 s.
 #pragma once
 
 #include <cmath>
@@ -42,8 +63,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <numbers>
-#include <ranges>
 #include <span>
+#include <type_traits>
+#include <utility>
 
 #include "tap/dsp/sample_traits.h"
 
@@ -51,17 +73,30 @@ namespace tap::dsp::analysis {
 
     /// The sample types the instruments read: float and double as they are,
     /// std::int16_t and std::int32_t as Q0.15 / Q0.31 fractions of full scale.
+    /// Exactly these four: long double is not admitted (it would be narrowed).
     template <typename Sample>
-    concept analysis_sample =
-        std::floating_point<Sample> || std::same_as<Sample, std::int16_t> || std::same_as<Sample, std::int32_t>;
+    concept analysis_sample = std::same_as<Sample, float> || std::same_as<Sample, double>
+                              || std::same_as<Sample, std::int16_t> || std::same_as<Sample, std::int32_t>;
+
+    /// The element type a contiguous range holds, from what std::data(r) points at.
+    template <typename R>
+    using range_sample_t = std::remove_cv_t<std::remove_pointer_t<decltype(std::data(std::declval<const R&>()))>>;
 
     /// A contiguous, sized range of analysis samples (std::span<const Sample>,
-    /// std::vector<Sample>, std::array<Sample, N>, ...): what every instrument
-    /// entry point takes, so a caller passes its buffer without spelling the
-    /// span, and a std::span<const Sample> subrange still deduces.
+    /// std::vector<Sample>, std::array<Sample, N>, a C array, ...): what every
+    /// instrument entry point takes, so a caller passes its buffer without
+    /// spelling the span, and a std::span<const Sample> subrange still
+    /// deduces. Spelled over std::data / std::size, which <span> provides
+    /// ([iterator.range]): a type whose std::data yields a pointer to its
+    /// elements and whose std::size yields their count is contiguous by that
+    /// contract, so the header pulls neither <ranges> nor <iterator> (whose
+    /// std::contiguous_iterator would restate it); each costs more to compile
+    /// than the rest of this header (file comment).
     template <typename R>
-    concept analysis_range = std::ranges::contiguous_range<R> && std::ranges::sized_range<R>
-                             && analysis_sample<std::remove_cv_t<std::ranges::range_value_t<R>>>;
+    concept analysis_range = requires(const R& r) {
+        { std::data(r) } -> std::convertible_to<const range_sample_t<R>*>;
+        { std::size(r) } -> std::convertible_to<std::size_t>;
+    } && analysis_sample<range_sample_t<R>>;
 
     namespace detail {
 
@@ -110,8 +145,7 @@ namespace tap::dsp::analysis {
         /// The range as a std::span<const Sample>.
         template <analysis_range R>
         auto as_span(const R& x) noexcept {
-            using sample = std::remove_cv_t<std::ranges::range_value_t<R>>;
-            return std::span<const sample>(std::ranges::data(x), std::ranges::size(x));
+            return std::span<const range_sample_t<R>>(std::data(x), static_cast<std::size_t>(std::size(x)));
         }
 
     } // namespace detail
@@ -198,8 +232,9 @@ namespace tap::dsp::analysis {
     /// off the nominal ratio; a rigid fixed-frequency fit would book that
     /// (inaudible) offset as residual. Tracking the fundamental is standard
     /// THD-analyzer practice.
-    /// @param x, exponent  as for fit_sine
+    /// @param x                as for fit_sine
     /// @param freq_norm_guess  the nominal frequency in cycles per sample; the fit refines it
+    /// @param exponent         as for fit_sine
     template <analysis_range R>
     sine_fit fit_sine_tracked(const R& x, double freq_norm_guess, int exponent = 0) {
         const auto        xs   = detail::as_span(x);
