@@ -9,29 +9,23 @@
 
 #include <cmath>
 #include <cstdint>
+#include <numbers>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "support/pitch.h"
 #include "tap/dsp/psola.h"
 #include "tap/dsp/yin.h"
 
 namespace {
 
-    constexpr double k_pi = 3.14159265358979323846;
-    constexpr double k_sr = 48000.0;
+    using tap::dsp::test::cents;
+    using tap::dsp::test::measure_hz;
+    using tap::dsp::test::run_sine;
+    using tap::dsp::test::tail_peak;
 
-    template <typename Sample>
-    std::vector<Sample> run_sine(tap::dsp::basic_psola<Sample>& shifter, double freq, double ratio, double seconds) {
-        const int           n      = static_cast<int>(seconds * k_sr);
-        const Sample        period = static_cast<Sample>(k_sr / freq);
-        std::vector<Sample> out(static_cast<size_t>(n));
-        for (int t = 0; t < n; ++t) {
-            const Sample x              = static_cast<Sample>(std::sin(2.0 * k_pi * freq * t / k_sr));
-            out[static_cast<size_t>(t)] = shifter.process(x, period, static_cast<Sample>(ratio));
-        }
-        return out;
-    }
+    constexpr double k_sr = 48000.0;
 
     /// Band-limited sawtooth normalized to peak 1 — the harmonic-rich, voice-like
     /// material PSOLA is designed for (its spectral-envelope resampling needs
@@ -45,7 +39,7 @@ namespace {
         double              peak = 0.0;
         for (int t = 0; t < n; ++t) {
             for (int h = 1; h <= harmonics; ++h) {
-                wave[static_cast<size_t>(t)] += std::sin(2.0 * k_pi * freq * h * t / k_sr) / h;
+                wave[static_cast<size_t>(t)] += std::sin(2.0 * std::numbers::pi * freq * h * t / k_sr) / h;
             }
             peak = std::max(peak, std::abs(wave[static_cast<size_t>(t)]));
         }
@@ -55,33 +49,6 @@ namespace {
             out[static_cast<size_t>(t)] = shifter.process(x, period, static_cast<Sample>(ratio));
         }
         return out;
-    }
-
-    template <typename Sample>
-    double measure_hz(const std::vector<Sample>& x) {
-        const size_t        tau_min = static_cast<size_t>(k_sr / 2000.0);
-        const size_t        tau_max = static_cast<size_t>(std::ceil(k_sr / 55.0));
-        tap::dsp::yin       det(tau_max, tau_min, tau_max);
-        std::vector<double> tail(det.frame_size());
-        for (size_t i = 0; i < tail.size(); ++i) {
-            tail[i] = static_cast<double>(x[x.size() - tail.size() + i]);
-        }
-        const auto r = det.analyze(tail.data());
-        EXPECT_TRUE(r.voiced());
-        return (r.period > 0.0) ? k_sr / r.period : 0.0;
-    }
-
-    template <typename Sample>
-    double tail_peak(const std::vector<Sample>& x, size_t samples = 4800) {
-        double peak = 0.0;
-        for (size_t i = x.size() - samples; i < x.size(); ++i) {
-            peak = std::max(peak, std::abs(static_cast<double>(x[i])));
-        }
-        return peak;
-    }
-
-    double cents(double f, double ref) {
-        return 1200.0 * std::log2(f / ref);
     }
 
     template <typename Sample>
@@ -98,8 +65,8 @@ namespace {
 
     TYPED_TEST(psola_test, IdentityRatioPreservesFrequencyAndLevel) {
         tap::dsp::basic_psola<TypeParam> shifter(900);
-        const auto                       out = run_sine(shifter, 220.0, 1.0, 1.0);
-        EXPECT_LT(std::abs(cents(measure_hz(out), 220.0)), 3.0);
+        const auto                       out = run_sine(shifter, 220.0, 1.0, 1.0, k_sr);
+        EXPECT_LT(std::abs(cents(measure_hz(out, k_sr), 220.0)), 3.0);
         EXPECT_GT(tail_peak(out), 0.85);
         EXPECT_LT(tail_peak(out), 1.15);
     }
@@ -108,7 +75,7 @@ namespace {
         for (const double ratio : {0.5, 0.8, 1.122462, 1.5, 2.0}) {
             tap::dsp::basic_psola<TypeParam> shifter(900);
             const auto                       out = run_saw(shifter, 150.0, ratio, 1.0);
-            EXPECT_LT(std::abs(cents(measure_hz(out), 150.0 * ratio)), 8.0) << "ratio " << ratio;
+            EXPECT_LT(std::abs(cents(measure_hz(out, k_sr), 150.0 * ratio)), 8.0) << "ratio " << ratio;
             EXPECT_GT(tail_peak(out), 0.4) << "ratio " << ratio;
             // Downshifts concentrate the resampled envelope's harmonics and can
             // legitimately exceed the source peak; bound generously.
@@ -122,7 +89,7 @@ namespace {
         // all but vanishes. This is PSOLA being PSOLA (formant preservation),
         // not a defect — pinned so a change in this behavior is noticed.
         tap::dsp::basic_psola<TypeParam> shifter(900);
-        const auto                       out = run_sine(shifter, 220.0, 2.0, 1.0);
+        const auto                       out = run_sine(shifter, 220.0, 2.0, 1.0, k_sr);
         EXPECT_LT(tail_peak(out), 0.1);
     }
 
@@ -131,7 +98,7 @@ namespace {
         // Deliberately mismatched period (the caller's tracker can be wrong):
         // the shifter must stay bounded and finite regardless.
         for (int t = 0; t < 48000; ++t) {
-            const TypeParam x = static_cast<TypeParam>(std::sin(2.0 * k_pi * 300.0 * t / k_sr));
+            const TypeParam x = static_cast<TypeParam>(std::sin(2.0 * std::numbers::pi * 300.0 * t / k_sr));
             const TypeParam y = shifter.process(x, TypeParam(700), TypeParam(1.3));
             ASSERT_TRUE(std::isfinite(static_cast<double>(y)));
             ASSERT_LT(std::abs(static_cast<double>(y)), 4.0);
@@ -140,7 +107,7 @@ namespace {
 
     TYPED_TEST(psola_test, ClearZerosTheState) {
         tap::dsp::basic_psola<TypeParam> shifter(900);
-        run_sine(shifter, 220.0, 1.5, 0.25);
+        run_sine(shifter, 220.0, 1.5, 0.25, k_sr);
         shifter.clear();
         for (size_t i = 0; i < shifter.latency(); ++i) {
             EXPECT_EQ(shifter.process(TypeParam(0), TypeParam(218), TypeParam(1.5)), TypeParam(0));
@@ -175,7 +142,7 @@ namespace {
             }
             double x = 0.0;
             for (int h = 1; h <= 20; ++h) {
-                x += std::sin(2.0 * k_pi * 150.0 * h * t / k_sr) / h;
+                x += std::sin(2.0 * std::numbers::pi * 150.0 * h * t / k_sr) / h;
             }
             const TypeParam xs = static_cast<TypeParam>(x / 3.6);
             const double    a  = static_cast<double>(ref.process(xs, period, TypeParam(1.5)));
@@ -191,8 +158,8 @@ namespace {
         tap::dsp::psola32 fast(900);
         const auto        od = run_saw(gold, 150.0, 1.5, 1.0);
         const auto        of = run_saw(fast, 150.0, 1.5, 1.0);
-        const double      fd = measure_hz(od);
-        const double      ff = measure_hz(of);
+        const double      fd = measure_hz(od, k_sr);
+        const double      ff = measure_hz(of, k_sr);
         EXPECT_NEAR(ff, fd, fd * 1e-3);
     }
 

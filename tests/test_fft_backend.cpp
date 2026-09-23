@@ -37,10 +37,12 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <numbers>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "support/signals.h"
 #include "tap/dsp/fft.h"
 #include "tap/dsp/fft/split_radix.h"
 
@@ -61,13 +63,10 @@ namespace {
     };
 
     std::vector<float> broadband(int n, unsigned seed) {
-        std::vector<float> x(static_cast<size_t>(n));
-        unsigned           s = seed;
+        std::vector<float>         x(static_cast<size_t>(n));
+        tap::dsp::test::xorshift32 rng(seed);
         for (auto& v : x) {
-            s ^= s << 13;
-            s ^= s >> 17;
-            s ^= s << 5;
-            v = (static_cast<float>(s) / 2147483648.0f - 1.0f) * 0.1f;
+            v = rng.next_unit_f() * 0.1f;
         }
         return x;
     }
@@ -227,7 +226,7 @@ namespace {
     // accurate kernel, this fails loudly instead of degrading in silence.
     TEST_P(fft_tonal_accuracy, EmptyBinsTrackADoubleReference) {
         const int    n  = GetParam();
-        const double pi = 3.14159265358979323846;
+        const double pi = std::numbers::pi;
 
         // Exactly on bin n/16, so no leakage lifts the empty bins above the
         // noise floor and hides the effect.

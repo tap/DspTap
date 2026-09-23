@@ -19,6 +19,7 @@
 
 #include "reference/frontend_vectors.h"
 #include "reference/frontend_vectors_tuned.h"
+#include "support/signals.h"
 #include "tap/dsp/log_mel.h"
 
 namespace {
@@ -41,21 +42,6 @@ namespace {
     constexpr tone k_tones[] = {{150.0, 0.30},  {440.0, 0.25},  {1000.0, 0.20},
                                 {2500.0, 0.15}, {4000.0, 0.10}, {6500.0, 0.05}};
 
-    class xorshift32 {
-      public:
-        explicit xorshift32(std::uint32_t seed)
-            : m_s(seed) {}
-        double next() noexcept {
-            m_s ^= m_s << 13;
-            m_s ^= m_s >> 17;
-            m_s ^= m_s << 5;
-            return (static_cast<double>(m_s % 65536U) - 32768.0) / 32768.0;
-        }
-
-      private:
-        std::uint32_t m_s;
-    };
-
     std::vector<double> reference_signal() {
         std::vector<double> x(k_n, 0.0);
         for (const tone& t : k_tones) {
@@ -63,9 +49,9 @@ namespace {
                 x[n] += t.amp * std::sin(2.0 * std::numbers::pi * t.freq * static_cast<double>(n) / k_sr);
             }
         }
-        xorshift32 rng(0x2545F491U);
+        tap::dsp::test::xorshift32 rng(0x2545F491U);
         for (size_t n = 0; n < k_n; ++n) {
-            x[n] += k_noise_amp * rng.next();
+            x[n] += k_noise_amp * rng.next_low16_unit();
         }
         for (size_t n = k_n / 2; n < k_n; ++n) {
             x[n] *= k_step_gain;

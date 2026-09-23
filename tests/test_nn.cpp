@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include "support/signals.h"
 #include "tap/dsp/nn.h"
 
 namespace {
@@ -24,26 +25,12 @@ namespace {
     using tap::dsp::nn::basic_dense;
     using tap::dsp::nn::basic_gru;
 
-    class xorshift32 {
-      public:
-        explicit xorshift32(std::uint32_t seed)
-            : m_s(seed) {}
-        /// Uniform in [-1, 1).
-        float next() {
-            m_s ^= m_s << 13;
-            m_s ^= m_s >> 17;
-            m_s ^= m_s << 5;
-            return static_cast<float>(m_s) / 2147483648.0f - 1.0f;
-        }
-
-      private:
-        std::uint32_t m_s;
-    };
+    using tap::dsp::test::xorshift32;
 
     std::vector<float> random_weights(xorshift32& rng, std::size_t n, float scale) {
         std::vector<float> w(n);
         for (auto& v : w) {
-            v = rng.next() * scale;
+            v = rng.next_unit_f() * scale;
         }
         return w;
     }
@@ -174,7 +161,7 @@ namespace {
             std::vector<TypeParam>   x(k_in);
             std::vector<long double> xl(k_in);
             for (std::size_t j = 0; j < k_in; ++j) {
-                x[j]  = static_cast<TypeParam>(rng.next());
+                x[j]  = static_cast<TypeParam>(rng.next_unit_f());
                 xl[j] = static_cast<long double>(x[j]);
             }
             g.step(x.data());
@@ -266,7 +253,7 @@ namespace {
         double              worst_gain = 0.0, worst_state = 0.0;
         for (std::size_t t = 0; t < k_steps; ++t) {
             for (std::size_t j = 0; j < k_feat; ++j) {
-                f32[j] = rng.next();
+                f32[j] = rng.next_unit_f();
                 f[j]   = static_cast<double>(f32[j]);
             }
             din.apply(f.data(), h.data());

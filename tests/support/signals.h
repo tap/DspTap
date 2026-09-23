@@ -3,19 +3,36 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 Timothy Place and the DspTap contributors.
 //
-// One xorshift32, one random_signal and one tone synthesizer, so a new test
-// file does not grow its own copy (three already exist in test_fft.cpp,
-// test_fft_backend.cpp and test_nn.cpp; migrating them, and adding the dB
-// helper Part 9 lists once a caller exists, is the Stage 6 hygiene item in
-// docs/audit-fft-and-code-smells.md, not this file's job). Everything here is deterministic — fixed seeds, no wall
-// clock, no filesystem — so it can run unchanged on the bare-metal QEMU legs.
+// One xorshift32, one random_signal and the tone synthesizers, so a test file
+// does not grow its own copy (docs/audit-fft-and-code-smells.md, Part 9; the
+// copies that predated this file migrated here at Stage 6). Everything here is
+// deterministic — fixed seeds, no wall clock, no filesystem — so it runs
+// unchanged on the bare-metal QEMU legs.
+//
+// MIGRATION RULE: a test that moved here draws the identical sequence it drew
+// before, bit for bit, because its numbers were measured on that sequence.
+// That is why a few mappings coexist rather than one:
+//   - xorshift32 has one state update and three output maps, each the exact
+//     arithmetic of the copies it replaced: next_unit() (double, the FFT
+//     batteries and the analysis instruments), next_unit_f() (the same map in
+//     float arithmetic, which rounds differently: nn and the FFT backend
+//     parity), and next_low16_unit() (the low 16 bits, the map of the numpy
+//     front-end reference generator tools/reference/make_frontend_reference.py,
+//     which log_mel's battery must reproduce).
+//   - mt19937_signal is the std::mt19937 + uniform_real_distribution noise
+//     three batteries (fft, spectrum, yin) pinned their numbers on. New tests
+//     use random_signal; the distribution's algorithm is the standard
+//     library's, so the values are per-standard-library, as they always were.
+//   - tone() is the bin-exact synthesizer for FFT oracles (phase formed as an
+//     exact fraction of the period); sine() is the Hz-at-a-sample-rate form the
+//     audio batteries (yin, psola, pvoc, log_mel) use. The two associate
+//     differently and are not interchangeable without moving bits.
 //
 // sample_scale<Sample> is how a generator lands in a profile's sample type:
 // the identity cast for float and double, and round-to-nearest with saturation
 // into Q0.15 / Q0.31 for the fixed-point profiles (Stage 3b), so the same
 // seed produces the same signal in every profile up to the profile's own
-// quantisation. Four files share it (test_fft.cpp, test_fft_fixed.cpp,
-// test_fft_oracle.cpp, test_fft_rt.cpp), which is the bar for a helper here.
+// quantisation.
 
 #pragma once
 
@@ -25,6 +42,7 @@
 #include <cstdint>
 #include <limits>
 #include <numbers>
+#include <random>
 #include <type_traits>
 #include <vector>
 
@@ -90,6 +108,16 @@ namespace tap::dsp::test {
         /// drawn from the same seed are the same values up to the final cast.
         double next_unit() noexcept { return static_cast<double>(next_u32()) / 2147483648.0 - 1.0; }
 
+        /// The same map computed in float arithmetic: float(u) / 2^31 - 1 with
+        /// every step rounded to float (not next_unit() cast to float; the two
+        /// differ in the last bit for about half the states).
+        float next_unit_f() noexcept { return static_cast<float>(next_u32()) / 2147483648.0f - 1.0f; }
+
+        /// The low 16 bits as a fraction: (u mod 65536 - 32768) / 32768, in
+        /// [-1, 1) on a 2^-15 grid. The map of the numpy front-end reference
+        /// generator (tools/reference/make_frontend_reference.py).
+        double next_low16_unit() noexcept { return (static_cast<double>(next_u32() % 65536U) - 32768.0) / 32768.0; }
+
       private:
         std::uint32_t m_s;
     };
@@ -102,6 +130,44 @@ namespace tap::dsp::test {
         std::vector<Sample> x(n);
         for (auto& v : x) {
             v = sample_scale<Sample>::from_double(amplitude * rng.next_unit());
+        }
+        return x;
+    }
+
+    /// n samples of std::mt19937(seed) through
+    /// std::uniform_real_distribution<double>(-amplitude, amplitude), landed in
+    /// the profile through sample_scale. Kept for the three batteries whose
+    /// pinned numbers were measured on it (test_fft.cpp, test_spectrum.cpp,
+    /// test_yin.cpp); new tests use random_signal, whose values do not depend
+    /// on the standard library's distribution algorithm.
+    template <typename Sample>
+    std::vector<Sample> mt19937_signal(std::size_t n, unsigned seed, double amplitude = 1.0) {
+        std::mt19937                           gen(seed);
+        std::uniform_real_distribution<double> dist(-amplitude, amplitude);
+        std::vector<Sample>                    x(n);
+        for (auto& v : x) {
+            v = sample_scale<Sample>::from_double(dist(gen));
+        }
+        return x;
+    }
+
+    /// One sample of a unit sine at freq_hz: sin(2 pi freq_hz t / sample_rate),
+    /// evaluated left to right in double, ((2 pi freq_hz) t) / sample_rate.
+    inline double sine_at(double freq_hz, double t, double sample_rate) {
+        return std::sin(2.0 * std::numbers::pi * freq_hz * t / sample_rate);
+    }
+
+    /// amplitude * sin(phase + 2 pi freq_hz i / sample_rate) for i in [0, n):
+    /// the audio batteries' sine, in the association they pinned their numbers
+    /// on (phase added last to the left-to-right product; with the defaults it
+    /// is sine_at(freq_hz, i, sample_rate) exactly).
+    template <typename Sample>
+    std::vector<Sample> sine(std::size_t n, double freq_hz, double sample_rate, double amplitude = 1.0,
+                             double phase = 0.0) {
+        std::vector<Sample> x(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            x[i] = sample_scale<Sample>::from_double(
+                amplitude * std::sin(phase + 2.0 * std::numbers::pi * freq_hz * static_cast<double>(i) / sample_rate));
         }
         return x;
     }

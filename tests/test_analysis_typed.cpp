@@ -29,6 +29,7 @@
 
 #include <gtest/gtest.h>
 
+#include "support/signals.h"
 #include "tap/dsp/analysis/multitone_analysis.h"
 #include "tap/dsp/analysis/sine_analysis.h"
 #include "tap/dsp/sample_traits.h"
@@ -252,16 +253,13 @@ namespace {
     // smoke case) and a tone with noise and DC, so every solver branch and
     // the residual path see non-trivial values.
     TEST(SineAnalysisTyped, FloatingSpansAreBitIdenticalToThePreTemplateInstrument) {
-        const double       nu = 997.0 / 48000.0;
-        std::vector<float> clean(16384);
-        std::vector<float> dirty(16384);
-        std::uint32_t      state = 0x2545F491u;
+        const double               nu = 997.0 / 48000.0;
+        std::vector<float>         clean(16384);
+        std::vector<float>         dirty(16384);
+        tap::dsp::test::xorshift32 rng(0x2545F491u);
         for (std::size_t i = 0; i < clean.size(); ++i) {
             const double t = 2.0 * std::numbers::pi * nu * static_cast<double>(i) + 0.3;
-            state ^= state << 13;
-            state ^= state >> 17;
-            state ^= state << 5;
-            const double u = static_cast<double>(state) / 2147483648.0 - 1.0;
+            const double u = rng.next_unit();
             clean[i]       = static_cast<float>(0.5 * std::sin(t));
             dirty[i]       = static_cast<float>(0.5 * std::sin(t) + 0.01 * u + 0.02);
         }

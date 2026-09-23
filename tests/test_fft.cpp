@@ -21,7 +21,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <numbers>
-#include <random>
 #include <type_traits>
 #include <vector>
 
@@ -33,18 +32,8 @@
 
 namespace {
 
+    using tap::dsp::test::mt19937_signal;
     using tap::dsp::test::sample_scale;
-
-    template <typename Sample>
-    std::vector<Sample> random_signal(size_t n, unsigned seed) {
-        std::mt19937                           gen(seed);
-        std::uniform_real_distribution<double> dist(-1.0, 1.0);
-        std::vector<Sample>                    x(n);
-        for (auto& v : x) {
-            v = sample_scale<Sample>::from_double(dist(gen));
-        }
-        return x;
-    }
 
     // Absolute tolerance in the sample's own units (fractions of full scale
     // for the fixed profiles). Float and double: the golden battery's
@@ -245,7 +234,7 @@ namespace {
     TYPED_TEST(real_fft_test, RoundTripReproducesInput) {
         constexpr size_t n = 1024;
 
-        const auto x    = random_signal<TypeParam>(n, 42);
+        const auto x    = mt19937_signal<TypeParam>(n, 42);
         const auto back = round_trip<TypeParam>(n, x, false);
         const auto tol  = round_trip_tolerance<TypeParam>(n);
 
@@ -260,7 +249,7 @@ namespace {
     TYPED_TEST(real_fft_test, RoundTripInPlaceAndAliased) {
         constexpr size_t n = 256;
 
-        const auto x    = random_signal<TypeParam>(n, 7);
+        const auto x    = mt19937_signal<TypeParam>(n, 7);
         const auto back = round_trip<TypeParam>(n, x, true);
         const auto tol  = round_trip_tolerance<TypeParam>(n);
 
@@ -390,7 +379,7 @@ namespace {
         constexpr size_t n = 512;
 
         typename p::fft fft(n);
-        const auto      x = random_signal<TypeParam>(n, 1234);
+        const auto      x = mt19937_signal<TypeParam>(n, 1234);
 
         double time_energy = 0.0;
         for (size_t i = 0; i < n; ++i) {
@@ -432,7 +421,7 @@ namespace {
     template <typename Sample>
     double relative_error_vs_double(size_t n, unsigned seed) {
         using p               = profile<Sample>;
-        const auto          x = random_signal<Sample>(n, seed);
+        const auto          x = mt19937_signal<Sample>(n, seed);
         std::vector<double> xd(n);
         for (size_t i = 0; i < n; ++i) {
             xd[i] = p::to_double(x[i]);
@@ -462,7 +451,7 @@ namespace {
     /// both engines see identical input values).
     template <typename FloatEngine>
     double float_engine_error_vs_double(size_t n, unsigned seed) {
-        const auto         xd = random_signal<double>(n, seed);
+        const auto         xd = mt19937_signal<double>(n, seed);
         std::vector<float> xf(n);
         for (size_t i = 0; i < n; ++i) {
             xf[i] = static_cast<float>(xd[i]);
@@ -566,7 +555,7 @@ namespace {
         constexpr size_t n = 256;
 
         tap::dsp::real_fft fft(n); // double engine
-        const auto         xd = random_signal<double>(n, 555);
+        const auto         xd = mt19937_signal<double>(n, 555);
         std::vector<float> xf(n);
         for (size_t i = 0; i < n; ++i) {
             xf[i] = static_cast<float>(xd[i]);
@@ -588,7 +577,7 @@ namespace {
         constexpr size_t n = 256;
 
         tap::dsp::real_fft fft(n);
-        const auto         xd = random_signal<double>(n, 777);
+        const auto         xd = mt19937_signal<double>(n, 777);
         std::vector<float> xf(n);
         for (size_t i = 0; i < n; ++i) {
             xf[i] = static_cast<float>(xd[i]);
