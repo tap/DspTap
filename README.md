@@ -54,8 +54,10 @@ selection also opens an inline namespace on `tap::dsp` — `fft_split_radix`,
 defined in: lookup is unchanged, but the mangled names of the classes whose
 layout follows the selected engine now carry it, so two images built with
 different defaults cannot coalesce each other's weak symbols (audit F4;
-measured 54/54 identical symbol names before, 0/69 after —
-`docs/fft-design.md`, "Stage 4"). A consumer class that embeds the FFT by
+measured: 50/50 weak symbol names shared between the two builds before,
+0/65 after, and in one process an embedder outside the tag ran the other
+image's code while the same embedder inside it did not —
+`tests/test_fft_abi_tag.cpp`; `docs/fft-design.md`, "Stage 4"). A consumer class that embeds the FFT by
 value closes the same exposure by opening the same namespace in its own
 (`namespace tap::mu::inline TAP_DSP_FFT_ABI` for MuTap, on its bump).
 

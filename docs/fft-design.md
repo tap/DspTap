@@ -857,8 +857,10 @@ compiled twice for the Cortex-M55 with arm-none-eabi-g++ 13.2.1 (`-O2`,
 `-mcpu=cortex-m55 -mfloat-abi=hard`), with and without `-DTAP_DSP_FFT_CMSIS`,
 `arm-none-eabi-nm -C` on the objects:
 
-- At `8350f13` (the branch base): **54 of 54** weak symbols have identical
-  names in both objects, over two different layouts, among them
+- At `8350f13` (the branch base): **50 of 50** weak (`W` / `V`) symbol names
+  are identical in both objects, over two different layouts (each object
+  also carries 4 non-weak COMDAT group-section `n` symbols, the
+  constructors', not counted), among them
 
   ```
   W tap::dsp::basic_pvoc<float>::process(float, float)
@@ -866,7 +868,8 @@ compiled twice for the Cortex-M55 with arm-none-eabi-g++ 13.2.1 (`-O2`,
   W tap::dsp::basic_real_fft<short, tap::dsp::scaling::fixed>::forward_inplace(short*)
   ```
 
-- At tap/DspTap#35: **0 of 69** do. The same three read
+- At tap/DspTap#35: **0 of 65** weak names are shared (and 0 of all 69
+  lines, the 4 `n` symbols included). The same three read
 
   ```
   W tap::dsp::fft_split_radix::basic_pvoc<float>::process(float, float)
@@ -879,10 +882,41 @@ compiled twice for the Cortex-M55 with arm-none-eabi-g++ 13.2.1 (`-O2`,
   W tap::dsp::fft_cmsis::basic_real_fft<float, tap::dsp::detail::cmsis_real_fft_f32>::forward_inplace(float*)
   W tap::dsp::fft_cmsis::basic_real_fft<short, tap::dsp::scaling::fixed>::forward_inplace(short*)
   ```
-  in the CMSIS one. `tests/test_fft_engine.cpp` pins the same property from
-  inside the battery on every leg: `typeid(real_fft32).name()`,
-  `typeid(pvoc32).name()` and `typeid(log_mel32).name()` contain the
-  expected tag and none of the other two.
+  in the CMSIS one. The 35a review's recount with a TU that also
+  instantiates `basic_log_mel<float>`: 96 of 107 weak names shared at the
+  base, 31 of 122 at this branch, every remaining one in `std::` or
+  `tap::dsp::detail::` — the engines and tables themselves, whose layout does
+  not depend on the define, so their coalescing is harmless.
+  `tests/test_fft_engine.cpp` pins the same property from inside the battery
+  on every leg: `typeid(real_fft32).name()`, `typeid(pvoc32).name()` and
+  `typeid(log_mel32).name()` contain the expected tag and none of the other
+  two.
+
+  **And the loader half, measured in a process (`tests/test_fft_abi_tag.cpp`,
+  linux and macOS; asked for by the 35a review, whose experiment it
+  reproduces).** One translation unit (`tests/abi/abi_tag_image.cpp`) is
+  built into two loadable modules: image A with the configured build's
+  defines (tag `fft_split_radix` on linux, `fft_vdsp` on macOS) and image B
+  with `TAP_DSP_FFT_CMSIS` and a stub engine of a different layout on the
+  include path (tag `fft_cmsis`); the host `dlopen`s A then B with
+  `RTLD_GLOBAL` and asks each image what its embedders see through
+  `extern "C"` probes, the member calls laundered through a volatile
+  pointer so the loader, not the optimizer, decides the target. Measured on
+  linux (g++ 13.3): an embedder of `basic_real_fft<float>` defined in plain
+  `tap::dsp` and instantiated in image B **ran image A's code** — its
+  `which()` returned `fft_split_radix` from inside the `fft_cmsis` image and
+  the bound member saw a layout of 80 bytes against the real 184 — which is
+  F4 live; the identical embedder defined inside `inline namespace
+  TAP_DSP_FFT_ABI` reported its own tag and its own layout in both images,
+  and `pvoc32` / `log_mel32` computed identical, finite checksums in both
+  images with both loaded (`TaggedEmbedderIsImmuneToCrossImageCoalescing`;
+  the untagged outcome is asserted on the linux/GCC host and printed as
+  `[ measured ]` elsewhere, `UntaggedEmbedderIsWhatTheTagExistsFor`). Under
+  `RTLD_LOCAL` on ELF nothing coalesces (the review measured it; the test
+  runs one mode per process because the first `dlopen` decides an image's
+  bindings). The test is hosted, non-Windows: the QEMU legs have no loader,
+  and a Windows image exports nothing without `__declspec`, so the
+  coalescing has no path there.
 
 **The fixed-point profiles are inside the tag, deliberately stated.** A
 partial specialization is the same template as its primary and lives in the
@@ -1006,6 +1040,8 @@ record. The harness lesson is in audit Part 13.
   instantiation, with the compiler-checked half.
 - `tests/test_fft_parity_ooura.cpp`: untouched, green on every leg — the
   proof that no float or double bit moved through the refactor.
+- `tests/test_fft_abi_tag.cpp` + `tests/abi/` (hosted, non-Windows): the
+  two-image loader test of the tag (above).
 
 ## Size and instruction counts, per target
 

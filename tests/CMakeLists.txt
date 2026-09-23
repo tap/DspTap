@@ -322,6 +322,8 @@ target_link_libraries(tap_dsp_analysis_typed PRIVATE
 # bare metal. icount_main.cpp is listed twice, floating (precision 0) and fixed
 # point (precision 2), because its body is two preprocessor branches and
 # clang-tidy checks every compile command a file has.
+# =======================================================================# ==============================================================================
+
 # ==============================================================================
 if(NOT TAP_DSP_BARE_METAL)
     # Each entry is name:path-from-the-project-root:definition ("-" for none).
@@ -365,4 +367,45 @@ if(NOT TAP_DSP_BARE_METAL)
 endif()
 # ==============================================================================
 # END Stage 6 addition
+=======
+# BEGIN Stage 4 addition (docs/audit-fft-and-code-smells.md, D4; audit F4): the
+# two-image test of the ABI tag. One translation unit, tests/abi/abi_tag_image.cpp,
+# built into two loadable modules — image A with the configured build's own
+# defines (tap::dsp: fft_split_radix on linux, fft_vdsp on macOS), image B
+# with TAP_DSP_FFT_CMSIS and tests/abi/stub/ first on the include path, so
+# fft.h selects a stub engine with a different object layout (tag fft_cmsis)
+# — and a gtest host (test_fft_abi_tag.cpp) that dlopens both with
+# RTLD_GLOBAL and asks each image what its embedders see. Image B must NOT
+# link tap::dsp: the target's INTERFACE definitions would add the host's own
+# backend define (TAP_DSP_FFT_ACCELERATE on macOS) beside TAP_DSP_FFT_CMSIS
+# and fft.h rejects the pair; it takes the include directory directly, like
+# the parity targets. Hosted, non-Windows only: dlopen and MODULE libraries,
+# and the coalescing under test has no path on Windows (nothing is exported
+# without __declspec); the QEMU legs have no loader. Keep this block at the
+# end of the file.
+# ==============================================================================
+if(NOT TAP_DSP_BARE_METAL AND NOT WIN32)
+    add_library(tap_dsp_abi_image_a MODULE abi/abi_tag_image.cpp)
+    target_link_libraries(tap_dsp_abi_image_a PRIVATE tap::dsp tap_dsp_warnings)
+
+    add_library(tap_dsp_abi_image_b MODULE abi/abi_tag_image.cpp)
+    target_include_directories(tap_dsp_abi_image_b BEFORE PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/abi/stub)
+    target_include_directories(tap_dsp_abi_image_b PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_compile_features(tap_dsp_abi_image_b PRIVATE cxx_std_20)
+    target_compile_definitions(tap_dsp_abi_image_b PRIVATE TAP_DSP_FFT_CMSIS)
+    target_link_libraries(tap_dsp_abi_image_b PRIVATE tap_dsp_warnings)
+
+    tap_dsp_add_gtest_executable(tap_dsp_fft_abi_tag
+        SOURCES test_fft_abi_tag.cpp)
+    add_dependencies(tap_dsp_fft_abi_tag tap_dsp_abi_image_a tap_dsp_abi_image_b)
+    target_compile_definitions(tap_dsp_fft_abi_tag PRIVATE
+        "TAP_DSP_ABI_IMAGE_A=\"$<TARGET_FILE:tap_dsp_abi_image_a>\""
+        "TAP_DSP_ABI_IMAGE_B=\"$<TARGET_FILE:tap_dsp_abi_image_b>\"")
+    target_link_libraries(tap_dsp_fft_abi_tag PRIVATE
+        tap::dsp
+        tap_dsp_warnings
+        ${CMAKE_DL_LIBS})
+endif()
+# ==============================================================================
+# END Stage 4 addition
 # ==============================================================================

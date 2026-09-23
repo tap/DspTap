@@ -1111,10 +1111,13 @@ opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
   `fft_split_radix` / `fft_cmsis` / `fft_vdsp` (`fft_ooura` predated 2c). (2) The engine
   argument alone already separates `basic_real_fft<float>`'s own weak symbols between two
   differently-built images; the tag is what separates the *embedders'* (`basic_pvoc`,
-  `basic_log_mel`, MuTap's `fdaf` …), which is the F4 hazard as stated; measured with
-  `arm-none-eabi-nm` on one TU built for the M55 with and without `TAP_DSP_FFT_CMSIS`: 54 of 54
-  common weak symbols before, 0 of 69 after. MuTap's embedders live in `tap::mu` and must open
-  the same inline namespace on their bump. (3) The fixed-point profiles carry the tag because a
+  `basic_log_mel`, MuTap's `partitioned_fdaf` …), which is the F4 hazard as stated; measured
+  with `arm-none-eabi-nm` on one TU built for the M55 with and without `TAP_DSP_FFT_CMSIS`: 50 of
+  50 weak symbol names shared before, 0 of 65 after; and in one process (`tests/test_fft_abi_tag.cpp`,
+  two images from one TU, `RTLD_GLOBAL`) an untagged embedder in the second image ran the
+  first image's code (layout seen 80 vs real 184) while the tagged one was immune. MuTap's
+  embedders live in `tap::mu` and must open the same inline namespace on their bump (checklist
+  in the design note). (3) The fixed-point profiles carry the tag because a
   partial specialization lives beside its primary; their layout does not depend on the
   selection, so the tag costs a duplicate instantiation per differently-built image and buys
   nothing they needed. (4) **The ratchet counts the harness's own fold, and the fold's register
