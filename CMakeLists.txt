@@ -17,8 +17,9 @@ project(DspTap VERSION 0.1.0 LANGUAGES C CXX)
 #
 # tap::dsp is a pure INTERFACE target. Since Stage 2c
 # (docs/audit-fft-and-code-smells.md, Part 3; Decision D6) no vendored C is
-# compiled into what ships: the reference copy of Ooura's fftsg.c lives under
-# tests/reference/ooura/ and is compiled only by the parity gate in tests/.
+# compiled into what ships; the reference copy of Ooura's fftsg.c that the
+# parity gate in tests/ compiled was deleted at D6, and third_party/ooura/
+# readme.txt stays as the license record for the derived engine.
 # The one compiled (static) library, tap_dsp_fft, exists only when
 # TAP_DSP_FFT_CMSIS is ON and carries the CMSIS-DSP objects (below).
 # ==============================================================================
@@ -132,7 +133,7 @@ endif()
 
 # Warning flags for this project's own tests; never exported to consumers of
 # the INTERFACE library, and never applied to vendored C (the CMSIS objects
-# under TAP_DSP_FFT_CMSIS, the reference C the parity gate compiles).
+# under TAP_DSP_FFT_CMSIS).
 option(TAP_DSP_WERROR "Treat warnings as errors in DspTap's own targets" OFF)
 add_library(tap_dsp_warnings INTERFACE)
 target_compile_options(tap_dsp_warnings INTERFACE

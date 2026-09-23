@@ -12,8 +12,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux/Windows: the default Ooura path (double golden model + the
-          # float32 tests still on Ooura).
+          # Linux/Windows: the split-radix engine for both precisions (double
+          # golden model and float32). The "-ooura" in the two job names
+          # predates the Stage 2b port and is kept so the check names stay
+          # stable; the C itself was retired at Decision D6.
           - { os: ubuntu-latest,  name: linux-ooura }
           - { os: windows-latest, name: windows-ooura }
           # macOS: float32 defaults to the Apple vDSP backend, so this leg runs
@@ -31,22 +33,25 @@ jobs:
         run: cmake --build build --config Release
 
       - name: Test
-        run: ctest --test-dir build --build-config Release --output-on-failure
+        run: >
+          ctest --test-dir build --build-config Release --output-on-failure
+          -E split_radix_fingerprint
 
-      # The split-radix fingerprints (and, while the reference C is in the
-      # tree, the parity gate's C-side cross-check of them) print every value
-      # before asserting; a passing ctest swallows that output, so run them
-      # verbosely as their own step (Part 13) and the log carries each host's
-      # values.
-      # Runs even when the battery failed, so a mismatch still leaves every
-      # value in the log. On linux the run must match glibc's FMA/AVX2 row.
+      # The split-radix fingerprints print every value before asserting; a
+      # passing ctest swallows that output, so they run verbosely as their own
+      # step, excluded from the battery step above (Part 13), and the log
+      # carries each host's values. The step runs even when the battery
+      # failed, so a mismatch still leaves every value in the log. On linux
+      # the run must match glibc's FMA/AVX2 row.
       - name: Split-radix fingerprints (verbose)
         if: ${{ !cancelled() }}
         shell: bash
         run: |
           set -o pipefail
-          ctest --test-dir build --build-config Release -R "split_radix_fingerprint|ReferenceCHasThePinnedFingerprints" -V | tee fingerprints.log
-          if [ "$RUNNER_OS" = Linux ]; then grep -q "matched row: x86-64 glibc (2.39), FMA/AVX2 dispatch" fingerprints.log; fi
+          ctest --test-dir build --build-config Release -R split_radix_fingerprint -V | tee fingerprints.log
+          if [ "$RUNNER_OS" = Linux ]; then
+            grep -q "matched row: x86-64 glibc (2.39), FMA/AVX2 dispatch" fingerprints.log
+          fi
 
       # x86-64 glibc picks sin / cos / atan by CPU at run time and the two
       # builds differ in the last bit (double N >= 8192): the tunable masks
@@ -59,21 +64,8 @@ jobs:
           GLIBC_TUNABLES: glibc.cpu.hwcaps=-AVX2,-FMA
         run: |
           set -o pipefail
-          ctest --test-dir build --build-config Release -R "split_radix_fingerprint|ReferenceCHasThePinnedFingerprints" -V | tee fingerprints-sse2.log
+          ctest --test-dir build --build-config Release -R split_radix_fingerprint -V | tee fingerprints-sse2.log
           grep -q "matched row: x86-64 glibc (2.39), SSE2 dispatch" fingerprints-sse2.log
-
-      # The Stage 2a informational parity target prints a max-ulp table per
-      # platform that a passing ctest swallows; run it verbosely as its own
-      # step so the number is in the log. Guarded so the step is a no-op until
-      # a tree with the `parity` label is checked out.
-      - name: Parity ulp table (informational, when the parity label exists)
-        shell: bash
-        run: |
-          if ctest --test-dir build --build-config Release -N -L parity | grep -q 'Total Tests: [1-9]'; then
-            ctest --test-dir build --build-config Release -L parity -R default_flags -V
-          else
-            echo "no parity-labelled tests in this tree; nothing to report"
-          fi
 
   # Bare-metal Cortex-M legs (newlib + semihosting) run under qemu-system-arm:
   # the emulation-sized selection in tests/bare_metal_main.cpp, judged on the
@@ -82,14 +74,14 @@ jobs:
   # op a library call, the fixed-point profiles' home) and M4F (fpv4-sp-d16) —
   # the M33 (single-precision FPU, no MVE; Pico 2 / RP2350 class) and the M55
   # (MVE), the one leg where the CMSIS-DSP Helium FFT backend is ON and its
-  # parity suite runs against Ooura. Ubuntu 24.04's qemu-system-arm (8.2) has
-  # mps2-an386, mps2-an505 and mps3-an547; the image is pinned (not
-  # ubuntu-latest) so the toolchain under the recorded sizes and the bench
-  # baselines does not move without a diff here — the "Toolchain versions"
-  # step is the drift detector. The emulated test runs with `ctest -V` so the
-  # gtest summary, the selected/skipped counts and the completion marker are
-  # in the log; its wall time is TCG noise (+-50 % between identical runs) and
-  # is a budget signal only. The `size` step is informational for now (both
+  # parity suite runs against the split-radix engine. Ubuntu 24.04's
+  # qemu-system-arm (8.2) has mps2-an386, mps2-an505 and mps3-an547; the image
+  # is pinned (not ubuntu-latest) so the toolchain under the recorded sizes
+  # and the bench baselines does not move without a diff here — the
+  # "Toolchain versions" step is the drift detector. The emulated test runs
+  # with `ctest -V` so the gtest summary, the selected/skipped counts and the
+  # completion marker are in the log; its wall time is TCG noise (+-50 %
+  # between identical runs) and is a budget signal only. The `size` step is informational for now (both
   # Berkeley totals and per-section sizes, since Berkeley `text` folds in
   # .rodata and `bss` includes the NOLOAD heap region); per-leg .text ceilings
   # arrive with the benchmark workflow.

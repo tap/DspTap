@@ -271,17 +271,17 @@ namespace {
     }
 
     // The bounds are constructed for real on every leg. The float default's
-    // upper bound is capped at TAP_DSP_PARITY_MAX_N, the same knob the parity
-    // gate and the oracle sweeps read: 2^20 on the hosts — so the macOS leg
-    // constructs vDSP at its stated upper bound (4 MB), and linux / windows
-    // construct the split-radix default at the size its gate runs to — and
+    // upper bound is capped at TAP_DSP_TEST_MAX_FFT_N, the same knob the oracle
+    // sweeps read: 2^20 on the hosts — so the macOS leg constructs vDSP at its
+    // stated upper bound (4 MB), and linux / windows construct the split-radix
+    // default at the size the retired parity gate ran to — and
     // 4096 on the emulated legs, which is what their data regions and the
     // CMSIS range have in common (the M55 constructs CMSIS at 32 and 4096).
     // The explicit split-radix engine runs the M55 requirement's 16 and 8192
     // everywhere, and 2^20 where the cap allows it. The split-radix engine's
     // own upper bound, 2^30, is not constructed by any test (6 GB of float;
     // the 35a review ran it once by hand, docs/fft-design.md).
-    constexpr std::size_t k_host_cap = static_cast<std::size_t>(TAP_DSP_PARITY_MAX_N);
+    constexpr std::size_t k_host_cap = static_cast<std::size_t>(TAP_DSP_TEST_MAX_FFT_N);
 
     TEST(fft_engine, ConstructsAtTheRangeBounds) {
         expect_constructs_and_round_trips<tap::dsp::real_fft32>(tap::dsp::real_fft32::k_min_size);

@@ -468,6 +468,7 @@ allocation in the decimator's process path) are owned here too.
 | 4 | typed engine tests; macOS same-binary parity — **landed** (#35): typed over the engines the leg builds, CMSIS beside split-radix on the M55, vDSP beside it on macOS; icount +0.00 % on every key without a re-record | fingerprint identical (on the bump; MuTap's own embedders adopt the tag in `tap::mu`) | re-pin |
 | 5 | pinned pvoc/log_mel tests | per-header fingerprint + icount 0% | per header |
 | 6 | fingerprint on Hann/pi change | pin bump | per item |
+| D6 | reference C and gate deleted (#36); split-radix fingerprints at every power of two (one float row, double per libm build incl. glibc's dispatch pair) green on 3 hosts + 4 QEMU legs, each measured equal to the C before deletion; icount +0.00 % | none (no shipping change) | revert (the C is at `6f6f77f`) |
 
 ---
 
@@ -597,7 +598,8 @@ projects relicense the derived code. Therefore:
 `fftsg` is genuinely split-radix (`readme.txt:14`). Use one house token for everything
 consumer-facing (`real_fft`, `real_fft32`, `fft/backends/accelerate_real_fft32.h`), not the
 three spellings revision 1 had. Provenance stays visible: the attribution banner, `NOTICE.md`,
-the parity test against `tests/reference/ooura/`, and one glossary line in MuTap's
+the parity test against `tests/reference/ooura/` (until D6; the pinned fingerprints since), and
+one glossary line in MuTap's
 `docs/itu-compliance.md`, whose certified float numbers are described as "measured on Ooura":
 that line maps "Ooura" to "the vendored C at DspTap ≤ 5ca3b1c and the bit-identical port from
 the Stage 2b SHA onward" rather than scrubbing the word. Consumer *code* comments drop "Ooura
@@ -848,6 +850,8 @@ pattern is typed, and named for the promise it pins.
   measured max-ulp deviation as an informational number, never as a pass/fail with an
   assumed bound. Runs on the three hosts and, size-limited to N ≤ 4096, on the four QEMU legs
   (same-binary identity against newlib's libm is exactly the property that matters there).
+  *Retired at D6 with the reference C; `tests/test_fft_split_radix_fingerprint.cpp` pins the
+  C's output bits in its place (Part 13, "D6 executed").*
 - `tests/test_fft_oracle.cpp`: the independent oracle. Closed-form vectors (impulse, DC,
   Nyquist, on-bin cosine and sine, two-tone) with exact answers, and a compensated-summation
   DFT (double-double, not `long double`, which is `double` on MSVC and Apple arm64) for
@@ -1155,6 +1159,44 @@ opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
   a written commit in the MuTap bump. The gate for a bump is "fingerprints byte-identical on
   every leg"; the ratchet is re-recorded when the engine changes. The Stage 2b paragraph in
   Part 3 keeps its text and carries a one-line pointer here.
+- **D6 executed (wave 4, tap/DspTap#36).** Precondition met after Stage 4: MuTap `801204d`
+  pins DspTap `8350f13` (2c), MuTap-Max `544e756` pins that MuTap. Deleted:
+  `tests/reference/ooura/` (`fftsg.c`, `fftsg_float.c`, the directory-local `.clang-format`),
+  `tests/reference/ooura_rdft.h`, `tests/test_fft_parity_ooura.cpp` with both its targets (the
+  gate and the informational default-flags twin; its max-ulp table stays in the design note as
+  the record) and the hosted CI step that ran the twin. Kept: `third_party/ooura/readme.txt`,
+  `LICENSES/LicenseRef-Ooura.txt`, the port header's `LicenseRef-Ooura AND MIT` banner. D10 is
+  held since by `tests/test_fft_split_radix_fingerprint.cpp`: FNV-1a-64 over the IEEE bits of
+  the engine's forward and inverse outputs, both precisions, at every power of two from 4 to
+  65536 (4 … 4096 on the QEMU legs), own target at `-ffp-contract=off`. Every power of two is
+  load-bearing: the first version pinned five even powers, which left about 480 lines of the
+  engine (`cftf161`, `cftf162`, `cftfx41`, `cftf040` / `cftb040`, `bitrv216(neg)`) unexecuted and
+  passed a real rounding mutation in `cftf161` that the full set catches in ten cells (hostile
+  review of #36). Findings recorded there:
+  - **A single golden double hash cannot hold across the CI legs, for the C either.** The tables
+    come from libm (D10 reproduces the C's table semantics), so the C's own double outputs
+    differ between libm builds from N = 128 up. The double pins are per C library build, each
+    measured equal to the C in one binary before the C went (locally, and in CI on all seven legs
+    by a C-side cross-check the PR carried until its deletion commit); an unnamed platform fails
+    after printing. The brief's premise that one set of hashes would match on every leg was wrong
+    for double.
+  - **A row is a libm build including its run-time dispatch.** x86-64 glibc selects FMA/AVX2 or
+    SSE2 `sin` / `cos` / `atan` by CPU; the two differ at double N ≥ 8192, identically for the C.
+    glibc is a pair of rows; the linux CI job runs the test a second time under
+    `GLIBC_TUNABLES=glibc.cpu.hwcaps=-AVX2,-FMA` and checks which row each run matched.
+  - **The float row is the libm-independent kernel invariant.** The engine has no
+    precision-specific branch and float rounding absorbed every libm difference measured, so
+    float is one value on every configuration (and double agrees up to N = 64 — because every
+    libm rounds those twiddles alike, not because they are exact; only N = 4 reads none). A float
+    pin that moves is an engine change; a double-only move with the float pins holding is a libm
+    or dispatch change, and the failure message says which. No table-injection seam was added to
+    `include/`: a libm-independent double check would need one, and D10 keeps libm tables.
+  Upstream `fftsg.c` from a fresh `fft.tgz` (hashes in the design note) reproduces both glibc
+  rows and the float row unmodified; the design note, "The bit-identity record after D6", has the
+  tables and the re-verification recipe. `TAP_DSP_PARITY_MAX_N`, still read by the oracle,
+  fixed-point and engine tests, is renamed `TAP_DSP_TEST_MAX_FFT_N` (test-only; no consumer sets
+  it). The CI job names `linux-ooura` / `windows-ooura` and the bench key `m55-ooura` keep their
+  names (check names and baseline keys); comments say why.
 
 ---
 
@@ -1193,7 +1235,11 @@ Not gated on AmbiTap, which is not on disk and keeps its own wrapper per README.
 **D6. `fftsg.c` moves to `tests/reference/ooura/` at 2c and is deleted after both MuTap and
 MuTap-Max pin a tree containing 2c. `readme.txt` stays at `third_party/ooura/readme.txt`
 permanently** (settled in the wave-1 review; it is the license record for the derived code, and
-one fixed path is what the port header's banner can cite).
+one fixed path is what the port header's banner can cite). **Executed** (#36) after Stage 4, on
+`main` `6f6f77f` (the last `main` carrying the C), once MuTap `801204d` pinned DspTap `8350f13`
+(2c) and MuTap-Max `544e756` pinned that MuTap: the reference C, its declaration header and the
+parity gate are deleted, and the engine's bit identity to the C (D10) is pinned as output
+fingerprints measured equal to the C's (Part 13, "D6 executed").
 
 **D7. Settled: `detail::split_radix_rdft`**, one house token (`real_fft`) for everything
 consumer-facing, provenance per Part 5.

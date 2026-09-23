@@ -3,10 +3,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 Timothy Place and the DspTap contributors.
 //
-// One procedure and one table of pins, shared by the fingerprint test
-// (tests/test_fft_split_radix_fingerprint.cpp) and, while the reference C is
-// still in the tree, by the cross-check in tests/test_fft_parity_ooura.cpp
-// that computes the same fingerprints from the C.
+// One procedure and one table of pins for the fingerprint test
+// (tests/test_fft_split_radix_fingerprint.cpp). Until D6 deleted the
+// reference C, the parity gate ran the same procedure on the C's rdft /
+// rdft_f in its own binary and required the pins; the procedure takes any
+// engine with the constructor-from-size / forward_inplace / inverse_inplace
+// surface, so re-verification against upstream fftsg.c can reuse it
+// (docs/fft-design.md, "The bit-identity record after D6").
 //
 // The procedure. For each N in k_fingerprint_sizes — every power of two from
 // 4 to 65536, because Ooura's dispatch branches on N (cftf040 / cftb040 at 8,
@@ -42,7 +45,8 @@
 // (Decision D10; split_radix.h rule 2), so a last-bit difference between two
 // libms moves the double outputs from N = 128 up, and moved the C's outputs
 // identically: in one binary the C computed the same double values as the
-// port on every row below. A row identifies a libm BUILD, including its
+// port on every row below (locally, and in CI on every leg, before D6
+// deleted it). A row identifies a libm BUILD, including its
 // run-time dispatch: x86-64 glibc selects FMA/AVX2 or SSE2 implementations
 // of sin / cos / atan by CPU, and the two differ from N = 8192 up, so glibc
 // carries a pair of rows and a run passes when all its cells equal one row.
@@ -108,7 +112,7 @@ namespace tap::dsp::test {
 
     /// The procedure above, for any engine with the constructor-from-size /
     /// forward_inplace / inverse_inplace surface (split_radix_rdft; the C's
-    /// rdft behind the same surface in the parity TU).
+    /// rdft behind the same surface when re-verifying against upstream).
     template <typename Engine, typename Sample>
     fingerprint_pair fingerprint_of(std::size_t n) {
         Engine           engine(n);

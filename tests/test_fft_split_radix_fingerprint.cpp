@@ -10,11 +10,19 @@
 //
 // What the pins are. Each value was measured from this engine AND from the
 // vendored C it replaced (fftsg.c for double, fftsg_float.c for float, both
-// at -ffp-contract=off) in one binary, and the two were equal: the parity
-// gate's ReferenceCHasThePinnedFingerprints (tests/test_fft_parity_ooura.cpp)
-// computes the same values from the C on every CI leg while the C is in the
-// tree. The pins therefore carry the Stage 2a parity gate's promise — the
-// engine is the C, bit for bit (D10) — past the gate itself.
+// at -ffp-contract=off) in one binary, and the two were equal in every cell:
+// locally on x86-64 glibc under both CPU dispatches (GCC 13.3.0 and clang
+// 18.1.3 identical) and on the four emulated Cortex-M legs, and in CI on
+// every leg (Windows and macOS included), by the parity gate's
+// ReferenceCHasThePinnedFingerprints in the commits of the PR that retired
+// the C (df187b0 is the last, with every pin asserted against the C). The
+// upstream fftsg.c from fft.tgz (2006-12-28), unmodified, reproduces both
+// glibc rows and the float row as well (docs/fft-design.md, "The
+// bit-identity record after D6"). The pins therefore carry the Stage 2a
+// parity gate's promise — the engine is the C, bit for bit (D10) — past the
+// gate and the C. A pin that moves is a numeric change to the engine, not a
+// refactor, and there is no C left in the tree to re-derive pins from:
+// re-verify against upstream as the design note describes before re-pinning.
 //
 // How to read a failure. The FLOAT row is the kernel invariant: one value on
 // every configuration measured, because the engine has no precision-specific

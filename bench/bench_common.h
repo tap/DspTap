@@ -36,8 +36,8 @@ namespace tap::dsp::bench {
     /// could be counted twice and the job could print the C/port ratio and
     /// whether the two output checksums agreed. Stage 2c retired the C from
     /// the shipping tree (docs/audit-fft-and-code-smells.md, Part 3; the
-    /// reference copy lives under tests/reference/ooura/ for the parity gate
-    /// alone) and the pair with it: the bench measures only what ships. The
+    /// reference copy the parity gate compiled was deleted at Decision D6)
+    /// and the pair with it: the bench measures only what ships. The
     /// engine name below is kept as the constant it always printed for the
     /// shipping class, so the DONE line — and with it the recorded counts,
     /// which include the print — did not move at 2c, nor at Stage 4: the

@@ -62,9 +62,9 @@ binary per float scenario (`_port`, then `_c` after the flip; the
 beside the shipping engine and the job log printed the ratio and whether
 the two `DONE` checksums agreed, never gating on it; that is how Stage 2b
 was judged (the tables below keep the record). Stage 2c moved the C out of
-the shipping tree — the reference copy under `tests/reference/ooura/`
-serves the bit-identity gate alone — and retired the selector
-(`TAP_DSP_BENCH_ENGINE`), the adapter and the `_c` pairs. The `DONE` line
+the shipping tree — a reference copy under `tests/reference/ooura/` served
+the bit-identity gate alone until Decision D6 deleted it — and retired the
+selector (`TAP_DSP_BENCH_ENGINE`), the adapter and the `_c` pairs. The `DONE` line
 still prints `engine=basic_real_fft`, the constant the shipping class always
 printed, so the recorded counts (which include the print) did not move.
 
@@ -87,8 +87,9 @@ nudging one spectrum bin at one iteration with `nextafterf`: `0x662dd085b5b88325
 becomes `0x259510dc8721cba8`). A floating running sum cannot promise that — it
 absorbs differences below the accumulator's ulp — which is why the checksum
 is an integer hash: it was the fingerprint the job compared between the C
-and the port on the QEMU legs, where the host parity TU does not run (the
-checksum above is the same value the C printed before the flip: the port is
+and the port on the QEMU legs at the bench's own build flags, beside the
+parity TU's comparison at `-ffp-contract=off` (retired at D6; the checksum
+above is the same value the C printed before the flip: the port is
 bit-identical), and it is what a same-key checksum change means today: an
 output bit moved. `ok` is a sanity check that the last iteration
 round-trips its input — within 1e-3 in the floating scenarios' own
