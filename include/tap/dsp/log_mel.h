@@ -142,6 +142,15 @@ namespace tap::dsp {
         return 700.0 * (std::pow(10.0, mel / 2595.0) - 1.0);
     }
 
+} // namespace tap::dsp
+
+// Inside fft.h's ABI tag (Stage 4, audit F4): basic_log_mel<Sample> holds a
+// basic_real_fft<Sample> by value, so its layout follows the build's float
+// default engine; the tag puts that selection into its mangled name. The
+// geometry and parameter types above are engine-independent and stay in
+// tap::dsp proper.
+namespace tap::dsp::inline TAP_DSP_FFT_ABI {
+
     /// Streaming log-mel / PCEN front end, parameterized over the sample type.
     ///
     /// Contract points beyond the file header:
@@ -376,4 +385,4 @@ namespace tap::dsp {
     using log_mel   = basic_log_mel<double>; ///< golden model
     using log_mel32 = basic_log_mel<float>;  ///< embedded profile
 
-} // namespace tap::dsp
+} // namespace tap::dsp::inline TAP_DSP_FFT_ABI

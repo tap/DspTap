@@ -45,7 +45,10 @@
 #include "tap/dsp/fft.h"
 #include "tap/dsp/fft/spectrum.h"
 
-namespace tap::dsp {
+// Inside fft.h's ABI tag (Stage 4, audit F4): basic_pvoc<Sample> holds a
+// basic_real_fft<Sample> by value, so its layout follows the build's float
+// default engine; the tag puts that selection into its mangled name.
+namespace tap::dsp::inline TAP_DSP_FFT_ABI {
 
     /// Phase-vocoder pitch shifter, parameterized over the sample type. Double
     /// is the desktop/golden profile, float the embedded/accelerated profile.
@@ -413,4 +416,4 @@ namespace tap::dsp {
     /// Single-precision shifter — the embedded/accelerated profile.
     using pvoc32 = basic_pvoc<float>;
 
-} // namespace tap::dsp
+} // namespace tap::dsp::inline TAP_DSP_FFT_ABI
