@@ -10,44 +10,49 @@
 
 #pragma once
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <string_view>
 #include <type_traits>
+#include <vector>
 
 #include "tap/dsp/fft.h"
-#include "tap/dsp/fft/split_radix.h"
 
 // TAP_DSP_BENCH_ENGINE — the engine a scenario measures. A bare identifier,
 // set by bench/CMakeLists.txt (cache variable of the same name; default
-// reference_c) and stringized here so it is printed with every result:
+// basic_real_fft) and stringized here so it is printed with every result:
 //
-//   reference_c  tap::dsp::basic_real_fft<Sample> as built today: the vendored
-//                Ooura C (third_party/ooura/fftsg.c, fftsg_float.c). Where the
-//                build routes float32 through an accelerated backend behind the
-//                same class (TAP_DSP_FFT_CMSIS on the `m55` key, vDSP on Apple),
-//                that backend is what this value measures; the printed
-//                `backend=` field (backend_name below) says which.
-//   split_radix  the C++20 port, tap::dsp::detail::split_radix_rdft<Sample>
-//                (include/tap/dsp/fft/split_radix.h), built beside the C from
-//                Stage 2a and called directly — no backend define reaches it,
-//                so on the `m55` key its sibling is CMSIS and on every other
-//                key the Ooura C. It is measured through split_radix_bench_adapter
-//                below, which presents basic_real_fft's out-of-place
-//                forward()/inverse() surface with the same copy loop and the
-//                same 2/N arithmetic, so the two engines' counts differ only
-//                by the transform. bench/icount/CMakeLists.txt builds every
-//                float scenario twice, the second with a `_port` key suffix
-//                that scripts/icount.py reports and never gates
-//                (docs/audit-fft-and-code-smells.md, Part 11: the C-vs-port
-//                ratio is the Stage 2b gate; nothing is ratcheted in 2a
-//                because nothing is routed).
+//   basic_real_fft  tap::dsp::basic_real_fft<Sample> as built: what ships.
+//                   Since Stage 2b that is the C++20 split-radix engine
+//                   (include/tap/dsp/fft/split_radix.h) for double and, where
+//                   no backend define is active, for float; where the build
+//                   routes float32 through an accelerated backend behind the
+//                   same class (TAP_DSP_FFT_CMSIS on the `m55` key, vDSP on
+//                   Apple), that backend is what this value measures. The
+//                   printed `backend=` field (backend_name below) says which.
+//                   The bare-keyed scenarios, i.e. the gated ones, measure this.
+//   reference_c     the vendored Ooura C called directly (rdft / rdft_f from
+//                   third_party/ooura/fftsg.c and fftsg_float.c, through the
+//                   reference_c_bench_adapter below, which presents
+//                   basic_real_fft's out-of-place forward()/inverse() surface
+//                   with the same copy loop and the same 2/N arithmetic, so
+//                   the two engines' counts differ only by the transform).
+//                   INFORMATIONAL from Stage 2b until Stage 2c retires the C:
+//                   bench/icount/CMakeLists.txt builds every float scenario a
+//                   second time against it under a `_c` key suffix, which
+//                   scripts/icount.py reports beside the gated sibling with
+//                   the ratio and whether the two output checksums agree, and
+//                   never gates (bench/README.md). Before 2b this value named
+//                   basic_real_fft itself, which then WAS the C; after the
+//                   flip that spelling would have been a lie, so the C is
+//                   measured by name and the shipping class by its own.
 //
 // A documented macro, on purpose — not a registry. Once Stage 4 makes the
 // engine an explicit class parameter this selector becomes that parameter.
 #ifndef TAP_DSP_BENCH_ENGINE
-#define TAP_DSP_BENCH_ENGINE reference_c
+#define TAP_DSP_BENCH_ENGINE basic_real_fft
 #endif
 #define TAP_DSP_BENCH_STRINGIZE_(x) #x
 #define TAP_DSP_BENCH_STRINGIZE(x) TAP_DSP_BENCH_STRINGIZE_(x)
@@ -55,26 +60,47 @@
 namespace tap::dsp::bench {
 
     constexpr const char* k_engine_name           = TAP_DSP_BENCH_STRINGIZE(TAP_DSP_BENCH_ENGINE);
-    constexpr bool        k_engine_is_split_radix = std::string_view{k_engine_name} == "split_radix";
-    static_assert(k_engine_is_split_radix || std::string_view{k_engine_name} == "reference_c",
-                  "TAP_DSP_BENCH_ENGINE must be reference_c (the vendored C) or split_radix (the Stage 2a port)");
+    constexpr bool        k_engine_is_reference_c = std::string_view{k_engine_name} == "reference_c";
+    static_assert(k_engine_is_reference_c || std::string_view{k_engine_name} == "basic_real_fft",
+                  "TAP_DSP_BENCH_ENGINE must be basic_real_fft (what ships) or reference_c (the vendored C, "
+                  "informational until Stage 2c)");
 
-    /// The port behind basic_real_fft's out-of-place surface, for like-for-like
-    /// counts: copy() and the 2/N scaling below are basic_real_fft::forward /
-    /// ::inverse's statements, so a port-vs-C delta is the transform's alone.
-    /// A bench adapter, not a consumer surface: Stage 2b routes basic_real_fft
-    /// itself at the engine and this class goes with the `_port` binaries.
+    namespace detail {
+        inline void reference_rdft(int n, int isgn, double* a, int* ip, double* w) {
+            rdft(n, isgn, a, ip, w);
+        }
+        inline void reference_rdft(int n, int isgn, float* a, int* ip, float* w) {
+            rdft_f(n, isgn, a, ip, w);
+        }
+    } // namespace detail
+
+    /// The vendored C behind basic_real_fft's out-of-place surface, for
+    /// like-for-like counts: the workspace geometry readme.txt prescribes
+    /// (ip: 2 + sqrt(n/2), w: n/2), the first-call protocol (ip[0] = 0, so
+    /// the C builds its tables inside the first transform, as it always did),
+    /// and copy() and the 2/N scaling exactly as basic_real_fft::forward /
+    /// ::inverse write them, so a C-vs-shipping delta is the transform's
+    /// alone. A bench adapter, not a consumer surface; it goes with the C at
+    /// Stage 2c. rdft / rdft_f are the extern "C" declarations fft.h still
+    /// carries, resolved from the tap_dsp_fft library tap::dsp links.
     template <typename Sample>
-    class split_radix_bench_adapter {
+    class reference_c_bench_adapter {
       public:
-        explicit split_radix_bench_adapter(std::size_t n)
+        explicit reference_c_bench_adapter(std::size_t n)
             : m_size(static_cast<int>(n))
-            , m_engine(n) {}
+            , m_ip(2 + static_cast<std::size_t>(std::sqrt(static_cast<double>(n) / 2.0)) + 1, 0)
+            , m_w(n / 2, Sample(0)) {
+            m_ip[0] = 0;
+        }
 
-        std::size_t size() const noexcept { return m_engine.size(); }
+        std::size_t size() const noexcept { return static_cast<std::size_t>(m_size); }
 
-        void forward_inplace(Sample* data) noexcept { m_engine.forward_inplace(data); }
-        void inverse_inplace(Sample* data) noexcept { m_engine.inverse_inplace(data); }
+        void forward_inplace(Sample* data) noexcept {
+            detail::reference_rdft(m_size, 1, data, m_ip.data(), m_w.data());
+        }
+        void inverse_inplace(Sample* data) noexcept {
+            detail::reference_rdft(m_size, -1, data, m_ip.data(), m_w.data());
+        }
 
         void forward(const Sample* input, Sample* output) noexcept {
             copy(input, output);
@@ -99,23 +125,25 @@ namespace tap::dsp::bench {
             }
         }
 
-        int                                        m_size;
-        tap::dsp::detail::split_radix_rdft<Sample> m_engine;
+        int                 m_size;
+        std::vector<int>    m_ip;
+        std::vector<Sample> m_w;
     };
 
     /// The transform under test for the selected engine.
     template <typename Sample>
-    using fft_under_test = std::conditional_t<k_engine_is_split_radix, split_radix_bench_adapter<Sample>,
+    using fft_under_test = std::conditional_t<k_engine_is_reference_c, reference_c_bench_adapter<Sample>,
                                               tap::dsp::basic_real_fft<Sample>>;
 
-    /// Which backend the transform under test runs on. For reference_c: what
-    /// basic_real_fft<Sample> was built over, from the macros fft.h switches
-    /// on (the accelerated backends apply to float only; double is always the
-    /// Ooura C). For split_radix: the port itself, which has no backend.
+    /// Which backend the transform under test runs on. For basic_real_fft:
+    /// what the class was built over, from the macros fft.h switches on (the
+    /// accelerated backends apply to float only; double is always the
+    /// split-radix engine). For reference_c: the vendored C, which has no
+    /// backend.
     template <typename Sample>
     constexpr const char* backend_name() noexcept {
-        if constexpr (k_engine_is_split_radix) {
-            return "split_radix";
+        if constexpr (k_engine_is_reference_c) {
+            return "ooura_c";
         }
         else if constexpr (std::is_same_v<Sample, float>) {
 #if defined(TAP_DSP_FFT_CMSIS)
@@ -123,11 +151,11 @@ namespace tap::dsp::bench {
 #elif defined(TAP_DSP_FFT_ACCELERATE)
             return "accelerate";
 #else
-            return "ooura";
+            return "split_radix";
 #endif
         }
         else {
-            return "ooura";
+            return "split_radix";
         }
     }
 

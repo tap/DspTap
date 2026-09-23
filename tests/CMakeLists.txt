@@ -116,7 +116,9 @@ endfunction()
 #   - MultitoneAnalysis: the double joint-fit instrument floor, same reason.
 # Everything else — every float32 suite, the double real_fft contract suite,
 # every float-tracks-double oracle check, the FFT backend suites (CMSIS-DSP
-# Helium against Ooura on the M55), fir_kernels over float/Q15/Q31, decimate,
+# Helium against the split-radix engine on the M55) and the Stage 2b routing
+# proof (test_fft_routing.cpp: basic_real_fft is the engine byte for byte
+# where no backend is selected), fir_kernels over float/Q15/Q31, decimate,
 # sample_traits, quantize, the cheap Kaiser tests, SineAnalysis, and whatever
 # a later PR appends — runs on target.
 # ------------------------------------------------------------------------------
@@ -128,6 +130,7 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_fft_arith.cpp
         test_fft_backend.cpp
         test_fft_fixed.cpp
+        test_fft_routing.cpp
         test_fir_kernels.cpp
         test_kaiser.cpp
         test_log_mel.cpp

@@ -17,7 +17,8 @@
 // is an exponent. Every transform returns e such that the double golden
 // model's result on the same input, read as fractions of full scale, equals
 // this buffer times 2^e (up to rounding noise). Details, per profile and
-// policy, in the class docstring below and in docs/fft-fixed-point.md.
+// policy, in the class docstring below and in docs/fft-design.md ("The
+// fixed-point profiles").
 //
 // Implemented from the published literature only (house IP policy):
 //   P. D. Welch, "A fixed-point fast Fourier transform error analysis,"
@@ -141,7 +142,7 @@ namespace tap::dsp {
         /// prints (against basic_real_fft<double> on the same quantized
         /// input, output-referred, forward; N = 256 / 512 / 2048, white
         /// noise at 0 / -20 / -40 / -60 dBFS and an on-bin tone; the full
-        /// table is in docs/fft-fixed-point.md beside the Welch model):
+        /// table is in docs/fft-design.md beside the Welch model):
         ///   - Q15, fixed: 0.26 - 0.30 LSB rms at every N and level, the
         ///     narrow's own round-half-up (1/sqrt(12) = 0.289); the int32
         ///     kernel's noise (0.58 LSB32 predicted) is 2^-14 of a Q15 LSB.

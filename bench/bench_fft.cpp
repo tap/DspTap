@@ -13,9 +13,11 @@
 // rfft_f32_512, rfft_f32_2048, rfft_f64_512. Each rep runs a batch of
 // out-of-place forward() calls and, separately, a batch of inverse() calls
 // (the class's scaled inverse), and the minimum over reps is reported per
-// transform. From Stage 2a the port and the C build side by side here via
-// TAP_DSP_BENCH_ENGINE; after Stage 2c the recorded C numbers are the
-// comparison.
+// transform. TAP_DSP_BENCH_ENGINE selects what is timed: basic_real_fft
+// (what ships; the split-radix engine since Stage 2b) or, until Stage 2c
+// retires it, reference_c (the vendored C called directly), so the port and
+// the C can be timed side by side on one machine; after 2c the recorded C
+// numbers in docs/fft-design.md are the comparison.
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
