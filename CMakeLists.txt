@@ -27,11 +27,13 @@ project(DspTap VERSION 0.1.0 LANGUAGES C CXX)
 # The library proper (header-only)
 # ------------------------------------------------------------------------------
 
+# Consumed by add_subdirectory only: there is no install() / export() rule, by
+# decision (docs/audit-fft-and-code-smells.md, Part 6, P11), so the include
+# directory has no $<INSTALL_INTERFACE> half (Stage 6 removed the dead one).
 add_library(tap_dsp INTERFACE)
 add_library(tap::dsp ALIAS tap_dsp)
 target_include_directories(tap_dsp INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>)
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_compile_features(tap_dsp INTERFACE cxx_std_20)
 
 # ------------------------------------------------------------------------------
