@@ -241,9 +241,15 @@ namespace {
         if (ib < 0) {
             ib = std::numeric_limits<bits_t>::min() - ib;
         }
+        // After the fold the images order like the values (negatives below
+        // zero), so compare them signed; subtract in uint64, where the true
+        // distance always fits (below 2^64 - 1 for the double image, whose
+        // signed difference could overflow). Comparing the widened images
+        // unsigned put a negative image above every positive one and reported
+        // 2^64 - d for an opposite-sign pair (review A of tap/DspTap#32).
         const std::uint64_t ua = static_cast<std::uint64_t>(ia);
         const std::uint64_t ub = static_cast<std::uint64_t>(ib);
-        return ua > ub ? ua - ub : ub - ua;
+        return ia > ib ? ua - ub : ub - ua;
     }
 
     struct comparison {
