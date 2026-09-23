@@ -7,7 +7,7 @@ stage by stage; every entry that still depends on a measurement is marked
 far: Stage 2a (the port beside the C, tap/DspTap#28), Stage 3b (the Q15 / Q31
 profiles, tap/DspTap#27; its design record, formerly `docs/fft-fixed-point.md`,
 is folded in below as "The fixed-point profiles") and Stage 2b (the routing
-flip, tap/DspTap#30). Until every stage has landed, the plan of record is
+flip, tap/DspTap#31). Until every stage has landed, the plan of record is
 [`audit-fft-and-code-smells.md`](audit-fft-and-code-smells.md) (parts are
 cited as "audit Part N" below), and each PR links its stage.*
 
@@ -35,7 +35,7 @@ consumer-side spectrum arithmetic (that is the Stage 5 packed-spectrum view).
 
 The header owns these numbers and the tests pin them; this table is the
 cross-reference, and an entry that names a test is pinned by it. Floating-point
-rows are the shipping `fft.h` since the Stage 2b flip (tap/DspTap#30: the
+rows are the shipping `fft.h` since the Stage 2b flip (tap/DspTap#31: the
 split-radix engine, whose outputs are bit-identical to the vendored C's at
 `5ca3b1c`, so no floating number moved); fixed-point rows are the Stage 3b
 kernel as merged in tap/DspTap#27, with the measurements in "The fixed-point
@@ -678,7 +678,7 @@ SHA, toolchain and QEMU versions; the gate itself lives in
 
 ### `.text` per profile at N = 512 (`TODO(stage 3b follow-up)` for the fixed-point columns; ceilings not yet recorded)
 
-**Stage 2b (the flip; tap/DspTap#30).** Measured on the seeding run of the
+**Stage 2b (the flip; tap/DspTap#31).** Measured on the seeding run of the
 2b branch (`b078a80`, bench run 35844483811, 2026-09-23, arm-none-eabi-gcc
 13.2.1 (15:13.2.rel1-2), QEMU 8.2.2 (1:8.2.2+ds-0ubuntu1.18), ubuntu-24.04).
 The shipping probe is `basic_real_fft<float>` (the split-radix engine, or
@@ -732,7 +732,7 @@ rdft-reachable text, `--gc-sections`): float 15.7 KB at `-Os`, 19.9 KB at
 
 ### Instructions per scenario (`TODO(stage 3b follow-up)` for the fixed-point rows)
 
-**Stage 2b (the flip; tap/DspTap#30): the baselines re-recorded to the
+**Stage 2b (the flip; tap/DspTap#31): the baselines re-recorded to the
 port.** Same run as the sizes above (35844483811 at `b078a80`, seed mode on
 the four split-radix keys, compare mode on `m55`). "C" is the seeded
 baseline (`df482d1`, the vendored C through `basic_real_fft`); "port" is the
@@ -806,7 +806,26 @@ what `tap::dsp` links, so this is startup and layout, not the transform.
 
 ### Host microbenchmark (`bench/bench_fft.cpp`, informational)
 
-`TODO(stage 2b)`: port vs C, min-of-N wall clock, with machine and date.
+Measured at Stage 2b (2026-09-23) on the development container: Intel Xeon
+@ 2.10 GHz (4 vCPUs, a shared cloud VM), Ubuntu 24.04, g++ 13.3.0, Release
+(`-O3 -DNDEBUG`, no `-march`), `tap_dsp_bench_fft` min of 25 reps of 2^20
+samples per direction; `basic_real_fft` (the routed port) and `reference_c`
+(the vendored C through the bench adapter) built in two configure trees and
+run alternately, twice each; 1-minute load average 2.7 – 6.7 (other builds
+were finishing on the machine), so only the port/C ratio is worth reading,
+and the numbers are one machine's:
+
+| Scenario | port, forward / inverse ns | C, forward / inverse ns | port / C, round trip |
+|---|---|---|---|
+| `rfft_f32_512` | 1482 – 1483 / 1523 – 1526 | 1510 – 1512 / 1598 – 1605 | 0.966 – 0.968 |
+| `rfft_f32_2048` | 7134 – 7296 / 7219 – 7301 | 7158 – 7160 / 7502 – 7513 | 0.984 – 0.990 |
+| `rfft_f64_512` | 1438 – 1449 / 1628 – 1631 | 1434 – 1435 / 1634 – 1656 | 0.992 – 1.004 |
+
+The port is at parity with the C on x86-64 without `-march` (the inverse
+is a few percent faster, the double forward a few tenths of a percent
+slower: the same statements, one compiler, differently inlined), which is
+what the instruction counts on the Cortex-M keys also say. Both binaries
+print the same output checksums (`f32=-4753.16699`, `f64=-1903.0533955268113`).
 `TODO(stage 4)`: Ooura-port vs vDSP same-binary on Apple Silicon. The existing
 "~3× faster / ~3× fewer instructions vs autovectorized Ooura" claims in
 `fft.h` and the README are the consumers' measurements on the vendored C and
@@ -820,7 +839,7 @@ The vendored `fftsg.c` was textually identical between MuTap and AmbiTap
 before DspTap consolidated the wrappers; the FFT's Tap lineage is the
 AmbiTap/MuTap one. The C++20 port landed at Stage 2a (tap/DspTap#28) as
 `include/tap/dsp/fft/split_radix.h`, beside the C and routed nowhere, with
-the banner below in place; Stage 2b (tap/DspTap#30) routed `basic_real_fft`
+the banner below in place; Stage 2b (tap/DspTap#31) routed `basic_real_fft`
 at it, and the C stays in the tree as the parity reference until Stage 2c.
 What is vendored is one source file of Ooura's package plus
 its `readme.txt` — see `NOTICE.md` for exactly how the vendored file differs
@@ -1001,4 +1020,4 @@ byte-identical.
 | SHA | Stage | Profile(s) | What moved | Consumer pins re-measured |
 |---|---|---|---|---|
 | tap/DspTap#27 (`b08f6c6` on `main`) | 3b | Q15, Q31 | the profiles exist: `basic_real_fft<std::int16_t \| std::int32_t, Scaling>` returning an exponent, `scaling::fixed` / `scaling::block_floating`, the numbers in the table above | none (no consumer on fixed point) |
-| tap/DspTap#30 (Stage 2b; the squash SHA on `main` is the one MuTap's bump pins) | 2b | `double`, `float` | **no output bit**: `basic_real_fft` routes to `detail::split_radix_rdft` instead of the vendored C (bit-identical, both precisions); tables built in the constructor (no first-call cost); `forward(const float*, float*)` / `inverse(const float*, float*)` on the double engine `[[deprecated]]` (D5); fp-contraction policy stated (D9: no export) | MuTap fingerprint harness: 14 rows byte-identical, float rows included; `test_float32`, `test_g168`, `test_nn_suppressor` unchanged; DspTap icount baselines re-recorded to the port's counts (`bench/README.md`) |
+| tap/DspTap#31 (Stage 2b; the squash SHA on `main` is the one MuTap's bump pins) | 2b | `double`, `float` | **no output bit**: `basic_real_fft` routes to `detail::split_radix_rdft` instead of the vendored C (bit-identical, both precisions); tables built in the constructor (no first-call cost); `forward(const float*, float*)` / `inverse(const float*, float*)` on the double engine `[[deprecated]]` (D5); fp-contraction policy stated (D9: no export) | MuTap fingerprint harness: 14 rows byte-identical, float rows included; `test_float32`, `test_g168`, `test_nn_suppressor` unchanged; DspTap icount baselines re-recorded to the port's counts (`bench/README.md`) |

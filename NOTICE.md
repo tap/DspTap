@@ -40,7 +40,7 @@ its own license text:
   (`include/tap/dsp/fft/split_radix.h`, a statement-for-statement
   transliteration). It landed at Stage 2a (tap/DspTap#28) beside the vendored
   C, bit-identical to it for both precisions under the parity gate
-  (`tests/test_fft_parity_ooura.cpp`), and Stage 2b (tap/DspTap#30) routed
+  (`tests/test_fft_parity_ooura.cpp`), and Stage 2b (tap/DspTap#31) routed
   `basic_real_fft` at it: every floating transform a consumer runs is the port.
   The vendored `fftsg.c` / `fftsg_float.c` remain in the tree, and in the
   `tap_dsp_fft` static library, only as the parity reference the gate compares
