@@ -9,6 +9,7 @@
 // end and to exercise the ABI the way a binding does (the notebooks' ctypes bridge is such a
 // binding). Returns the number of failed checks.
 
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -245,9 +246,10 @@ static void check_profile(int profile, const char* name, int n) {
 /// header's precondition instead of handing out a handle the header only asserts on, and every
 /// handle function returns -1 (or does nothing, for destroy) on a NULL handle.
 static void check_other_primitives(void) {
-    CHECK(dsptap_yin_create(800, 1, 800) == NULL);   // tau_min < 2
-    CHECK(dsptap_yin_create(800, 800, 800) == NULL); // tau_min >= tau_max
-    CHECK(dsptap_yin_create(799, 20, 800) == NULL);  // window < tau_max
+    CHECK(dsptap_yin_create(800, 1, 800) == NULL);      // tau_min < 2
+    CHECK(dsptap_yin_create(800, 800, 800) == NULL);    // tau_min >= tau_max
+    CHECK(dsptap_yin_create(799, 20, 800) == NULL);     // window < tau_max
+    CHECK(dsptap_yin_create(INT_MAX, 20, 100) == NULL); // window + tau_max overflows yin.h's int geometry
     CHECK(dsptap_psola_create(15) == NULL);
     CHECK(dsptap_psola_create(1 << 26) == NULL); // psola.h: max_period < 2^26
     CHECK(dsptap_pvoc_create(32) == NULL);
@@ -298,14 +300,19 @@ static void check_other_primitives(void) {
     }
 }
 
+/// decimate.h called ONCE over the whole stream (test_capi_reference.cpp, C++, linked into this
+/// executable only): the independent side of the chunking check below.
+int dsptap_test_reference_decimate(int ratio, int transparent, const double* in, int n, double* out);
+
 /// The decimator's process path stages through buffers sized at create (4096 inputs per block):
 /// a call far longer than a block, a call split at arbitrary points and a truncating max_out all
-/// agree bit for bit with decimate.h's chunking-invariant stream.
+/// agree bit for bit with decimate.h's single-call output over the same stream.
 static void check_decimator(void) {
     enum { k_n = 20011 };
     static double x[k_n];
     static double whole[k_n];
     static double parts[k_n];
+    static double ref[k_n];
     for (int j = 0; j < k_n; ++j) {
         x[j] = 0.6 * sin(0.013 * (double)j) + 0.3 * cos(0.37 * (double)j);
     }
@@ -316,6 +323,8 @@ static void check_decimator(void) {
         const int expect = dsptap_decimator_outputs_for(d, k_n);
         CHECK(expect == (k_n + ratios[r] - 1) / ratios[r]); // ceil(n / M) from a fresh instance
         CHECK(dsptap_decimator_process(d, x, k_n, whole, k_n) == expect);
+        CHECK(dsptap_test_reference_decimate(ratios[r], 1, x, k_n, ref) == expect);
+        CHECK(memcmp(whole, ref, (size_t)expect * sizeof(double)) == 0);
 
         CHECK(dsptap_decimator_reset(d) == 0);
         const int cuts[] = {0, 1, 7, 4096, 4097, 9000, 17000, k_n};
