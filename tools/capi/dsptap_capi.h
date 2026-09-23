@@ -27,10 +27,12 @@
 ///        Stage 6 (docs/audit-fft-and-code-smells.md, Part 2 "capi"): the six handle typedefs are
 ///        pointers to distinct incomplete structs instead of void* (binary-compatible: every
 ///        handle is still one pointer, and the ctypes bridge's c_void_p is unchanged;
-///        source-compatible for C; a C++ caller that stored a handle as void* now needs the
-///        typedef); every entry point is DSPTAP_NOEXCEPT; dsptap_pvoc_create returns NULL above
-///        fft_size 2^28 and dsptap_psola_create at max_period 2^26 or more (the headers'
-///        preconditions, previously unchecked here); dsptap_decimator_process no longer
+///        source-compatible for C code that holds handles as void*; function pointers typed on
+///        void* handles must be retyped, and a C++ caller that stored a handle as void* now needs
+///        the typedef); every entry point is DSPTAP_NOEXCEPT; dsptap_pvoc_create returns NULL
+///        above fft_size 2^28, dsptap_psola_create at max_period 2^26 or more, and
+///        dsptap_yin_create when window + tau_max exceeds INT_MAX (the headers' preconditions,
+///        previously unchecked here); dsptap_decimator_process no longer
 ///        allocates; DSPTAP_API is dllexport only while building the library (DSPTAP_BUILDING)
 ///        and dllimport for a consumer on Windows.
 // SPDX-License-Identifier: MIT
@@ -213,7 +215,8 @@ DSPTAP_API int dsptap_fft_inverse_inplace_raw_exp(dsptap_fft h, void* data, int*
 /// -- yin ------------------------------------------------------------------------------------
 
 /// Create a detector (window, tau_min, tau_max as in tap::dsp::basic_yin), or NULL on bad geometry
-/// (the header's 2 <= tau_min < tau_max <= window) or allocation failure.
+/// (the header's 2 <= tau_min < tau_max <= window and window + tau_max <= INT_MAX) or allocation
+/// failure.
 DSPTAP_API dsptap_yin dsptap_yin_create(int window, int tau_min, int tau_max) DSPTAP_NOEXCEPT;
 DSPTAP_API void       dsptap_yin_destroy(dsptap_yin h) DSPTAP_NOEXCEPT;
 DSPTAP_API int        dsptap_yin_set_threshold(dsptap_yin h, double threshold) DSPTAP_NOEXCEPT;

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <new>
 #include <type_traits>
@@ -454,6 +455,9 @@ int dsptap_fft_inverse_inplace_raw_exp(dsptap_fft h, void* data, int* exponent) 
 dsptap_yin dsptap_yin_create(int window, int tau_min, int tau_max) DSPTAP_NOEXCEPT {
     if (tau_min < 2 || tau_min >= tau_max || window < tau_max) {
         return nullptr; // yin.h's @pre, which the header only asserts
+    }
+    if (window > std::numeric_limits<int>::max() - tau_max) {
+        return nullptr; // yin.h's @pre: window + tau_max (frame_size(), an int sum) must fit an int
     }
     try {
         return new dsptap_yin_s(static_cast<std::size_t>(window), static_cast<std::size_t>(tau_min),
