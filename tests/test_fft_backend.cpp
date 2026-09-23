@@ -14,12 +14,16 @@
 //                                           the same-binary comparison the plan
 //                                           asked for;
 //   - detail::cmsis_real_fft_f32            on the Cortex-M55 QEMU leg
-//                                           (TAP_DSP_FFT_CMSIS). CMSIS cannot
-//                                           run on a host, so the CMSIS-vs-
-//                                           split-radix parity below is exercised
-//                                           on that leg alone; nobody runs it
-//                                           anywhere else, and Stage 4 records
-//                                           that gap rather than closing it.
+//                                           (TAP_DSP_FFT_CMSIS), where the
+//                                           CMSIS-vs-split-radix rows have run
+//                                           under emulation since that leg
+//                                           landed (main's version compared
+//                                           basic_real_fft<float> — CMSIS under
+//                                           the define — to the reference);
+//                                           since Stage 4 they are typed rows
+//                                           beside the split-radix ones in one
+//                                           binary. Never on a host and never on
+//                                           hardware: recorded, not closed.
 //
 // Each row pins basic_real_fft<float, Engine> to the reference float engine —
 // detail::split_radix_rdft<float> called directly, the C++20 transliteration

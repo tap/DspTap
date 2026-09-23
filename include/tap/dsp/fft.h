@@ -394,9 +394,12 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     /// appending ~30 unrelated lines to the TU made the outputs identical
     /// again. The double codegen moved in that experiment too, so "double
     /// does not move under g++ with FMA" (the 2b measurement) is an
-    /// observation, not a guarantee. Bit identity still holds at
-    /// -ffp-contract=off, on clang (per-statement contraction), on MSVC and
-    /// on all four QEMU legs. Why no export: an
+    /// observation, not a guarantee. Two experiments, kept apart: the
+    /// engine-vs-reference-C gate is bit-identical at -ffp-contract=off on
+    /// both sides and, at default flags, on every CI platform including
+    /// MSVC and the four QEMU legs; the #34 fingerprint A/B (pvoc / log_mel
+    /// through this class, main vs branch) was run on g++ and on the M33
+    /// leg, and NOT on MSVC or AppleClang. Why no export: an
     /// INTERFACE -ffp-contract=off would reach
     /// every consumer translation unit that includes this header and would
     /// pessimize the VFMA / FMA targets the float profile exists for (the

@@ -32,8 +32,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <type_traits>
+#include <typeinfo>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -43,10 +45,6 @@
 #include "tap/dsp/fft/split_radix.h"
 #include "tap/dsp/log_mel.h"
 #include "tap/dsp/pvoc.h"
-
-#if defined(__cpp_rtti)
-#include <typeinfo>
-#endif
 
 namespace {
 
@@ -206,6 +204,27 @@ namespace {
         }
     }
 
+    // The range numbers, as a row in the listing (the static_asserts above
+    // are what fail a build; this is what a reader of the log sees).
+    TEST(fft_engine, EngineRangesAreTheStatedNumbers) {
+        EXPECT_EQ(tap::dsp::real_fft::k_min_size, 4u);
+        EXPECT_EQ(tap::dsp::real_fft::k_max_size, std::size_t{1} << 30);
+        EXPECT_EQ(tap::dsp::real_fft32::k_min_size, k_expected_min);
+        EXPECT_EQ(tap::dsp::real_fft32::k_max_size, k_expected_max);
+        EXPECT_EQ(split_radix_fft32::k_min_size, 4u);
+        EXPECT_EQ(split_radix_fft32::k_max_size, std::size_t{1} << 30);
+        EXPECT_EQ(tap::dsp::real_fft_q15::k_min_size, 4u);
+        EXPECT_EQ(tap::dsp::real_fft_q15::k_max_size, 65536u);
+        EXPECT_EQ(tap::dsp::real_fft_q31_bfp::k_min_size, 4u);
+        EXPECT_EQ(tap::dsp::real_fft_q31_bfp::k_max_size, 65536u);
+        EXPECT_EQ(split_radix_fft32::supports_size(16), true);
+        EXPECT_EQ(split_radix_fft32::supports_size(8192), true);
+#if defined(TAP_DSP_FFT_CMSIS)
+        EXPECT_FALSE(tap::dsp::real_fft32::supports_size(16));
+        EXPECT_FALSE(tap::dsp::real_fft32::supports_size(8192));
+#endif
+    }
+
     TEST(fft_engine, SupportsSizeIsThePowerOfTwoInterval) {
         expect_supports_size_is_the_interval<tap::dsp::real_fft>();
         expect_supports_size_is_the_interval<tap::dsp::real_fft32>();
@@ -215,10 +234,21 @@ namespace {
         expect_supports_size_is_the_interval<tap::dsp::real_fft_q31_bfp>();
     }
 
-    /// Acceptance at a size, not a floor: construct, forward, scaled inverse,
-    /// and require the input back within a loose bound (the per-N floors are
-    /// pinned in test_fft.cpp and test_fft_oracle.cpp; a wrong engine or a
-    /// broken table at a new size is off by orders of magnitude).
+    /// Round-trip floor of this corpus (seed 0x2545F491, amplitude 0.5) on
+    /// the split-radix float engine, worst |back - x| over the block,
+    /// measured 2026-09-23 on x86-64 with g++ 13.3.0 and clang++ 18.1.3 -O2
+    /// (both print the same values): 8.94e-8 at N = 16 and 32, 2.38e-7 at
+    /// 4096, 2.09e-7 at 8192, 2.68e-7 at 65536, 3.58e-7 at 2^20 (the largest
+    /// size this test constructs). Pinned at 8x the largest, 2.86e-6, so the
+    /// same pin serves the other two engines this test constructs at their
+    /// bounds without a measurement of their own here (CMSIS at 32 / 4096 on
+    /// the M55, vDSP at 4 / 2^20 on macOS; both agree with the split-radix
+    /// engine to float rounding, test_fft_backend.cpp) and prints its
+    /// measured value on every leg so the log carries their numbers. A wrong
+    /// table or a wrong engine at a new size is off by orders of magnitude.
+    constexpr float k_round_trip_floor_measured = 3.58e-7f;
+    constexpr float k_round_trip_pin            = 8.0f * k_round_trip_floor_measured;
+
     template <typename Fft>
     void expect_constructs_and_round_trips(std::size_t n) {
         ASSERT_TRUE(Fft::supports_size(n)) << "n=" << n;
@@ -232,7 +262,10 @@ namespace {
         for (std::size_t i = 0; i < n; ++i) {
             worst = std::fmax(worst, std::fabs(back[i] - x[i]));
         }
-        EXPECT_LT(worst, 1e-3f) << "n=" << n << " (acceptance bound; the floors are pinned elsewhere)";
+        std::printf("[ measured ] ConstructsAtTheRangeBounds: %s N=%zu worst |back - x| = %.3e (pin %.3e)\n",
+                    typeid(typename Fft::engine).name(), n, static_cast<double>(worst),
+                    static_cast<double>(k_round_trip_pin));
+        EXPECT_LT(worst, k_round_trip_pin) << "n=" << n;
     }
 
     // The bounds are constructed for real on every leg. The float default's

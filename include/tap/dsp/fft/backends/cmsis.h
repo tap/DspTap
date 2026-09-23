@@ -29,9 +29,15 @@ namespace tap::dsp::detail {
     /// engineering convention exp(-i2*pi/N) and a 1/N-normalized inverse;
     /// the contract is exp(+i2*pi/N) and an unnormalized inverse (caller
     /// applies 2/N). Reconciled by conjugating the imaginary bins on every
-    /// transform and scaling the inverse by N/2 — both verified against the
-    /// engine to <2e-7 relative error at N = 512 and N = 2048 (the certified
-    /// geometries, tests/test_fft_backend.cpp, on the Cortex-M55 QEMU leg).
+    /// transform and scaling the inverse by N/2. The pre-Stage-4 de-risk
+    /// measurement of the reconciliation was <2e-7 relative error at N = 512
+    /// and 2048; what the battery PINS on the Cortex-M55 QEMU leg is
+    /// 5e-6 x peak per bin against the split-radix engine and a 2e-5
+    /// absolute round trip, at the certified geometries
+    /// (`fft_backend_parity/cmsis.ForwardMatchesOoura`,
+    /// `RoundTripReproducesInput`, tests/test_fft_backend.cpp), plus
+    /// bit-stability across buffer addresses and tonal accuracy at 512 /
+    /// 2048 / 4096.
     ///
     /// Engine contract numbers (what basic_real_fft reads from every engine):
     ///   - Size range k_min_size = 32 … k_max_size = 4096, a power of two.
