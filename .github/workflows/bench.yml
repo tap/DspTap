@@ -84,33 +84,33 @@ jobs:
           - key: m4-softfp
             toolchain: cmake/arm-cortex-m4-mps2.cmake
             flags: -DTAP_DSP_M4_FPU=OFF -DTAP_DSP_FFT_CMSIS=OFF
-            text_ceiling_f32: 0
-            text_ceiling_q15: 0
-            text_ceiling_q31: 0
+            text_ceiling_f32: 54912
+            text_ceiling_q15: 32448
+            text_ceiling_q31: 31936
           - key: m4f
             toolchain: cmake/arm-cortex-m4-mps2.cmake
             flags: -DTAP_DSP_M4_FPU=ON -DTAP_DSP_FFT_CMSIS=OFF
-            text_ceiling_f32: 0
-            text_ceiling_q15: 0
-            text_ceiling_q31: 0
+            text_ceiling_f32: 45952
+            text_ceiling_q15: 32640
+            text_ceiling_q31: 32192
           - key: m33
             toolchain: cmake/arm-cortex-m33-mps2.cmake
             flags: -DTAP_DSP_FFT_CMSIS=OFF
-            text_ceiling_f32: 0
-            text_ceiling_q15: 0
-            text_ceiling_q31: 0
+            text_ceiling_f32: 45376
+            text_ceiling_q15: 32064
+            text_ceiling_q31: 31552
           - key: m55
             toolchain: cmake/arm-cortex-m55-mps3.cmake
             flags: ""
-            text_ceiling_f32: 0
-            text_ceiling_q15: 0
-            text_ceiling_q31: 0
+            text_ceiling_f32: 110912
+            text_ceiling_q15: 27968
+            text_ceiling_q31: 27392
           - key: m55-ooura
             toolchain: cmake/arm-cortex-m55-mps3.cmake
             flags: -DTAP_DSP_FFT_CMSIS=OFF
-            text_ceiling_f32: 0
-            text_ceiling_q15: 0
-            text_ceiling_q31: 0
+            text_ceiling_f32: 40512
+            text_ceiling_q15: 27968
+            text_ceiling_q31: 27392
     env:
       # Commit the tag pointed at when pinned (tags are movable; commit SHAs
       # are not); the header's digest is verified on download. This SHA is

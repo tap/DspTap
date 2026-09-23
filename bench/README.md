@@ -102,7 +102,9 @@ names what the build routed `basic_real_fft` through: `split_radix`,
 Q31.
 
 Why these numbers: on the host (x86-64, GCC 13 `-O2`, callgrind) the three
-scenarios execute 109 M, 125 M and 108 M instructions.
+floating scenarios execute 109 M, 125 M and 108 M instructions (the three
+fixed-point ones 434 M, 407 M and 495 M at `-O3`, of which the kernel's two
+radix-4 stage functions are 71-80 %; construction is under 0.5 %).
 Construction plus the one-time table build plus the print is under
 0.2 M — well under the 1 % the design asks for. The share of the count that
 is not the transform itself — the class's out-of-place copies, the 2/N
@@ -170,6 +172,22 @@ shape is fixed so the record stays greppable:
 | m55 | rfft_f32_2048 | 54,858,120 | 54,858,120 | +0.00 % | **not re-recorded**: CMSIS-DSP Helium is untouched by the flip; the same run measured 54,858,195 (+75 instructions, +0.00 %: the wrapper lost its two unused Ooura workspace vectors and the DONE line's `engine=` string grew by three characters) | run 35844483811, compare mode | — | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
 | m55 | rfft_f32_512 | 52,382,331 | 52,382,331 | +0.00 % | as above; measured 52,382,366 (+35 instructions, +0.00 %) | run 35844483811, compare mode | — | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
 
+| m4-softfp | rfft_q15_512 | — | 746,311,273 | — | **seeded at Stage 2c** (the Q15/Q31 scenarios Stage 3b specified, Part 11; `basic_real_fft<std::int16_t \| std::int32_t>` under `scaling::fixed`, the int32 kernel on every key: fixed point has no backend, so the two M55 keys measure the same binary) | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (workflow_dispatch on the PR branch at `21b3488`; the PR's compare-mode run confirms +0.00 %) | **pending** — the Stage 2c squash SHA on `main`, filled in by the follow-up that pins it (the MuTap bump) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m4-softfp | rfft_q31_512 | — | 709,161,574 | — | **seeded at Stage 2c** (the Q15/Q31 scenarios Stage 3b specified, Part 11; `basic_real_fft<std::int16_t \| std::int32_t>` under `scaling::fixed`, the int32 kernel on every key: fixed point has no backend, so the two M55 keys measure the same binary) | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (workflow_dispatch on the PR branch at `21b3488`; the PR's compare-mode run confirms +0.00 %) | **pending** — the Stage 2c squash SHA on `main`, filled in by the follow-up that pins it (the MuTap bump) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m4-softfp | rfft_q31_2048 | — | 869,187,566 | — | **seeded at Stage 2c** (the Q15/Q31 scenarios Stage 3b specified, Part 11; `basic_real_fft<std::int16_t \| std::int32_t>` under `scaling::fixed`, the int32 kernel on every key: fixed point has no backend, so the two M55 keys measure the same binary) | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (workflow_dispatch on the PR branch at `21b3488`; the PR's compare-mode run confirms +0.00 %) | **pending** — the Stage 2c squash SHA on `main`, filled in by the follow-up that pins it (the MuTap bump) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m4f | rfft_q15_512 | — | 753,215,637 | — | **seeded at Stage 2c** (the Q15/Q31 scenarios Stage 3b specified, Part 11; `basic_real_fft<std::int16_t \| std::int32_t>` under `scaling::fixed`, the int32 kernel on every key: fixed point has no backend, so the two M55 keys measure the same binary) | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (workflow_dispatch on the PR branch at `21b3488`; the PR's compare-mode run confirms +0.00 %) | **pending** — the Stage 2c squash SHA on `main`, filled in by the follow-up that pins it (the MuTap bump) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m4f | rfft_q31_512 | — | 715,019,447 | — | **seeded at Stage 2c** (the Q15/Q31 scenarios Stage 3b specified, Part 11; `basic_real_fft<std::int16_t \| std::int32_t>` under `scaling::fixed`, the int32 kernel on every key: fixed point has no backend, so the two M55 keys measure the same binary) | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (workflow_dispatch on the PR branch at `21b3488`; the PR's compare-mode run confirms +0.00 %) | **pending** — the Stage 2c squash SHA on `main`, filled in by the follow-up that pins it (the MuTap bump) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m4f | rfft_q31_2048 | — | 876,486,909 | — | **seeded at Stage 2c** (the Q15/Q31 scenarios Stage 3b specified, Part 11; `basic_real_fft<std::int16_t \| std::int32_t>` under `scaling::fixed`, the int32 kernel on every key: fixed point has no backend, so the two M55 keys measure the same binary) | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (workflow_dispatch on the PR branch at `21b3488`; the PR's compare-mode run confirms +0.00 %) | **pending** — the Stage 2c squash SHA on `main`, filled in by the follow-up that pins it (the MuTap bump) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m33 | rfft_q15_512 | — | 752,189,619 | — | **seeded at Stage 2c** (the Q15/Q31 scenarios Stage 3b specified, Part 11; `basic_real_fft<std::int16_t \| std::int32_t>` under `scaling::fixed`, the int32 kernel on every key: fixed point has no backend, so the two M55 keys measure the same binary) | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (workflow_dispatch on the PR branch at `21b3488`; the PR's compare-mode run confirms +0.00 %) | **pending** — the Stage 2c squash SHA on `main`, filled in by the follow-up that pins it (the MuTap bump) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m33 | rfft_q31_512 | — | 714,626,257 | — | **seeded at Stage 2c** (the Q15/Q31 scenarios Stage 3b specified, Part 11; `basic_real_fft<std::int16_t \| std::int32_t>` under `scaling::fixed`, the int32 kernel on every key: fixed point has no backend, so the two M55 keys measure the same binary) | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (workflow_dispatch on the PR branch at `21b3488`; the PR's compare-mode run confirms +0.00 %) | **pending** — the Stage 2c squash SHA on `main`, filled in by the follow-up that pins it (the MuTap bump) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m33 | rfft_q31_2048 | — | 875,801,377 | — | **seeded at Stage 2c** (the Q15/Q31 scenarios Stage 3b specified, Part 11; `basic_real_fft<std::int16_t \| std::int32_t>` under `scaling::fixed`, the int32 kernel on every key: fixed point has no backend, so the two M55 keys measure the same binary) | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (workflow_dispatch on the PR branch at `21b3488`; the PR's compare-mode run confirms +0.00 %) | **pending** — the Stage 2c squash SHA on `main`, filled in by the follow-up that pins it (the MuTap bump) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m55 | rfft_q15_512 | — | 684,157,511 | — | **seeded at Stage 2c** (the Q15/Q31 scenarios Stage 3b specified, Part 11; `basic_real_fft<std::int16_t \| std::int32_t>` under `scaling::fixed`, the int32 kernel on every key: fixed point has no backend, so the two M55 keys measure the same binary) | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (workflow_dispatch on the PR branch at `21b3488`; the PR's compare-mode run confirms +0.00 %) | **pending** — the Stage 2c squash SHA on `main`, filled in by the follow-up that pins it (the MuTap bump) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m55 | rfft_q31_512 | — | 657,595,969 | — | **seeded at Stage 2c** (the Q15/Q31 scenarios Stage 3b specified, Part 11; `basic_real_fft<std::int16_t \| std::int32_t>` under `scaling::fixed`, the int32 kernel on every key: fixed point has no backend, so the two M55 keys measure the same binary) | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (workflow_dispatch on the PR branch at `21b3488`; the PR's compare-mode run confirms +0.00 %) | **pending** — the Stage 2c squash SHA on `main`, filled in by the follow-up that pins it (the MuTap bump) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m55 | rfft_q31_2048 | — | 806,142,635 | — | **seeded at Stage 2c** (the Q15/Q31 scenarios Stage 3b specified, Part 11; `basic_real_fft<std::int16_t \| std::int32_t>` under `scaling::fixed`, the int32 kernel on every key: fixed point has no backend, so the two M55 keys measure the same binary) | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (workflow_dispatch on the PR branch at `21b3488`; the PR's compare-mode run confirms +0.00 %) | **pending** — the Stage 2c squash SHA on `main`, filled in by the follow-up that pins it (the MuTap bump) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m55-ooura | rfft_q15_512 | — | 684,157,511 | — | **seeded at Stage 2c** (the Q15/Q31 scenarios Stage 3b specified, Part 11; `basic_real_fft<std::int16_t \| std::int32_t>` under `scaling::fixed`, the int32 kernel on every key: fixed point has no backend, so the two M55 keys measure the same binary) | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (workflow_dispatch on the PR branch at `21b3488`; the PR's compare-mode run confirms +0.00 %) | **pending** — the Stage 2c squash SHA on `main`, filled in by the follow-up that pins it (the MuTap bump) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m55-ooura | rfft_q31_512 | — | 657,595,969 | — | **seeded at Stage 2c** (the Q15/Q31 scenarios Stage 3b specified, Part 11; `basic_real_fft<std::int16_t \| std::int32_t>` under `scaling::fixed`, the int32 kernel on every key: fixed point has no backend, so the two M55 keys measure the same binary) | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (workflow_dispatch on the PR branch at `21b3488`; the PR's compare-mode run confirms +0.00 %) | **pending** — the Stage 2c squash SHA on `main`, filled in by the follow-up that pins it (the MuTap bump) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m55-ooura | rfft_q31_2048 | — | 806,142,635 | — | **seeded at Stage 2c** (the Q15/Q31 scenarios Stage 3b specified, Part 11; `basic_real_fft<std::int16_t \| std::int32_t>` under `scaling::fixed`, the int32 kernel on every key: fixed point has no backend, so the two M55 keys measure the same binary) | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (workflow_dispatch on the PR branch at `21b3488`; the PR's compare-mode run confirms +0.00 %) | **pending** — the Stage 2c squash SHA on `main`, filled in by the follow-up that pins it (the MuTap bump) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+
 `before` is `—` for a seed. `main SHA` is the commit on `main` whose push
 run measured the numbers: a pull-request head SHA stops resolving after
 this repo's rebase/squash + branch-delete flow, so a seed or update is never
@@ -194,6 +212,31 @@ is the seeded baseline):
 | m33 | 102,248,169 → 100,945,841 | 0.9873 | 116,385,409 → 115,465,626 | 0.9921 | identical |
 | m55-ooura | 94,561,954 → 89,276,321 | 0.9441 | 107,806,480 → 102,784,096 | 0.9534 | identical |
 | m55 (CMSIS, not re-recorded) | 52,382,331 → 52,382,366 | 1.0000 | 54,858,120 → 54,858,195 | 1.0000 | n/a (CMSIS vs CMSIS; the `_c` sibling is the Ooura C and differs, as expected) |
+
+### Sizes: recorded `.text` and ceilings
+
+One row per (key, probe) each time a ceiling is recorded or re-recorded; the
+policy is under "Size runs in the same job" below. `.text` is the row of
+`arm-none-eabi-size -A` on the MinSizeRel probe; the ceiling is what
+`bench.yml` carries for that key and profile.
+
+| key | probe | `.text` (bytes) | ceiling | reason | run (URL) | arm-none-eabi-gcc |
+|---|---|---|---|---|---|---|
+| m4-softfp | `rfft_f32_512` | 53,289 | 54,912 | **recorded at Stage 2c**: measured + 3 %, rounded up to 64 bytes | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (`21b3488`; MinSizeRel, `size -A` `.text`) | 13.2.1 (15:13.2.rel1-2) |
+| m4-softfp | `rfft_q15_512` | 31,473 | 32,448 | **recorded at Stage 2c**: measured + 3 %, rounded up to 64 bytes | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (`21b3488`; MinSizeRel, `size -A` `.text`) | 13.2.1 (15:13.2.rel1-2) |
+| m4-softfp | `rfft_q31_512` | 31,001 | 31,936 | **recorded at Stage 2c**: measured + 3 %, rounded up to 64 bytes | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (`21b3488`; MinSizeRel, `size -A` `.text`) | 13.2.1 (15:13.2.rel1-2) |
+| m4f | `rfft_f32_512` | 44,601 | 45,952 | **recorded at Stage 2c**: measured + 3 %, rounded up to 64 bytes | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (`21b3488`; MinSizeRel, `size -A` `.text`) | 13.2.1 (15:13.2.rel1-2) |
+| m4f | `rfft_q15_512` | 31,681 | 32,640 | **recorded at Stage 2c**: measured + 3 %, rounded up to 64 bytes | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (`21b3488`; MinSizeRel, `size -A` `.text`) | 13.2.1 (15:13.2.rel1-2) |
+| m4f | `rfft_q31_512` | 31,209 | 32,192 | **recorded at Stage 2c**: measured + 3 %, rounded up to 64 bytes | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (`21b3488`; MinSizeRel, `size -A` `.text`) | 13.2.1 (15:13.2.rel1-2) |
+| m33 | `rfft_f32_512` | 44,001 | 45,376 | **recorded at Stage 2c**: measured + 3 %, rounded up to 64 bytes | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (`21b3488`; MinSizeRel, `size -A` `.text`) | 13.2.1 (15:13.2.rel1-2) |
+| m33 | `rfft_q15_512` | 31,105 | 32,064 | **recorded at Stage 2c**: measured + 3 %, rounded up to 64 bytes | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (`21b3488`; MinSizeRel, `size -A` `.text`) | 13.2.1 (15:13.2.rel1-2) |
+| m33 | `rfft_q31_512` | 30,633 | 31,552 | **recorded at Stage 2c**: measured + 3 %, rounded up to 64 bytes | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (`21b3488`; MinSizeRel, `size -A` `.text`) | 13.2.1 (15:13.2.rel1-2) |
+| m55 | `rfft_f32_512` | 107,657 | 110,912 | **recorded at Stage 2c**: measured + 3 %, rounded up to 64 bytes | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (`21b3488`; MinSizeRel, `size -A` `.text`) | 13.2.1 (15:13.2.rel1-2) |
+| m55 | `rfft_q15_512` | 27,097 | 27,968 | **recorded at Stage 2c**: measured + 3 %, rounded up to 64 bytes | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (`21b3488`; MinSizeRel, `size -A` `.text`) | 13.2.1 (15:13.2.rel1-2) |
+| m55 | `rfft_q31_512` | 26,593 | 27,392 | **recorded at Stage 2c**: measured + 3 %, rounded up to 64 bytes | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (`21b3488`; MinSizeRel, `size -A` `.text`) | 13.2.1 (15:13.2.rel1-2) |
+| m55-ooura | `rfft_f32_512` | 39,281 | 40,512 | **recorded at Stage 2c**: measured + 3 %, rounded up to 64 bytes | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (`21b3488`; MinSizeRel, `size -A` `.text`) | 13.2.1 (15:13.2.rel1-2) |
+| m55-ooura | `rfft_q15_512` | 27,097 | 27,968 | **recorded at Stage 2c**: measured + 3 %, rounded up to 64 bytes | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (`21b3488`; MinSizeRel, `size -A` `.text`) | 13.2.1 (15:13.2.rel1-2) |
+| m55-ooura | `rfft_q31_512` | 26,593 | 27,392 | **recorded at Stage 2c**: measured + 3 %, rounded up to 64 bytes | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (`21b3488`; MinSizeRel, `size -A` `.text`) | 13.2.1 (15:13.2.rel1-2) |
 
 ### Seeding, and how the job decides what to do
 
@@ -220,9 +263,14 @@ by typing one in.
 
 The seeding commit copies `baselines-merged` to `bench/baselines.json`,
 adds the rows above with the `main` run's URL and SHA and the versions the
-job printed in its "Toolchain versions" step, sets the `text_ceiling`
-numbers in `bench.yml` from the same run's size step, and nothing else rides
-in it. From that commit on, the key's job compares and a red ratchet is a
+job printed in its "Toolchain versions" step, sets the `text_ceiling_*`
+numbers in `bench.yml` from the same run's size step (policy under "Sizes"
+above), and nothing else rides in it. A scenario added to a key that is
+already seeded (the Stage 2c fixed-point scenarios were the first) never
+sees seed mode: its count is read from a `workflow_dispatch` run's log or
+`measured-<key>` artifact — compare mode prints every new scenario as
+`NO BASELINE` and records it — and committed the same way, with its row.
+From that commit on, the key's job compares and a red ratchet is a
 failing check.
 
 The first push to `main` after the QEMU legs (#17) and this scaffold have
@@ -276,7 +324,7 @@ python3 scripts/icount.py --merge a.json b.json    # fold per-key files into one
   measured on the run that recorded it, plus 3 % (the family's number,
   one-sided here: only exceeding it fails), rounded up to the next multiple
   of 64 bytes; it is re-recorded the way a count is — a written commit with
-  a row in the sizes table below (before, after, reason, run) — when a
+  a row in the sizes table above (before, after, reason, run) — when a
   change legitimately moves the figure, and never widened to absorb one. The
   step runs with `pipefail` and fails on a `size` that fails or prints no
   numeric `.text` row, for any probe: a measurement that cannot be taken is
