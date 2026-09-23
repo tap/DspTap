@@ -302,3 +302,48 @@ target_link_libraries(tap_dsp_analysis_typed PRIVATE
 # ==============================================================================
 # END Stage 3c addition
 # ==============================================================================
+
+# ==============================================================================
+# BEGIN Stage 6 addition: the tidy gate's view of bench/ and tools/.
+# The style job (.github/workflows/style.yml, a taphouse file) configures the
+# compile database with -DTAP_DSP_BUILD_TESTS=ON only, so the TUs behind
+# TAP_DSP_BUILD_BENCH (bench/) and TAP_DSP_BUILD_CAPI (tools/capi/), and the
+# standalone fingerprint tool (tools/fingerprint/), were never in it and never
+# saw clang-tidy. Declared here as OBJECT libraries excluded from ALL: they
+# land in compile_commands.json (which is all the tidy gate reads) and are
+# never compiled by `cmake --build`, so the hosted battery's build time and
+# everything the QEMU legs build are unchanged. Only where the real targets are
+# absent (a configuration that builds them already lists them) and never on
+# bare metal. icount_main.cpp is listed twice, floating (precision 0) and fixed
+# point (precision 2), because its body is two preprocessor branches and
+# clang-tidy checks every compile command a file has.
+# ==============================================================================
+if(NOT TAP_DSP_BARE_METAL)
+    set(_tap_dsp_tidy_only_tus)
+    if(NOT TAP_DSP_BUILD_BENCH)
+        list(APPEND _tap_dsp_tidy_only_tus
+            bench_fft:${PROJECT_SOURCE_DIR}/bench/bench_fft.cpp:0
+            size_probe:${PROJECT_SOURCE_DIR}/bench/size_probe.cpp:0
+            icount_float:${PROJECT_SOURCE_DIR}/bench/icount/icount_main.cpp:0
+            icount_fixed:${PROJECT_SOURCE_DIR}/bench/icount/icount_main.cpp:2)
+    endif()
+    if(NOT TAP_DSP_BUILD_CAPI)
+        list(APPEND _tap_dsp_tidy_only_tus capi:${PROJECT_SOURCE_DIR}/tools/capi/dsptap_capi.cpp:0)
+    endif()
+    list(APPEND _tap_dsp_tidy_only_tus fingerprint:${PROJECT_SOURCE_DIR}/tools/fingerprint/fingerprint.cpp:0)
+    foreach(_tu IN LISTS _tap_dsp_tidy_only_tus)
+        string(REPLACE ":" ";" _parts "${_tu}")
+        list(GET _parts 0 _name)
+        list(GET _parts 1 _src)
+        list(GET _parts 2 _precision)
+        add_library(tap_dsp_tidy_only_${_name} OBJECT EXCLUDE_FROM_ALL ${_src})
+        target_include_directories(tap_dsp_tidy_only_${_name} PRIVATE
+            ${PROJECT_SOURCE_DIR}/bench ${PROJECT_SOURCE_DIR}/tools/capi)
+        target_compile_definitions(tap_dsp_tidy_only_${_name} PRIVATE
+            TAP_DSP_SC_PRECISION=${_precision} DSPTAP_BUILDING)
+        target_link_libraries(tap_dsp_tidy_only_${_name} PRIVATE tap::dsp tap_dsp_warnings)
+    endforeach()
+endif()
+# ==============================================================================
+# END Stage 6 addition
+# ==============================================================================
