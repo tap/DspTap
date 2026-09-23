@@ -6,8 +6,12 @@ Copyright(C) 1996-2001 Takuya OOURA
     without fee. You may distribute this ORIGINAL package.
 
 This file (fftsg.c, the split-radix "Fast Version III") is vendored from
-Ooura's General Purpose FFT Package; see readme.txt in this directory for the
-full package description and license. Only this single source file is bundled.
+Ooura's General Purpose FFT Package; see third_party/ooura/readme.txt (the
+package's readme, kept at that path permanently) for the full package
+description and license. Only this single source file is bundled. Since
+Stage 2c of docs/audit-fft-and-code-smells.md it lives under tests/reference/
+as the reference the bit-identity gate (tests/test_fft_parity_ooura.cpp)
+compares the shipping C++20 port against; it is not part of what ships.
 */
 
 /*

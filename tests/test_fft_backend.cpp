@@ -5,15 +5,18 @@
 // M55, TAP_DSP_FFT_ACCELERATE on Apple; see include/tap/dsp/fft.h and README.md).
 // When one is active, basic_real_fft<float> routes through that backend; this
 // test pins it to the reference float engine — detail::split_radix_rdft<float>,
-// the C++20 transliteration of Ooura's rdft_f that is bit-identical to the
-// vendored C (tests/test_fft_parity_ooura.cpp) — bin-for-bin at the two
-// certified geometries (512-pt canceller, 2048-pt suppressor analysis).
+// the C++20 transliteration of Ooura's rdft_f that is bit-identical to the C
+// it replaced (tests/test_fft_parity_ooura.cpp, against the reference copy
+// under tests/reference/ooura/) — bin-for-bin at the two certified
+// geometries (512-pt canceller, 2048-pt suppressor analysis).
 //
 // Before Stage 2b (docs/audit-fft-and-code-smells.md, Part 3) the reference
-// here was the raw rdft_f of fftsg_float.c. The 2b flip re-pointed it at the
-// ported engine, as the plan specifies: that is a change of oracle only
-// because the Stage 2a gate holds the engine bit-identical to the C, so the
-// numbers this file pins against are the same numbers.
+// here was the raw rdft_f of the then-vendored fftsg_float.c. The 2b flip
+// re-pointed it at the ported engine, as the plan specifies: that is a change
+// of oracle only because the Stage 2a gate holds the engine bit-identical to
+// the C, so the numbers this file pins against are the same numbers. Since
+// Stage 2c the C is no longer in the shipping tree at all (Decision D6), and
+// this file needs nothing from it.
 //
 // The reconciliation under test: both backends use the engineering convention
 // exp(-i2*pi/N), while our contract is Ooura's exp(+i2*pi/N) with an
@@ -48,7 +51,8 @@ namespace {
     // the engine, not basic_real_fft), so under TAP_DSP_FFT_CMSIS or
     // TAP_DSP_FFT_ACCELERATE it is the Ooura-contract golden model to compare
     // the wrapper against, and it is bit-identical to the rdft_f this struct
-    // called before the Stage 2b flip.
+    // called before the Stage 2b flip (the reference C under
+    // tests/reference/ooura/ since 2c).
     struct ooura_ref {
         tap::dsp::detail::split_radix_rdft<float> m_engine;
         explicit ooura_ref(int n)

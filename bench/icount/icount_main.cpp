@@ -10,10 +10,13 @@
 // targets have no argv:
 //
 //   TAP_DSP_SC_NAME       the scenario key in bench/baselines.json ("rfft_f32_512")
-//   TAP_DSP_SC_PRECISION  0 = float (the embedded profile), 1 = double (host-class
-//                         targets only: soft-float double is not a profile)
+//   TAP_DSP_SC_PRECISION  0 = float (the embedded floating profile), 1 = double
+//                         (host-class targets only: soft-float double is not a
+//                         profile), 2 = Q15 (std::int16_t), 3 = Q31
+//                         (std::int32_t), the two fixed-point profiles under
+//                         scaling::fixed (every leg: fixed point is a profile
+//                         on the soft-float M4 too)
 //   TAP_DSP_SC_N          transform size (power of two)
-//   TAP_DSP_BENCH_ENGINE  the engine under test (bench_common.h)
 //
 // The QEMU plugin counts the whole run including construction, so the loop
 // is sized so the transforms dominate: k_total_samples samples pass through
@@ -24,15 +27,25 @@
 // transform: the class's out-of-place copies, the 2/N scaling loop and the
 // checksum fold, a constant dilution the ratchet's percentages sit on top
 // of). The input is a small xorshift corpus generated once and cycled, so
-// the loop is allocation-free. Nothing in the float scenarios is double:
-// the M4 soft-float leg would otherwise measure libgcc.
+// the loop is allocation-free. Nothing in the float and fixed-point
+// scenarios is double: the M4 soft-float leg would otherwise measure libgcc.
 //
 // Every output word of every iteration goes through the integer FNV-1a-64
 // fold in bench_common.h, so the printed checksum is a bit-exact,
 // order-sensitive fingerprint of the engine's output: identical between two
 // runs of the same binary, and different for a single 1-ulp change in any
-// output. `ok` is a sanity check that the last iteration round-trips its
-// input, in the scenario's own precision.
+// output. The fixed-point scenarios fold the exponent each transform returns
+// as well, so a right bit pattern under a wrong scale would show too. `ok`
+// is a sanity check that the last iteration round-trips its input: within
+// 1e-3 in the floating scenarios' own precision; in the fixed-point ones
+// within eight output LSB referred to the input, i.e. |out * 2^s - x| <=
+// 8 * 2^s with s = e_fwd + e_inv + 1 - log2 N, the contract's round-trip
+// identity (fft.h; the fixed-point inverse applies no 2/N, the exponents
+// carry the scale), evaluated in 64-bit integer arithmetic. Eight is the
+// header's pinned worst case for one Q31 fixed transform rounded down to a
+// power of two (8.5 LSB at index 0 on the adversarial sweep); this workload
+// measures 0.52 (Q15) and 3.6 (Q31) LSB, and a broken transform is off by
+// orders of magnitude.
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -54,15 +67,20 @@ namespace {
 
 #if TAP_DSP_SC_PRECISION == 0
     using sample = float;
-#else
+#elif TAP_DSP_SC_PRECISION == 1
     using sample = double;
+#elif TAP_DSP_SC_PRECISION == 2
+    using sample = std::int16_t;
+#elif TAP_DSP_SC_PRECISION == 3
+    using sample = std::int32_t;
+#else
+#error "TAP_DSP_SC_PRECISION must be 0 (float), 1 (double), 2 (Q15) or 3 (Q31)"
 #endif
 
-    constexpr std::size_t k_n                    = TAP_DSP_SC_N;
-    constexpr std::size_t k_total_samples        = std::size_t{1} << 20; // per direction, per scenario
-    constexpr std::size_t k_iterations           = k_total_samples / k_n;
-    constexpr std::size_t k_corpus_blocks        = 4;
-    constexpr sample      k_round_trip_tolerance = static_cast<sample>(1e-3);
+    constexpr std::size_t k_n             = TAP_DSP_SC_N;
+    constexpr std::size_t k_total_samples = std::size_t{1} << 20; // per direction, per scenario
+    constexpr std::size_t k_iterations    = k_total_samples / k_n;
+    constexpr std::size_t k_corpus_blocks = 4;
     static_assert(k_n >= 4 && (k_n & (k_n - 1)) == 0, "TAP_DSP_SC_N must be a power of two");
     static_assert(k_iterations >= 100, "the loop must dominate construction");
 
@@ -70,6 +88,15 @@ namespace {
         std::uint64_t checksum;
         bool          round_trips;
     };
+
+// The two workloads are selected by the preprocessor, not by if constexpr
+// over one function: the floating run() below is textually the Stage 1b/2b
+// workload, and keeping it so is what keeps the recorded float counts at
+// +0.00 % (a template with discarded branches was measured to change the
+// hot loop's codegen by 4 % on x86-64 and 0.1-0.4 % on the Cortex-M legs).
+#if TAP_DSP_SC_PRECISION <= 1
+
+    constexpr sample k_round_trip_tolerance = static_cast<sample>(1e-3);
 
     outcome run() {
         tap::dsp::bench::fft_under_test<sample> fft(k_n);
@@ -99,6 +126,59 @@ namespace {
         }
         return {h, round_trips};
     }
+
+#else
+
+    constexpr int log2_of(std::size_t n) noexcept {
+        int b = 0;
+        while (n > 1) {
+            n >>= 1;
+            ++b;
+        }
+        return b;
+    }
+    constexpr int k_log2_n = log2_of(k_n);
+
+    // The fixed-point workload: both transforms return an exponent, folded
+    // after the block it scales; no 2/N anywhere, the exponents carry the
+    // scale, and the round-trip check is the contract's identity in int64.
+    outcome run() {
+        tap::dsp::bench::fft_under_test<sample> fft(k_n);
+
+        std::vector<sample>         corpus(k_corpus_blocks * k_n);
+        std::vector<sample>         spectrum(k_n);
+        std::vector<sample>         out(k_n);
+        tap::dsp::bench::xorshift32 rng(0x9E3779B9u);
+        rng.fill(corpus.data(), corpus.size());
+
+        std::uint64_t h     = tap::dsp::bench::k_fnv1a64_offset;
+        const sample* in    = corpus.data();
+        int           shift = 0; // e_fwd + e_inv + 1 - log2 N of the last iteration
+        for (std::size_t i = 0; i < k_iterations; ++i) {
+            in              = corpus.data() + (i % k_corpus_blocks) * k_n;
+            const int e_fwd = fft.forward(in, spectrum.data());
+            h               = tap::dsp::bench::fold(h, spectrum.data(), k_n);
+            h               = tap::dsp::bench::fold(h, &e_fwd, 1);
+            const int e_inv = fft.inverse(spectrum.data(), out.data());
+            h               = tap::dsp::bench::fold(h, out.data(), k_n);
+            h               = tap::dsp::bench::fold(h, &e_inv, 1);
+            shift           = e_fwd + e_inv + 1 - k_log2_n;
+        }
+
+        bool round_trips = true;
+        for (std::size_t i = 0; i < k_n; ++i) {
+            // |out * 2^s - x| <= 8 * 2^s: eight output LSB, in the input's units.
+            const std::int64_t reconstructed = static_cast<std::int64_t>(out[i]) << shift;
+            const std::int64_t err           = reconstructed - static_cast<std::int64_t>(in[i]);
+            const std::int64_t tolerance     = std::int64_t{8} << shift;
+            if (err > tolerance || err < -tolerance) {
+                round_trips = false;
+            }
+        }
+        return {h, round_trips};
+    }
+
+#endif
 
 } // namespace
 

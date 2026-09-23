@@ -150,7 +150,8 @@ target_link_libraries(tap_dsp_tests PRIVATE
 # ==============================================================================
 # BEGIN Stage 2a additions (docs/audit-fft-and-code-smells.md, Part 9): the
 # independent oracle and the real-time guard join the main executable; the
-# Ooura bit-identity gate gets its own targets so it can own its compiler flags.
+# Ooura bit-identity gate gets its own targets so it can own its compiler flags
+# (and, since Stage 2c, the reference C they compile).
 # Registration goes through tap_dsp_add_gtest_executable above, so the two
 # targets are hosted (discovered) or bare-metal one-shot exactly like
 # tap_dsp_tests. Keep this block self-contained and at the end of the file.
@@ -177,16 +178,27 @@ target_sources(tap_dsp_tests PRIVATE
 target_compile_definitions(tap_dsp_tests PRIVATE TAP_DSP_PARITY_MAX_N=${TAP_DSP_PARITY_MAX_N})
 
 # ------------------------------------------------------------------------------
-# Two private reference builds of the vendored C. Neither is the tap_dsp_fft
-# the library links: that target disappears at Stage 2c (it survives only under
-# TAP_DSP_FFT_CMSIS, where it also carries CMSIS objects), and the gate's whole
-# point is to compare against the C independently of how the library builds it.
-# The parity executables link one of these and NOT tap::dsp, so their
-# rdft/rdft_f resolve here and no backend define (vDSP on Apple, CMSIS on the
-# M55) reaches them.
+# Two private reference builds of the reference C, tests/reference/ooura/
+# (fftsg.c and its float instantiation fftsg_float.c, moved there from
+# third_party/ooura/ at Stage 2c, Decision D6; readme.txt stays at
+# third_party/ooura/readme.txt as the license record). Nothing that ships
+# compiles these files: since 2c the library is header-only (tap_dsp_fft
+# exists only under TAP_DSP_FFT_CMSIS and carries CMSIS objects alone), and
+# the gate's whole point is to compare against the C independently of how the
+# library builds. The parity executables link one of these and NOT tap::dsp,
+# so their rdft/rdft_f resolve here (declared by tests/reference/ooura_rdft.h)
+# and no backend define (vDSP on Apple, CMSIS on the M55) reaches them.
+# Both files move together because the float half of the gate compares
+# against rdft_f; without fftsg_float.c it would be port-vs-port.
 #
-# Stage 2c note: fftsg.c moves to tests/reference/ooura/ (D6); this gate needs
-# fftsg_float.c to move with it, or its float side becomes port-vs-port.
+# EXPORT_COMPILE_COMMANDS OFF: the tidy gate (.github/workflows/style.yml and
+# its local mirror scripts/tidy.sh, a taphouse file) runs over every TU in
+# the compile database except third_party/ and fetched deps; the reference C
+# is vendored code that was excluded by that path until it moved, and is
+# excluded by this property now. clang-format is disabled for the directory
+# by tests/reference/ooura/.clang-format for the same reason; the declaration
+# header the gate includes (tests/reference/ooura_rdft.h) is DspTap's own and
+# sits above that directory so the house formatter still covers it.
 #
 #   ..._nocontract  fp-contraction OFF. Bit identity between the C and its C++
 #                   transliteration holds only if both compile to the same
@@ -205,13 +217,15 @@ target_compile_definitions(tap_dsp_tests PRIVATE TAP_DSP_PARITY_MAX_N=${TAP_DSP_
 set(_tap_dsp_nocontract_c   "$<$<C_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>")
 set(_tap_dsp_nocontract_cxx "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>")
 set(_tap_dsp_reference_sources
-    ${PROJECT_SOURCE_DIR}/third_party/ooura/fftsg.c
-    ${PROJECT_SOURCE_DIR}/third_party/ooura/fftsg_float.c)
+    ${CMAKE_CURRENT_SOURCE_DIR}/reference/ooura/fftsg.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/reference/ooura/fftsg_float.c)
 
 add_library(tap_dsp_fft_reference_nocontract STATIC ${_tap_dsp_reference_sources})
 target_compile_options(tap_dsp_fft_reference_nocontract PRIVATE ${_tap_dsp_nocontract_c})
+set_target_properties(tap_dsp_fft_reference_nocontract PROPERTIES EXPORT_COMPILE_COMMANDS OFF)
 
 add_library(tap_dsp_fft_reference_default STATIC ${_tap_dsp_reference_sources})
+set_target_properties(tap_dsp_fft_reference_default PROPERTIES EXPORT_COMPILE_COMMANDS OFF)
 
 # THE GATE: -ffp-contract=off on both sides, memcmp bit identity. On the QEMU
 # legs it runs whole (no MAIN_FILTER): at N <= 4096 the sweep is milliseconds.

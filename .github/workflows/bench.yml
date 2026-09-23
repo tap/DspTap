@@ -11,28 +11,19 @@ name: Bench
 #   m55        Cortex-M55, Helium            (mps3-an547)  CMSIS-DSP (deployed profile)
 #   m55-ooura  Cortex-M55, TAP_DSP_FFT_CMSIS=OFF (mps3-an547)  split-radix float32 fallback
 #
-# The bare keys measure what ships through tap::dsp::basic_real_fft: since
+# Every key measures what ships through tap::dsp::basic_real_fft: since
 # Stage 2b (docs/audit-fft-and-code-smells.md, Part 3) the C++20 split-radix
 # engine, bit-identical to the vendored Ooura C it replaced, or CMSIS-DSP
-# behind the same class on the `m55` key. Stage 2b until 2c: every float
-# scenario is also built against the vendored C called directly
-# (tap_dsp_icount_<scenario>_c, TAP_DSP_BENCH_ENGINE=reference_c) and the
-# float size probe likewise (tap_dsp_size_probe_rfft_f32_512_c).
-# scripts/icount.py counts the `_c` binaries and prints each beside its gated
-# sibling with the C/shipping ratio and whether the output checksums agree,
-# and the size step prints the C's .text beside the shipping probe's —
-# INFORMATIONAL in both cases: never gated, never baselined, never a ceiling.
-# Precisely: a `_c` count never enters icount.py's verdict, and a `_c` binary
-# that does not complete under QEMU is printed as "informational binary
-# failed" and the gated verdict still runs; the C size probe is built and
-# measured in the size step like the shipping probe, so a probe that fails to
-# build or to measure fails that step (that is a broken measurement, not a
-# gate on the number). On the `m55` key the gated sibling is CMSIS-DSP, so
-# the ratio there is C-vs-CMSIS; the C-vs-port comparison on the M55 is the
-# `m55-ooura` key's. Stage 2c deletes the C and the `_c` pairs with it.
-# (Before 2b the same mechanism ran the other way, as `_port`: the port beside
-# the shipping C; the flip re-recorded the bare keys to the port's counts,
-# bench/README.md.)
+# behind the same class on the `m55` key, for the float scenarios; and since
+# Stage 2c the int32 fixed-point kernel for the Q15 / Q31 scenarios that
+# Stage 3b specified (rfft_q15_512, rfft_q31_512, rfft_q31_2048, on every
+# key: fixed point is a profile on every Cortex-M leg, the soft-float M4
+# included). From Stage 2b until 2c each float scenario was also built
+# against the vendored C called directly (a `_c` key suffix, informational,
+# never gated) so the job log carried the C/port ratio and whether the two
+# output checksums agreed; Stage 2c retired the C from the shipping tree
+# (the reference copy under tests/reference/ooura/ serves the parity gate
+# alone) and the pairs with it. bench/README.md keeps the record.
 #
 # Toolchain files come from the Stage 1 CI-legs PR (cmake/arm-cortex-m4-mps2.cmake
 # with TAP_DSP_M4_FPU, cmake/arm-cortex-m33-mps2.cmake, cmake/arm-cortex-m55-mps3.cmake);
@@ -81,30 +72,45 @@ jobs:
           # (root CMakeLists.txt), so every non-Helium key pins it OFF here
           # explicitly, whatever its toolchain file also does.
           #
-          # text_ceiling: the .text byte ceiling for the MinSizeRel
-          # tap_dsp_size_probe_rfft_f32_512 on this key (bench/README.md,
-          # "Sizes"). 0 = not yet recorded: the step prints the figure and
-          # does not gate. The seeding commit sets the numbers.
+          # text_ceiling_<profile>: the .text byte ceiling for the MinSizeRel
+          # tap_dsp_size_probe_rfft_<profile>_512 on this key (bench/README.md,
+          # "Sizes"): f32 is the float instantiation (the Part 4 assertion;
+          # CMSIS-DSP on the `m55` key), q15 and q31 the fixed-point kernel
+          # at each I/O width. 0 = not yet recorded: the step prints the
+          # figure and does not gate. Policy (bench/README.md): the figure
+          # measured on the recording run, plus 3 %, rounded up to the next
+          # multiple of 64 bytes; re-recorded like a count, with a row in the
+          # README's table.
           - key: m4-softfp
             toolchain: cmake/arm-cortex-m4-mps2.cmake
             flags: -DTAP_DSP_M4_FPU=OFF -DTAP_DSP_FFT_CMSIS=OFF
-            text_ceiling: 0
+            text_ceiling_f32: 54912
+            text_ceiling_q15: 32448
+            text_ceiling_q31: 31936
           - key: m4f
             toolchain: cmake/arm-cortex-m4-mps2.cmake
             flags: -DTAP_DSP_M4_FPU=ON -DTAP_DSP_FFT_CMSIS=OFF
-            text_ceiling: 0
+            text_ceiling_f32: 45952
+            text_ceiling_q15: 32640
+            text_ceiling_q31: 32192
           - key: m33
             toolchain: cmake/arm-cortex-m33-mps2.cmake
             flags: -DTAP_DSP_FFT_CMSIS=OFF
-            text_ceiling: 0
+            text_ceiling_f32: 45376
+            text_ceiling_q15: 32064
+            text_ceiling_q31: 31552
           - key: m55
             toolchain: cmake/arm-cortex-m55-mps3.cmake
             flags: ""
-            text_ceiling: 0
+            text_ceiling_f32: 110912
+            text_ceiling_q15: 27968
+            text_ceiling_q31: 27392
           - key: m55-ooura
             toolchain: cmake/arm-cortex-m55-mps3.cmake
             flags: -DTAP_DSP_FFT_CMSIS=OFF
-            text_ceiling: 0
+            text_ceiling_f32: 40512
+            text_ceiling_q15: 27968
+            text_ceiling_q31: 27392
     env:
       # Commit the tag pointed at when pinned (tags are movable; commit SHAs
       # are not); the header's digest is verified on download. This SHA is
@@ -161,44 +167,46 @@ jobs:
           ${{ matrix.flags }}
           && cmake --build "$BUILD_DIR" -j 4
 
-      # The .text ceilings (docs/audit-fft-and-code-smells.md, Part 10 item 4)
-      # are measured on the size probe built MinSizeRel, like the test legs,
-      # with `size -A` (the .text row alone; Berkeley format folds .rodata and
-      # NOLOAD sections into "text"). Gates only once text_ceiling is nonzero,
-      # and only on the shipping probe: the C probe (`_c`, the vendored Ooura
-      # C, informational from Stage 2b until 2c) is printed beside it for the
-      # record and is never gated. pipefail (Part 13: every step that pipes
-      # through tee sets it) so a failing `size` fails the step, and a size
-      # listing without a numeric .text row fails it too — for either probe —
-      # instead of printing an empty figure and a 0.0000 ratio.
-      - name: Size probe (MinSizeRel, .text)
+      # The .text ceilings (docs/audit-fft-and-code-smells.md, Part 10 item 4;
+      # Part 4's assertion for the float instantiation) are measured on the
+      # size probes built MinSizeRel, like the test legs, with `size -A` (the
+      # .text row alone; Berkeley format folds .rodata and NOLOAD sections
+      # into "text"): one probe per shipping profile at N = 512 (float, Q15,
+      # Q31), each gated only once its ceiling is nonzero. pipefail (Part 13:
+      # every step that pipes through tee sets it) so a failing `size` fails
+      # the step, and a size listing without a numeric .text row fails it
+      # too, for any probe, instead of printing an empty figure.
+      - name: Size probes (MinSizeRel, .text)
+        env:
+          CEILING_F32: ${{ matrix.text_ceiling_f32 }}
+          CEILING_Q15: ${{ matrix.text_ceiling_q15 }}
+          CEILING_Q31: ${{ matrix.text_ceiling_q31 }}
         run: |
           set -eo pipefail
           cmake -S . -B "$SIZE_DIR" \
             -DCMAKE_BUILD_TYPE=MinSizeRel \
             -DCMAKE_TOOLCHAIN_FILE=${{ matrix.toolchain }} \
             -DTAP_DSP_BUILD_TESTS=OFF -DTAP_DSP_BUILD_BENCH=ON ${{ matrix.flags }}
-          cmake --build "$SIZE_DIR" -j 4 --target tap_dsp_size_probe_rfft_f32_512 tap_dsp_size_probe_rfft_f32_512_c
-          probe="$SIZE_DIR/bench/tap_dsp_size_probe_rfft_f32_512"
-          probe_c="$SIZE_DIR/bench/tap_dsp_size_probe_rfft_f32_512_c"
-          arm-none-eabi-size -A "$probe" | tee size.txt
-          arm-none-eabi-size -A "$probe_c" | tee size-c.txt
-          text=$(awk '$1 == ".text" { print $2 }' size.txt)
-          text_c=$(awk '$1 == ".text" { print $2 }' size-c.txt)
-          case "$text" in
-            ''|*[!0-9]*) echo "::error::$KEY: shipping probe .text unavailable (no numeric .text row in size.txt: '$text')"; exit 1 ;;
-          esac
-          case "$text_c" in
-            ''|*[!0-9]*) echo "::error::$KEY: C probe .text unavailable (no numeric .text row in size-c.txt: '$text_c')"; exit 1 ;;
-          esac
-          ceiling=${{ matrix.text_ceiling }}
-          echo "$KEY: .text = $text bytes (ceiling: $ceiling; 0 = not yet recorded)"
-          echo "$KEY: C probe .text = $text_c bytes (informational; shipping probe $text bytes; ratio shipping/C = $(awk -v p="$text" -v c="$text_c" 'BEGIN { printf "%.4f", p / c }'))"
-          { echo "### size $KEY (MinSizeRel, size -A)"; echo "- tap_dsp_size_probe_rfft_f32_512 .text = $text bytes (ceiling $ceiling)"; echo "- tap_dsp_size_probe_rfft_f32_512_c .text = $text_c bytes (informational, the vendored C until Stage 2c; not gated)"; } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$ceiling" -gt 0 ] && [ "$text" -gt "$ceiling" ]; then
-            echo "::error::$KEY: .text $text bytes exceeds the recorded ceiling $ceiling (bench/README.md, Sizes)"
-            exit 1
-          fi
+          cmake --build "$SIZE_DIR" -j 4 --target tap_dsp_size_probe_rfft_f32_512 tap_dsp_size_probe_rfft_q15_512 tap_dsp_size_probe_rfft_q31_512
+          echo "### size $KEY (MinSizeRel, size -A)" >> "$GITHUB_STEP_SUMMARY"
+          rc=0
+          for entry in "f32:$CEILING_F32" "q15:$CEILING_Q15" "q31:$CEILING_Q31"; do
+            profile=${entry%%:*}
+            ceiling=${entry#*:}
+            probe="$SIZE_DIR/bench/tap_dsp_size_probe_rfft_${profile}_512"
+            arm-none-eabi-size -A "$probe" | tee "size-$profile.txt"
+            text=$(awk '$1 == ".text" { print $2 }' "size-$profile.txt")
+            case "$text" in
+              ''|*[!0-9]*) echo "::error::$KEY: $profile probe .text unavailable (no numeric .text row in size-$profile.txt: '$text')"; exit 1 ;;
+            esac
+            echo "$KEY: rfft_${profile}_512 .text = $text bytes (ceiling: $ceiling; 0 = not yet recorded)"
+            echo "- tap_dsp_size_probe_rfft_${profile}_512 .text = $text bytes (ceiling $ceiling)" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$ceiling" -gt 0 ] && [ "$text" -gt "$ceiling" ]; then
+              echo "::error::$KEY: rfft_${profile}_512 .text $text bytes exceeds the recorded ceiling $ceiling (bench/README.md, Sizes)"
+              rc=1
+            fi
+          done
+          exit $rc
 
       # Decides the mode (see the header comment) and fails a pull request
       # that emptied a key its base branch had seeded.
@@ -231,9 +239,10 @@ jobs:
 
       # One step, three modes. The counts are always measured and always
       # recorded to measured-<key>.json; the per-scenario lines go to the
-      # step summary; then the mode decides the verdict. The `_c` scenarios
-      # are in the same output, after the gated ones, with their C/shipping
-      # ratio; icount.py never counts them toward the verdict.
+      # step summary; then the mode decides the verdict. A scenario that is
+      # new to an already-seeded key is reported as NO BASELINE and fails
+      # compare mode until its count is committed from a workflow_dispatch
+      # run's log or measured-<key> artifact (bench/README.md, "Seeding").
       - name: Count (${{ matrix.key }})
         env:
           MODE: ${{ steps.mode.outputs.mode }}

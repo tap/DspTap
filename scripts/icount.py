@@ -25,22 +25,19 @@ Seeding runs on pushes to main, never from a pull request (bench.yml); --merge
 folds several per-target files (each with one target filled in) into one,
 which is how the seeding commit is assembled from the job's artifacts.
 
-Informational scenarios. A scenario whose key ends in INFORMATIONAL_SUFFIX
-("_c": the vendored Ooura C called directly, built beside the shipping
-split-radix engine from Stage 2b until Stage 2c retires the C) is counted and
-printed with its ratio to the sibling scenario (the key without the suffix)
-and whether the two output checksums agree, but is never a gate entry: it
-never enters the verdict (a `_c` binary that times out, faults or does not
-print ok=1 is reported as "informational binary failed: <reason>" and the run
-continues to the gated scenarios' verdict, where only a gated binary's
-failure aborts the run), --update never writes it to the baselines, a
-baseline that names it is reported and ignored, and --record files it under
-a separate top-level "informational" key that --merge skips (--merge also
-drops a `_c` key found under a real target, so a hand-edited record file
-cannot seed one). This is what keeps the C-vs-port comparison honest in every
-job log until 2c deletes the C: the gated bare key measures what ships, and
-the `_c` sibling is the C it replaced. (Before 2b the same mechanism ran the
-other way round, as `_port`: the port beside the shipping C.)
+Every scenario is a gate entry. (From Stage 2a until Stage 2c an
+INFORMATIONAL_SUFFIX mechanism counted a second binary per float scenario,
+the vendored Ooura C beside the shipping engine, and printed their ratio and
+whether the two output checksums agreed without ever gating on it; Stage 2c
+retired the C from the shipping tree and the mechanism with it, so the bench
+measures only what ships. bench/README.md keeps the record of what it
+measured.)
+
+A scenario added to a key that already has baselines (Stage 3b's Q15 / Q31
+scenarios were the first) is reported as NO BASELINE in compare mode and
+fails the gate until its count is committed; the number is taken from a
+workflow_dispatch run's log or measured-<key> artifact, never typed in
+(bench/README.md, "Seeding").
 
 The QEMU machine per target, the binary prefix and the output markers are
 DspTap's; the gate logic is MuTap's.
@@ -69,11 +66,6 @@ PREFIX = "tap_dsp_icount_"
 DONE_MARKER = "TAP_DSP_ICOUNT_DONE ok=1"
 COUNT_RE = re.compile(r"TAP_DSP_INSN_COUNT (\d+)")
 DONE_RE = re.compile(r"TAP_DSP_ICOUNT_DONE ok=1 (.*)")
-# Two characters, tested with endswith(): a future GATED key that happened to
-# end in "_c" would be classified informational. None does (the gated keys
-# are rfft_<precision>_<n>); the suffix goes with the C at Stage 2c.
-INFORMATIONAL_SUFFIX = "_c"
-INFORMATIONAL_KEY = "informational"
 
 
 def qemu_cmd(target: str, plugin: str, binary: str) -> list[str]:
@@ -89,8 +81,8 @@ def qemu_cmd(target: str, plugin: str, binary: str) -> list[str]:
 class MeasurementError(Exception):
     """A binary that did not yield a count: QEMU timed out, the workload did
     not print the DONE marker (fault, hang caught by the timeout, ok=0), or
-    the plugin's count line is missing. Fatal for a gated scenario; reported
-    and skipped for an informational one (see the module docstring)."""
+    the plugin's count line is missing. Fatal: every scenario is a gate
+    entry, so a binary that yields no count aborts the run."""
 
 
 def measure(target: str, plugin: str, binary: str) -> tuple[int, dict[str, str]]:
@@ -123,45 +115,18 @@ def merge(path: pathlib.Path, files: list[str]) -> int:
     baselines = json.loads(path.read_text()) if path.exists() else {}
     for f in files:
         for target, scenarios in json.loads(pathlib.Path(f).read_text()).items():
-            if target == INFORMATIONAL_KEY:
-                continue  # never a gate entry (see the module docstring)
-            # Nor is a `_c` key nested under a real target: --update and
-            # --record never write one there, so it can only come from a
-            # hand-edited file, and it is dropped rather than seeded.
-            gated = {k: v for k, v in scenarios.items() if not k.endswith(INFORMATIONAL_SUFFIX)}
-            for dropped in sorted(set(scenarios) - set(gated)):
-                print(f"{target}: {dropped} from {f} DROPPED (informational scenario; never a gate entry)")
-            if gated:
-                baselines[target] = gated
-                print(f"{target}: {len(gated)} scenario(s) from {f}")
+            if scenarios:
+                baselines[target] = scenarios
+                print(f"{target}: {len(scenarios)} scenario(s) from {f}")
     write(path, baselines)
     print(f"merged into {path}")
     return 0
 
 
 def describe(fields: dict[str, str]) -> str:
+    """The DONE line's engine and backend fields, printed beside every count
+    so the log says what the binary measured (split_radix, cmsis, fixed_point)."""
     return f"[engine={fields.get('engine', '?')} backend={fields.get('backend', '?')}]"
-
-
-def report_informational(informational: dict, failed: dict, measured: dict, fields: dict) -> None:
-    if not informational and not failed:
-        return
-    print(f"--- informational: '{INFORMATIONAL_SUFFIX}' scenarios (the vendored C beside what ships; "
-          "counted, never gated, never baselined; Stage 2b until 2c) ---")
-    for scenario, reason in sorted(failed.items()):
-        print(f"{scenario}: informational binary failed: {reason}")
-    for scenario, count in sorted(informational.items()):
-        sibling = scenario[: -len(INFORMATIONAL_SUFFIX)]
-        line = f"{scenario}: {count} insns {describe(fields[scenario])}"
-        if sibling in measured:
-            base = measured[sibling]
-            same = fields[scenario].get("checksum") == fields[sibling].get("checksum")
-            line += (f"; {sibling}: {base} insns {describe(fields[sibling])}"
-                     f"; ratio {scenario}/{sibling} = {count / base:.4f}"
-                     f"; output checksums {'identical' if same else 'DIFFER'}")
-        else:
-            line += f"; no sibling {sibling} to compare against"
-        print(line)
 
 
 def main() -> int:
@@ -194,35 +159,21 @@ def main() -> int:
 
     failures = []
     measured = {}
-    informational = {}
-    informational_failed = {}
     fields = {}
     for binary in binaries:
         scenario = os.path.basename(binary).removeprefix(PREFIX)
         try:
             count, fields[scenario] = measure(args.target, args.plugin, binary)
         except MeasurementError as e:
-            if not scenario.endswith(INFORMATIONAL_SUFFIX):
-                raise SystemExit(str(e))  # a gated binary that yields no count aborts the run
-            # An informational binary that yields no count is reported (in
-            # the informational block below, so it lands in the job log and
-            # the step summary) and never touches the verdict.
-            informational_failed[scenario] = str(e)
-            continue
-        if scenario.endswith(INFORMATIONAL_SUFFIX):
-            informational[scenario] = count
-            if scenario in base:
-                print(f"{scenario}: baseline {base[scenario]} IGNORED (informational scenario; "
-                      "remove it from bench/baselines.json)")
-            continue
+            raise SystemExit(str(e))  # a binary that yields no count aborts the run
         measured[scenario] = count
         recorded = base.get(scenario)
         if recorded is None:
-            print(f"{scenario}: {count} insns (NO BASELINE — commit this value)")
+            print(f"{scenario}: {count} insns (NO BASELINE — commit this value) {describe(fields[scenario])}")
             if not args.update:
                 failures.append(scenario)
         elif recorded == 0:
-            print(f"{scenario}: {count} insns vs baseline 0 (INVALID BASELINE)")
+            print(f"{scenario}: {count} insns vs baseline 0 (INVALID BASELINE) {describe(fields[scenario])}")
             failures.append(scenario)
         else:
             delta = (count - recorded) / recorded
@@ -238,32 +189,24 @@ def main() -> int:
                            "and commit bench/baselines.json")
                 failures.append(scenario)
             print(f"{scenario}: {count} insns vs baseline {recorded} "
-                  f"({delta:+.2%}) {verdict}")
+                  f"({delta:+.2%}) {verdict} {describe(fields[scenario])}")
 
     # A recorded scenario with no binary is a dead gate entry (renamed or
-    # removed workload); compare mode fails on it, --update drops it. An
-    # informational key in the baselines is not a gate entry either way.
+    # removed workload); compare mode fails on it, --update drops it.
     for scenario in sorted(set(base) - set(measured)):
-        if scenario.endswith(INFORMATIONAL_SUFFIX):
-            continue
         print(f"{scenario}: baseline {base[scenario]} but no binary "
               "(STALE BASELINE — run icount.py --update and commit)")
         if not args.update:
             failures.append(scenario)
 
-    report_informational(informational, informational_failed, measured, fields)
-
     if args.record:
         record = {args.target: measured}
-        if informational:
-            record[INFORMATIONAL_KEY] = {args.target: informational}
         pathlib.Path(args.record).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
         print(f"recorded {args.record}")
 
     if args.update:
-        # Exactly the measured (gated) scenarios: stale keys for renamed or
-        # removed workloads must not linger as dead gate entries, and the
-        # informational scenarios never become gate entries.
+        # Exactly the measured scenarios: stale keys for renamed or removed
+        # workloads must not linger as dead gate entries.
         baselines[args.target] = measured
         write(path, baselines)
         print(f"updated {path}")

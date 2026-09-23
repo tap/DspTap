@@ -4,25 +4,24 @@ cmake_minimum_required(VERSION 3.22)
 project(DspTap VERSION 0.1.0 LANGUAGES C CXX)
 
 # ==============================================================================
-# DspTap — shared real-FFT primitive for the Tap family of DSP libraries.
+# DspTap — shared DSP primitives for the Tap family of audio libraries.
 #
-# A header-only C++ wrapper (include/tap/dsp/fft.h) over the vendored Ooura
-# split-radix real FFT, with optional, mutually-exclusive float32 backends
-# (CMSIS-DSP Helium on the Cortex-M55, Apple vDSP on macOS) that re-present the
-# same Ooura numeric contract. Consumed as a submodule by MuTap, AmbiTap, ….
+# Header-only C++20 (include/tap/dsp/): the real FFT in four profiles — the
+# C++20 split-radix engine for double and float (fft/split_radix.h, the
+# transliteration of Ooura's rdft that replaced the vendored C at Stage 2b and
+# is bit-identical to it), the int32 fixed-point kernel for Q15 and Q31
+# (fft/fixed_point.h) — with optional, mutually-exclusive float32 backends
+# (CMSIS-DSP Helium on the Cortex-M55, Apple vDSP on macOS) that re-present
+# the same numeric contract; plus the pitch, wake-word, inference and FIR
+# primitives README.md lists. Consumed as a submodule by MuTap, AmbiTap, ….
+#
+# tap::dsp is a pure INTERFACE target. Since Stage 2c
+# (docs/audit-fft-and-code-smells.md, Part 3; Decision D6) no vendored C is
+# compiled into what ships: the reference copy of Ooura's fftsg.c lives under
+# tests/reference/ooura/ and is compiled only by the parity gate in tests/.
+# The one compiled (static) library, tap_dsp_fft, exists only when
+# TAP_DSP_FFT_CMSIS is ON and carries the CMSIS-DSP objects (below).
 # ==============================================================================
-
-# ------------------------------------------------------------------------------
-# Ooura FFT (vendored) — provides the extern "C" rdft/rdft_f used by
-# include/tap/dsp/fft.h. PIC so MODULE/SHARED consumers (host applications,
-# Max externals) can link it.
-# ------------------------------------------------------------------------------
-
-add_library(tap_dsp_fft STATIC third_party/ooura/fftsg.c third_party/ooura/fftsg_float.c)
-add_library(tap::dsp_fft ALIAS tap_dsp_fft)
-set_target_properties(tap_dsp_fft PROPERTIES
-    POSITION_INDEPENDENT_CODE ON
-    OUTPUT_NAME tap_dsp_fft)
 
 # ------------------------------------------------------------------------------
 # The library proper (header-only)
@@ -34,20 +33,25 @@ target_include_directories(tap_dsp INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 target_compile_features(tap_dsp INTERFACE cxx_std_20)
-target_link_libraries(tap_dsp INTERFACE tap_dsp_fft)
 
 # ------------------------------------------------------------------------------
 # Helium (Cortex-M55 MVE) FFT backend. When ON, the float32 real FFT in
 # include/tap/dsp/fft.h routes through the vendored CMSIS-DSP subset
-# (third_party/cmsis-dsp, Apache-2.0) instead of Ooura — measured ~3x fewer
-# instructions per transform on the M55. Double is untouched (always Ooura), so
-# the double-precision golden model is unaffected; on the float32 embedded path
-# CMSIS agrees with Ooura to single-precision rounding (not bit-identical).
+# (third_party/cmsis-dsp, Apache-2.0) instead of the split-radix engine —
+# measured 1.8-2.0x fewer instructions over the whole ratchet scenario on the
+# M55 (bench/README.md). Double is untouched (always the split-radix engine),
+# so the double-precision golden model is unaffected; on the float32 embedded
+# path CMSIS agrees with the engine to single-precision rounding (not
+# bit-identical). This is the one case in which tap::dsp links a compiled
+# library: tap_dsp_fft (alias tap::dsp_fft), PIC so MODULE/SHARED consumers
+# (host applications, Max externals) can link it, carrying the CMSIS objects
+# and nothing else. Until Stage 2c the same target also carried the vendored
+# Ooura C on every platform; it does not exist at all without this option now.
 #
 # Default ON for the bare-metal M55 embedded profile (cmake/arm-cortex-m55-mps3.cmake),
 # OFF everywhere else — desktop, the Max/C-ABI host builds (incl. Apple Silicon
-# arm64, which is not this Generic+arm profile), and Hexagon all keep Ooura.
-# Force the Ooura path on the M55 with -DTAP_DSP_FFT_CMSIS=OFF.
+# arm64, which is not this Generic+arm profile), and Hexagon all keep the
+# split-radix engine. Force it on the M55 with -DTAP_DSP_FFT_CMSIS=OFF.
 # ------------------------------------------------------------------------------
 if(CMAKE_SYSTEM_NAME STREQUAL "Generic" AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm|ARM")
     set(_tap_dsp_fft_cmsis_default ON) # bare-metal M55 (cmake/arm-cortex-m55-mps3.cmake)
@@ -63,7 +67,12 @@ if(TAP_DSP_FFT_CMSIS)
     endif()
     file(GLOB _tap_dsp_cmsis_src CONFIGURE_DEPENDS
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cmsis-dsp/Source/*/*.c)
-    target_sources(tap_dsp_fft PRIVATE ${_tap_dsp_cmsis_src})
+    add_library(tap_dsp_fft STATIC ${_tap_dsp_cmsis_src})
+    add_library(tap::dsp_fft ALIAS tap_dsp_fft)
+    set_target_properties(tap_dsp_fft PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        OUTPUT_NAME tap_dsp_fft)
+    target_link_libraries(tap_dsp INTERFACE tap_dsp_fft)
     # PRIVATE for the vendored .c compiles; the same dirs are exposed on the
     # INTERFACE below so consumers' fft.h can resolve "arm_math.h".
     set(_tap_dsp_cmsis_inc
@@ -81,13 +90,15 @@ endif()
 
 # ------------------------------------------------------------------------------
 # Apple vDSP (Accelerate) FFT backend. When ON, the float32 real FFT in
-# include/tap/dsp/fft.h routes through Apple's vDSP instead of Ooura — measured
-# ~3x faster per transform than clang-autovectorized Ooura on Apple Silicon.
-# Double is untouched (always Ooura), so the double-precision golden model is
-# unaffected; on the float32 path vDSP agrees with Ooura to single-precision
-# rounding (not bit-identical). Default ON for Apple, OFF everywhere else; it is
-# mutually exclusive with the CMSIS backend. Force Ooura with
-# -DTAP_DSP_FFT_ACCELERATE=OFF.
+# include/tap/dsp/fft.h routes through Apple's vDSP instead of the split-radix
+# engine — measured ~3x faster per transform than the clang-autovectorized C
+# on Apple Silicon (MuTap's transform-only figure; the same-binary comparison
+# is Stage 4). Double is untouched (always the split-radix engine), so the
+# double-precision golden model is unaffected; on the float32 path vDSP agrees
+# with the engine to single-precision rounding (not bit-identical). Default ON
+# for Apple, OFF everywhere else; it is mutually exclusive with the CMSIS
+# backend. No compiled library: the framework is linked on the INTERFACE.
+# Force the split-radix engine with -DTAP_DSP_FFT_ACCELERATE=OFF.
 # ------------------------------------------------------------------------------
 if(APPLE AND NOT TAP_DSP_FFT_CMSIS)
     set(_tap_dsp_fft_accel_default ON)
@@ -118,7 +129,8 @@ else()
 endif()
 
 # Warning flags for this project's own tests; never exported to consumers of
-# the INTERFACE library, and never applied to third_party C.
+# the INTERFACE library, and never applied to vendored C (the CMSIS objects
+# under TAP_DSP_FFT_CMSIS, the reference C the parity gate compiles).
 option(TAP_DSP_WERROR "Treat warnings as errors in DspTap's own targets" OFF)
 add_library(tap_dsp_warnings INTERFACE)
 target_compile_options(tap_dsp_warnings INTERFACE

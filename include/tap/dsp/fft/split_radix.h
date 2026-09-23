@@ -24,12 +24,14 @@
 //
 // ---------------------------------------------------------------------------
 // TRANSLITERATION RULES — read before editing anything below the class
-// docstring. The engine is BIT-IDENTICAL to the vendored C (fftsg.c for
-// double, fftsg_float.c for float) and tests/test_fft_parity_ooura.cpp is
-// the gate that holds it there: memcmp identity, forward and inverse, at
-// every power of two from 4 to 65536 plus 2^20, both precisions, with both
-// sides compiled at -ffp-contract=off. These rules are what the gate depends
-// on (docs/audit-fft-and-code-smells.md, Part 4; docs/fft-design.md).
+// docstring. The engine is BIT-IDENTICAL to the C it replaced (fftsg.c for
+// double, fftsg_float.c for float; since Stage 2c the reference copy under
+// tests/reference/ooura/, no longer part of what ships, Decision D6) and
+// tests/test_fft_parity_ooura.cpp is the gate that holds it there: memcmp
+// identity, forward and inverse, at every power of two from 4 to 65536 plus
+// 2^20, both precisions, with both sides compiled at -ffp-contract=off.
+// These rules are what the gate depends on
+// (docs/audit-fft-and-code-smells.md, Part 4; docs/fft-design.md).
 //
 // 1. STATEMENT FIDELITY. Every Ooura arithmetic statement stays textually
 //    intact: same operands, same order, same grouping, one statement per

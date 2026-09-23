@@ -54,7 +54,8 @@ typedef void* dsptap_decimator;
 
 /// Numeric profile of a real FFT handle: which tap::dsp::basic_real_fft<Sample, Scaling>
 /// instantiation it runs. DOUBLE is the golden model; FLOAT is the embedded floating profile
-/// (Ooura, or the platform backend the build selected — see dsptap_fft_backend). Q15 and Q31
+/// (the split-radix engine, or the platform backend the build selected — see
+/// dsptap_fft_backend). Q15 and Q31
 /// are the fixed-point profiles (std::int16_t in Q0.15, std::int32_t in Q0.31) under
 /// tap::dsp::scaling::fixed; Q15_BFP and Q31_BFP the same two under
 /// tap::dsp::scaling::block_floating (Stage 3b/3c of docs/audit-fft-and-code-smells.md). The
@@ -102,9 +103,11 @@ DSPTAP_API int dsptap_fft_profile(dsptap_fft h) DSPTAP_NOEXCEPT;
 /// sizeof the profile's native sample (8 for DOUBLE, 4 for FLOAT, 2 for Q15 / Q15_BFP, 4 for
 /// Q31 / Q31_BFP) — the element width of the buffers the *_inplace_raw transforms take.
 DSPTAP_API int dsptap_fft_sample_bytes(dsptap_fft h) DSPTAP_NOEXCEPT;
-/// The float32 engine this build compiled: "ooura", "accelerate" (Apple vDSP) or "cmsis"
-/// (CMSIS-DSP Helium). The double profile is always Ooura; the four fixed-point profiles are
-/// always the portable int32 kernel (fft/fixed_point.h), on every host.
+/// The float32 engine this build compiled: "split_radix" (the C++20 engine of
+/// fft/split_radix.h, bit-identical to the Ooura C it replaced; the string was "ooura" until
+/// Stage 2c), "accelerate" (Apple vDSP) or "cmsis" (CMSIS-DSP Helium). The double profile is
+/// always the split-radix engine; the four fixed-point profiles are always the portable int32
+/// kernel (fft/fixed_point.h), on every host.
 DSPTAP_API const char* dsptap_fft_backend(void) DSPTAP_NOEXCEPT;
 /// The exponent contract's constant for this handle's size: basic_real_fft<Sample,
 /// Scaling>::fixed_scaling_exponent(size) — the exponent every transform of a Q15 / Q31 handle

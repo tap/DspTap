@@ -8,8 +8,13 @@
 // Two sides, each re-pointable in ONE place below:
 //
 //   ooura_ref<Sample>      the raw rdft / rdft_f of Takuya Ooura's fftsg.c,
-//                          from the REFERENCE copy of the C that this target's
-//                          CMake block compiles (tests/CMakeLists.txt).
+//                          from the REFERENCE copy of the C under
+//                          tests/reference/ooura/ (fftsg.c and fftsg_float.c,
+//                          declared by tests/reference/ooura_rdft.h) that this
+//                          target's CMake block compiles (tests/CMakeLists.txt).
+//                          Since Stage 2c that copy is the only C in the repo:
+//                          it left the shipping tree (Decision D6) and nothing
+//                          but this gate compiles it.
 //   engine_under_test      the C++20 port, detail::split_radix_rdft
 //                          (include/tap/dsp/fft/split_radix.h), since Stage 2a.
 //                          Before the port existed this alias named
@@ -55,7 +60,7 @@
 // To see that the flag is load-bearing rather than take it on faith, count
 // the fused instructions in the reference object on an FMA-capable target:
 //
-//     cc -O3 -march=haswell [-ffp-contract=off] -c third_party/ooura/fftsg.c -o probe.o
+//     cc -O3 -march=haswell [-ffp-contract=off] -c tests/reference/ooura/fftsg.c -o probe.o
 //     objdump -d probe.o | grep -ciE 'vfmadd|vfmsub|vfnmadd|vfnmsub'
 //
 // Measured: gcc 13.3 200 / clang 18.1 171 fused instructions by default, 0
@@ -80,11 +85,14 @@
 // the CMake block and the toolchain files default it to 4096 when
 // cross-compiling, and the 2^20 test is compiled out (not skipped) below it.
 //
-// Stage 2c note. fftsg.c moves to tests/reference/ooura/ (Decision D6), and
-// the 2c text deletes fftsg_float.c. This gate needs BOTH files: the float
-// side compares against rdft_f, and without fftsg_float.c it degenerates to
-// port-vs-port. 2c must move fftsg_float.c alongside fftsg.c, or delete the
-// float half of this file and say so in the 2c PR.
+// Stage 2c moved fftsg.c to tests/reference/ooura/ (Decision D6) and
+// fftsg_float.c WITH it, because this gate needs both: the float side
+// compares against rdft_f, and without fftsg_float.c it would degenerate to
+// port-vs-port. D6 retires the reference copy only after both MuTap and
+// MuTap-Max pin a tree containing 2c; when it goes, this file goes with it
+// (or its float half first, if only fftsg_float.c does) and the routing
+// proof in tests/test_fft_routing.cpp plus the oracle in
+// tests/test_fft_oracle.cpp remain.
 
 #include <algorithm>
 #include <cmath>
@@ -99,8 +107,8 @@
 
 #include <gtest/gtest.h>
 
+#include "reference/ooura_rdft.h"
 #include "support/signals.h"
-#include "tap/dsp/fft.h"
 #include "tap/dsp/fft/split_radix.h"
 
 #ifndef TAP_DSP_PARITY_MAX_N
@@ -116,10 +124,10 @@ namespace {
     //
     // Raw Ooura, called exactly as fftsg.c documents: ip[0] = 0 requests table
     // initialization on the first call, and the workspace geometry is the one
-    // readme.txt prescribes (ip: 2 + sqrt(n/2), w: n/2). rdft / rdft_f come
-    // from the reference C library this target links (see the CMake block),
-    // not from the library's tap_dsp_fft, so the reference stays the C even
-    // after the library stops linking it (Stage 2c).
+    // readme.txt prescribes (ip: 2 + sqrt(n/2), w: n/2). rdft / rdft_f are
+    // declared by tests/reference/ooura_rdft.h and come from the reference C
+    // library this target links (see the CMake block); the library itself has
+    // not linked any C since Stage 2c.
     // ------------------------------------------------------------------------
     inline void ooura_rdft_ref(int n, int isgn, double* a, int* ip, double* w) {
         rdft(n, isgn, a, ip, w);
@@ -233,9 +241,15 @@ namespace {
         if (ib < 0) {
             ib = std::numeric_limits<bits_t>::min() - ib;
         }
+        // After the fold the images order like the values (negatives below
+        // zero), so compare them signed; subtract in uint64, where the true
+        // distance always fits (below 2^64 - 1 for the double image, whose
+        // signed difference could overflow). Comparing the widened images
+        // unsigned put a negative image above every positive one and reported
+        // 2^64 - d for an opposite-sign pair (review A of tap/DspTap#32).
         const std::uint64_t ua = static_cast<std::uint64_t>(ia);
         const std::uint64_t ub = static_cast<std::uint64_t>(ib);
-        return ua > ub ? ua - ub : ub - ua;
+        return ia > ib ? ua - ub : ub - ua;
     }
 
     struct comparison {

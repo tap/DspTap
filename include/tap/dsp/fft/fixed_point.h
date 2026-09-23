@@ -30,7 +30,7 @@
 //   A. V. Oppenheim and R. W. Schafer, Discrete-Time Signal Processing, 3rd
 //     ed., Sec. 9.7 — block floating point.
 //   The real post-pass formulas and the DC/Nyquist glue are transcribed from
-//   Ooura's rdft/rftfsub/rftbsub (third_party/ooura/fftsg.c) into the
+//   Ooura's rdft/rftfsub/rftbsub (tests/reference/ooura/fftsg.c) into the
 //   trait's arithmetic; the complex kernel is not Ooura's (Decision D2).
 
 #pragma once
@@ -495,7 +495,7 @@ namespace tap::dsp {
 
             /// Ooura's real post-pass and DC/Nyquist glue in the trait's
             /// arithmetic (rdft / rftfsub forward, rdft isgn < 0 / rftbsub
-            /// inverse; third_party/ooura/fftsg.c). The block has already
+            /// inverse; tests/reference/ooura/fftsg.c). The block has already
             /// been shifted by this stage's shift. For each bin k in
             /// [1, N/4) paired with N/2 - k (a[j..j+1] and a[l..l+1],
             /// j = 2k, l = N - j), with (wkr, wki) from m_post:

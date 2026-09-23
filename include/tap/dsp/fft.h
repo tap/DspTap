@@ -6,8 +6,9 @@
 // Extracted from the Tap family DSP libraries (MuTap's adaptive-filtering FFT
 // and AmbiTap's binaural convolution FFT), which each carried a byte-identical
 // copy of the vendored Ooura transform under a diverging wrapper. This is the
-// consolidated wrapper: one numeric contract (Ooura's), one place to add a
-// faster backend. See README.md for the provenance and migration notes.
+// consolidated wrapper: one numeric contract (Ooura's, carried since Stage 2b
+// by the bit-identical C++20 port), one place to add a faster backend. See
+// README.md for the provenance and migration notes.
 //
 // Four profiles share the contract (packing, exp(+i), unnormalized inverse):
 // double (the golden model) and float (the embedded floating profile) run the
@@ -34,23 +35,15 @@
 #include "tap/dsp/fft/fixed_point.h"
 #include "tap/dsp/fft/split_radix.h"
 
-// The vendored Ooura C, declared but no longer called by anything in this
-// header: rdft (third_party/ooura/fftsg.c, double) and rdft_f (the same
-// source instantiated for float, fftsg_float.c) are still built into the
-// tap_dsp_fft static library that the tap::dsp INTERFACE target links, so a
-// consumer that took these declarations from here keeps linking, and
-// tests/test_fft_parity_ooura.cpp, the bit-identity gate for the engine that
-// replaced them, calls them through these declarations against its own
-// reference build of the C. Stage 2c removes the C from the shipping tree
-// and these declarations with it (the parity gate moves with the reference
-// copy); until then nothing in DspTap, MuTap or MuTap-Max reaches rdft through
-// basic_real_fft any more.
-extern "C" {
-void rdft(int n, int isgn, double* a, int* ip, double* w);
-void cdft(int n, int isgn, double* a, int* ip, double* w);
-void rdft_f(int n, int isgn, float* a, int* ip, float* w);
-void cdft_f(int n, int isgn, float* a, int* ip, float* w);
-}
+// Header-only. No vendored C is compiled into what ships: the split-radix
+// engine replaced Ooura's rdft at Stage 2b, and Stage 2c moved the C out of
+// the shipping tree (docs/audit-fft-and-code-smells.md, Part 3; Decision
+// D6) together with the extern "C" rdft / rdft_f declarations this header
+// carried for it. The reference copy lives under tests/reference/ooura/ and
+// is compiled only by tests/test_fft_parity_ooura.cpp, the bit-identity gate
+// for the engine (which declares it through tests/reference/ooura_rdft.h).
+// tap::dsp is a pure INTERFACE target unless TAP_DSP_FFT_CMSIS is on, in
+// which case it links the CMSIS-DSP objects (root CMakeLists.txt).
 
 // Optional per-platform float32 FFT backends, chosen by the build. AT MOST ONE
 // may be defined (they are mutually exclusive), and each applies ONLY to float
@@ -364,8 +357,10 @@ namespace tap::dsp {
     ///                same contract to float epsilon (tests/test_fft_backend.cpp).
     ///   - Q15/Q31 -> detail::fixed_point_rdft (the specialization below).
     /// The split-radix engine is the C++20 transliteration of Ooura's rdft
-    /// and is BIT-IDENTICAL to the vendored C for both precisions
-    /// (tests/test_fft_parity_ooura.cpp, Decision D10), so the flip changed no
+    /// and is BIT-IDENTICAL to the C it replaced for both precisions (the
+    /// reference copy under tests/reference/ooura/, compiled by the gate
+    /// tests/test_fft_parity_ooura.cpp alone since Stage 2c; Decision D10),
+    /// so the flip changed no
     /// output bit of any consumer built at default fp-contraction (measured
     /// on every CI platform) or with clang and FMA; the one measured
     /// exception is a g++ x86-64 build with -march (FMA), which moves the
@@ -417,7 +412,7 @@ namespace tap::dsp {
     /// -ffp-contract setting to its consumers and this header sets none: the
     /// engine's arithmetic is compiled under whatever contraction the
     /// consumer's compiler applies, alike for every instantiation in that
-    /// build. The bit-identity gate against the vendored C runs at
+    /// build. The bit-identity gate against the reference C runs at
     /// -ffp-contract=off on both sides, and at default flags the identity was
     /// MEASURED to hold as well on every CI platform (0 ulp on linux, windows
     /// and macOS arm64 and on the Cortex-M4, M4F, M33 and M55 legs, three of

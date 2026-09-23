@@ -337,7 +337,11 @@ const char* dsptap_fft_backend(void) DSPTAP_NOEXCEPT {
 #elif defined(TAP_DSP_FFT_CMSIS)
     return "cmsis";
 #else
-    return "ooura";
+    // The C++20 split-radix engine (fft/split_radix.h): what basic_real_fft<float>
+    // runs where no backend is selected. Named "ooura" until Stage 2c, when the
+    // vendored C it is bit-identical to left the shipping tree; the engine
+    // is named for what it is (Decision D7), the notices carry the attribution.
+    return "split_radix";
 #endif
 }
 
