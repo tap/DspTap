@@ -35,18 +35,24 @@
 // primitives are compiled here together, so they share one instantiation of
 // the float and double real FFT. Where the compiler contracts a*b+c into an
 // FMA after inlining (g++ at its GNU-mode default -ffp-contract=fast on FMA
-// hardware), the float FFT's last bits depend on where it was inlined, and a
-// change to one header in this TU can move ANOTHER primitive's float lines
-// with no change to that primitive's arithmetic. Measured at Stage 6: with
-// g++ 13 -O3 -march=x86-64-v3 the log_mel.h Hann call-site change moved the
-// four pvoc float lines while pvoc.h's own change, alone, did not; the same
-// A/B at -ffp-contract=off, with clang++ -march=x86-64-v3 (expression-local
-// contraction), at the default x86-64 flags and on the M4F, M33 and M55 QEMU
-// builds (GCC, VFMA) was identical on all sixteen lines. That is fft.h's
+// hardware), the FFT's last bits depend on the TU's inlining decisions, and a
+// change to one header in this TU can move ANOTHER primitive's lines with no
+// change to that primitive's arithmetic. Measured at Stage 6: with g++ 13 -O3
+// -march=x86-64-v3 the log_mel.h Hann call-site change moved the four pvoc
+// float lines while pvoc.h's own change, alone, did not. The move depends on
+// the TU's contents: appending ~30 lines that hash raw basic_real_fft output
+// made main and head identical again, and disassembly locates the difference
+// in split_radix_rdft::cftrec4 / cftleaf inlining (float and double codegen
+// both moved), not in pvoc. The same A/B was identical on all sixteen lines
+// with linux g++ 13 at its default x86-64 flags (-O3, and -O0), g++ -O2
+// -march=x86-64-v3, g++ -O3 -march=x86-64-v3 -ffp-contract=off, clang++ 18
+// -O3 with and without -march=x86-64-v3 and with -ffp-contract=fast, and the
+// QEMU builds M33 and M55 (MinSizeRel, the CI build type) and M33 and M4F
+// (Release, VFMA). MSVC and AppleClang were not A/B'd. This is fft.h's
 // fp-contraction policy (D9) seen from a consumer TU, not a property of this
 // tool: read an A/B at FMA-with-fast-contraction flags as "a codegen change",
-// and prove arithmetic identity at -ffp-contract=off or at the CI hosts'
-// defaults.
+// and prove arithmetic identity at -ffp-contract=off or at flags that do not
+// contract across statements.
 
 #include <cstddef>
 #include <cstdint>

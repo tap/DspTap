@@ -144,6 +144,9 @@ namespace tap::dsp {
     /// product and difference is the one the permutation-vector form computed,
     /// in the same order, so out is bit-identical to it.
     /// @pre m.size() >= n * n, rhs.size() >= n, out.size() >= n; m nonsingular.
+    /// A singular (or NaN/inf-bearing) m is not trapped: the elimination divides
+    /// by the zero or non-finite pivot and out receives inf / NaN, exactly as the
+    /// permutation-vector form did.
     inline void solve_dense(std::span<double> m, std::span<double> rhs, std::span<double> out, std::size_t n) noexcept {
         for (std::size_t col = 0; col < n; ++col) {
             std::size_t piv = col;

@@ -7,10 +7,14 @@
 // tests (docs/audit-fft-and-code-smells.md, Part 2 "Duplication with no shared
 // home"; Stage 6). Each helper is the exact expression its call sites already
 // evaluated, in the same association order, so moving a call site here moves
-// no output bit: a helper call is one function boundary around the identical
-// sequence of IEEE operations (the same-host A/B fingerprint tool,
-// tools/fingerprint, is the gate that says so for pvoc, log_mel and psola).
-// Changing an association below is a numeric change for every consumer.
+// no output bit of that call site's own arithmetic: a helper call is one
+// function boundary around the identical sequence of IEEE operations (the
+// same-host A/B fingerprint tool, tools/fingerprint, is the gate that says so
+// for pvoc, log_mel and psola). One qualifier: under GCC's cross-statement
+// contraction (-ffp-contract=fast) on FMA targets, any change in a TU's
+// inlining decisions, this one included, can move OTHER code in the same TU
+// (see the tools/fingerprint header and fft.h's D9). Changing an association
+// below is a numeric change for every consumer.
 //
 // Implementation detail of the tap::dsp headers; not a consumer-facing API.
 
