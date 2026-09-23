@@ -352,6 +352,36 @@ precondition only; a repo-wide precondition policy is its own plan. The capi's p
 defects from Part 2 (`void*` handles, exceptions crossing `extern "C"` in the old entry points,
 allocation in the decimator's process path) are owned here too.
 
+**Landed (wave 4, tap/DspTap PR "Stage 6: hygiene"), with these deviations.**
+- *Delegated to Stage 4* (same wave, which owns `fft.h` and `fft/`): the two duplicated
+  `fft.h` paragraphs (F9) and `TAP_EXPECTS` for the power-of-two precondition. Nothing
+  under `fft.h` / `fft/` was touched here; `fft/tables.h` already takes pi from
+  `std::numbers`.
+- *`detail/math.h`* holds `k_pi`, `periodic_hann` and `power_db` / `amplitude_db`; pvoc,
+  psola, log_mel and the two analysis instruments call it. The gate is the fingerprint tool
+  (Part 13), which gained psola lines for this: 16/16 identical at the CI hosts' default
+  flags, at `-ffp-contract=off` with FMA, with clang `-march=x86-64-v3`, and on the M4F, M33
+  and M55 QEMU builds. The one A/B that moves is g++ `-march=x86-64-v3` at its default
+  `-ffp-contract=fast`, where the log_mel.h change moves pvoc's *float* lines through the
+  tool's shared single-TU FFT instantiation (contraction after inlining; pvoc.h's own change
+  alone is identical there). That is D9's already-unclaimed configuration; the tool's header
+  now says how to read it.
+- *`tests/support/`* keeps two synthesizers, not one: the bin-exact `tone` (FFT oracles) and
+  the Hz-at-a-rate `sine` (audio batteries) associate differently, and merging them would move
+  the pinned numbers. Likewise `mt19937_signal` stays beside `random_signal` for the three
+  batteries measured on it. Every migrated sequence was shown byte-identical to the copy it
+  replaced.
+- *`solve_dense`* became allocation-free (pivot rows exchanged in place) rather than losing
+  `noexcept`; bit-identical to the permutation form.
+- *`frontend_vectors.h`* is not reformatted (`git diff -w` would not be empty) and gets no
+  directory-local `.clang-format` (it would disable formatting for `ooura_rdft.h` in the same
+  directory); the generator brackets both generated headers in `// clang-format off/on`.
+- *The tidy gap for `bench/`* (and `tools/capi`, `tools/fingerprint`) is closed inside
+  `tests/CMakeLists.txt` with excluded-from-ALL object targets, so no taphouse follow-up is
+  needed.
+- `TAP_DSP_CHANNEL_PARALLEL` / `TAP_DSP_CP_MIN_CHANNELS` are kept: SampleRateTap and RatioTap
+  are still not on disk to grep.
+
 ### Gates, in one table
 
 | Stage | DspTap gate | MuTap gate | Rollback |
@@ -996,6 +1026,15 @@ opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
   outside that range (the existing battery started at 64 and never saw it; N = 4 hard-faults).
   Owned by Stage 4: the engine reports its supported range, construction checks it, and the
   backend's docstring states it as a contract number. Until then the oracle carries the range.
+- **Contraction and the single-TU fingerprint (wave 4, Stage 6).** `tools/fingerprint`
+  compiles pvoc, log_mel and psola into one TU, so they share one float FFT instantiation.
+  Under g++'s GNU-mode default `-ffp-contract=fast` on FMA hardware, contraction happens after
+  inlining, and a change to one header can move another primitive's float lines with no change
+  to that primitive's arithmetic (measured: the log_mel Hann call-site change moved pvoc float
+  at `-march=x86-64-v3`). An A/B at such flags reads as "codegen changed"; arithmetic identity
+  is proven at `-ffp-contract=off` or at the CI hosts' defaults, and the QEMU builds (GCC,
+  VFMA) were identical as well. The same applies to MuTap's harness, whose chain TUs combine
+  primitives.
 - **Stage 2b's MuTap gate "icount ratchet at 0% delta on m33 and hexagon (0% is the gate,
   because nothing numeric changed)" was a prediction that did not hold** (wave 3; recorded at
   the Stage 2c fix pass, tap/DspTap#32). Measured on the MuTap bump to DspTap `ae0c027`

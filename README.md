@@ -319,7 +319,8 @@ FFT), which turns branch-DC uniformity into exact transmission zeros at every
 multiple of the sample rate. Runtime design in double, deliberately not
 constexpr (the header's design note does the arithmetic); run it in a
 constructor, off the audio path. Also exports `solve_dense`, the small dense
-solver the compensated design and the analysis instruments share.
+solver the compensated design and the analysis instruments share (noexcept and
+allocation-free: it pivots by exchanging rows in the caller's buffers).
 
 ### `tap/dsp/sample_traits.h` — sample formats: double, float, Q15, Q31
 
