@@ -44,7 +44,7 @@ namespace tap::dsp::detail {
         }
 
       private:
-        char                    m_pad[96]{}; ///< the layout difference, on purpose
+        [[maybe_unused]] char   m_pad[96]{}; ///< the layout difference, on purpose (unread, by design)
         split_radix_rdft<float> m_inner;
         int                     m_calls = 0;
     };
