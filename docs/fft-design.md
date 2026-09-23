@@ -676,7 +676,36 @@ Seeded by the Stage 1b ratchet from the vendored C, then re-measured at 2b
 SHA, toolchain and QEMU versions; the gate itself lives in
 `bench/baselines.json` and the CI job, never in this file.
 
-### `.text` per profile at N = 512 (`TODO(stage 2b, 3b)` for the ceilings and the fixed-point columns)
+### `.text` per profile at N = 512 (`TODO(stage 3b follow-up)` for the fixed-point columns; ceilings not yet recorded)
+
+**Stage 2b (the flip; tap/DspTap#30).** Measured on the seeding run of the
+2b branch (`b078a80`, bench run 35844483811, 2026-09-23, arm-none-eabi-gcc
+13.2.1 (15:13.2.rel1-2), QEMU 8.2.2 (1:8.2.2+ds-0ubuntu1.18), ubuntu-24.04).
+The shipping probe is `basic_real_fft<float>` (the split-radix engine, or
+CMSIS on `m55`); the `_c` probe is the vendored C through the bench adapter
+(`reference_c_bench_adapter`), informational until Stage 2c. The `.text`
+ceilings in `bench.yml` are still 0 (not gated): the seeding commit (#26) did
+not set them and this PR does not either; a ceiling policy (slack, what a
+re-record looks like) is a follow-up.
+
+| Target | float, shipping (engine) | float, `_c` (vendored C via adapter) | shipping / C | SHA / job |
+|---|---|---|---|---|
+| `m4-softfp` | 53,289 (split-radix) | 53,225 | 1.0012 | `b078a80`, job 107127217360 |
+| `m4f` | 44,601 (split-radix) | 44,793 | 0.9957 | job 107127217630 |
+| `m33` | 44,001 (split-radix) | 44,185 | 0.9958 | job 107127217777 |
+| `m55` (CMSIS on) | 107,657 (CMSIS-DSP Helium) | 39,449 | 2.7290 (vs the C) | job 107127217635 |
+| `m55-ooura` | 39,281 (split-radix) | 39,449 | 0.9957 | job 107127217645 |
+
+The shipping probe's `.text` is the Stage 2a port probe's to the byte on
+every Ooura key (53,289 / 44,601 / 44,009 → 44,001 / 39,281; the M33 figure
+moved by 8 bytes with the wrapper). The `_c` probe is a different binary from
+#28's C probe (the adapter carries its own copy loop and constructor), so
+its column is not the 51,729 / 43,153 / 42,601 / 38,505 recorded below; the
+port-vs-C size comparison of record stays the Stage 2a one. The CMSIS probe
+lost 24 bytes (107,681 → 107,657): the wrapper no longer carries the two
+unused Ooura workspace vectors under a backend define.
+
+**Stage 2a (for the record; the numbers the 2b comparison was judged against).**
 
 Bytes in the `.text` row of `arm-none-eabi-size -A` on the MinSizeRel size
 probe (`bench/size_probe.cpp`: startup + one transform + what it pulls in;
@@ -701,7 +730,39 @@ Pre-ratchet reference points from the audit (thumbv8.1m, hard float,
 rdft-reachable text, `--gc-sections`): float 15.7 KB at `-Os`, 19.9 KB at
 `-O2`; double (soft-float) 39.9 KB at `-O2`.
 
-### Instructions per scenario (`TODO(stage 2b, 3b)` for the flip and the fixed-point rows)
+### Instructions per scenario (`TODO(stage 3b follow-up)` for the fixed-point rows)
+
+**Stage 2b (the flip; tap/DspTap#30): the baselines re-recorded to the
+port.** Same run as the sizes above (35844483811 at `b078a80`, seed mode on
+the four split-radix keys, compare mode on `m55`). "C" is the seeded
+baseline (`df482d1`, the vendored C through `basic_real_fft`); "port" is the
+new baseline, `basic_real_fft` routed at the engine; the `_c` sibling of the
+same run reproduced the seeded C counts to within +28 … +34 instructions
+(the adapter's prologue) with output checksums identical to the port's on
+every Ooura key. `bench/README.md` carries the per-row record.
+
+| Scenario | `m4-softfp` | `m4f` | `m33` | `m55` (CMSIS) | `m55-ooura` |
+|---|---|---|---|---|---|
+| `rfft_f32_512`, C (seeded `df482d1`) | 1,868,441,244 | 98,090,666 | 102,248,169 | 52,382,331 | 94,561,954 |
+| `rfft_f32_512`, port (re-recorded, run 35844483811) | 1,864,929,141 | 97,138,544 | 100,945,841 | 52,382,331 (not re-recorded; measured 52,382,366, +0.00 %) | 89,276,321 |
+| ratio port / C | 0.9981 | 0.9903 | 0.9873 | 1.0000 | 0.9441 |
+| `rfft_f32_2048`, C (seeded `df482d1`) | 2,296,984,479 | 111,859,257 | 116,385,409 | 54,858,120 | 107,806,480 |
+| `rfft_f32_2048`, port (re-recorded, run 35844483811) | 2,294,360,259 | 111,278,416 | 115,465,626 | 54,858,120 (not re-recorded; measured 54,858,195, +0.00 %) | 102,784,096 |
+| ratio port / C | 0.9989 | 0.9948 | 0.9921 | 1.0000 | 0.9534 |
+| checksums, port vs `_c` | identical | identical | identical | differ (CMSIS ≠ Ooura, expected) | identical |
+
+Against the ±3 % band: the port executes 0.1 – 1.3 % fewer instructions than
+the C on the M4 and M33 keys (inside the band) and 4.7 – 5.6 % fewer on
+`m55-ooura` (IMPROVED beyond the band, hence the re-record per D11 rather
+than an absorb). The port's counts through `basic_real_fft` differ from the
+Stage 2a `_port` adapter's by 0.0 – 0.1 % (the wrapper's own prologue and
+the DONE line), which is why the bare keys were re-recorded from a run of
+the routed class rather than copied from the 2a table. `m55` (CMSIS) is
+untouched by the flip: +35 / +75 instructions out of 52 / 55 million, the
+wrapper's two dropped vectors and three more characters in the printed
+engine name, +0.00 % against its baseline, which stays.
+
+**Stage 2a (for the record).**
 
 Executed guest instructions for the whole scenario binary (2^20 samples per
 direction through `forward()` + `inverse()`, the out-of-place surface with
