@@ -120,23 +120,36 @@ namespace tap::dsp::detail {
     ///     every bin (no data-dependent branches). Latency 0.
     ///   - Copyable; a copy is bit-identical to its source. Two threads may
     ///     run transforms on one object concurrently (nothing is mutated
-    ///     after construction).
+    ///     after construction): k_is_shareable is true and the transforms
+    ///     are const.
+    ///   - Engine contract numbers (what basic_real_fft reads from every
+    ///     engine, Stage 4): k_min_size = 4; k_max_size = 2^30, the bound of
+    ///     Ooura's int indexing — n is an int and every index and table
+    ///     offset the transliterated statements form stays below 2^31 up to
+    ///     that size. The bit-identity gate exercises 4 … 65536 and 2^20,
+    ///     the oracle 4 … 65536; above 2^20 the transform is the same
+    ///     statements over larger tables and is not separately measured.
     ///
     /// The transforms' arithmetic is Ooura's, statement for statement; the
     /// class adds the geometry check, the table build and the const surface.
     template <std::floating_point Sample>
     class split_radix_rdft {
       public:
+        static constexpr std::size_t k_min_size     = 4;
+        static constexpr std::size_t k_max_size     = std::size_t{1} << 30;
+        static constexpr bool        k_is_shareable = true;
+
         /// Builds the tables for a transform of @p n real samples, exactly as
         /// the C's rdft builds them on its first call (makewt for the
         /// complex stages, makect for the real post-pass; makeipt inside
         /// makewt for the bit-reversal permutation).
-        /// @param n transform size: a power of two, n >= 4 (asserted).
+        /// @param n transform size: a power of two in [k_min_size, k_max_size]
+        ///          (asserted; basic_real_fft states it as its precondition).
         explicit split_radix_rdft(std::size_t n)
             : m_size(static_cast<int>(n))
             , m_ip(2 + static_cast<std::size_t>(std::sqrt(static_cast<double>(n) / 2.0)) + 1, 0)
             , m_w(n / 2, Sample(0)) {
-            assert(n >= 4 && (n & (n - 1)) == 0);
+            assert(n >= k_min_size && n <= k_max_size && (n & (n - 1)) == 0);
             // rdft's first-call protocol (ip[0] = 0, ip[1] = 0 on entry), run
             // once here. makewt sets ip[1] = 1, so for n = 4 makect is never
             // called and nc stays 1: the real post-pass is not run at n = 4.

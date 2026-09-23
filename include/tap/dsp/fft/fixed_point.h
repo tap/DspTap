@@ -128,15 +128,14 @@ namespace tap::dsp {
         /// transforms are noexcept and allocation-free; the object is
         /// copyable; there is no alignment requirement.
         ///
-        /// Thread rule, a recorded deviation from audit Part 7 (which lists
-        /// is_shareable true for both fixed profiles): one transform at a
-        /// time per object. Q15 is not shareable across threads because of
-        /// m_work; Q31 touches no object state during a transform, but the
-        /// transforms are declared non-const in this stage to match the
-        /// floating engine's shape. Stage 4 states shareability as an engine
-        /// trait (Q31 true, Q15 false) and decides constness across engines
-        /// (the split-radix port has const transforms); nothing is
-        /// restructured here.
+        /// Thread rule, as the engine trait k_is_shareable (Stage 4; a
+        /// recorded deviation from audit Part 7, which lists both fixed
+        /// profiles as shareable): Q31 true — a transform touches the
+        /// caller's buffer and the const tables only, and its transforms are
+        /// const so the compiler checks it; Q15 false — the widened block
+        /// lives in the per-object work buffer m_work, and its transforms are
+        /// non-const. Engine contract numbers otherwise: k_min_size = 4,
+        /// k_max_size = 65536.
         ///
         /// Measured floors: the `[ floor ]` rows `NoiseFloorTracksWelchModel`
         /// prints (against basic_real_fft<double> on the same quantized
@@ -200,8 +199,10 @@ namespace tap::dsp {
             using coeff  = typename arith::coeff; ///< Q1.30 twiddle
 
             static constexpr bool        k_block_floating = std::is_same_v<Scaling, scaling::block_floating>;
-            static constexpr std::size_t k_min_size       = 4;
-            static constexpr std::size_t k_max_size       = 65536;
+            static constexpr bool        k_widens   = !std::is_same_v<Sample, wide>; ///< Q15: I/O width != kernel width
+            static constexpr std::size_t k_min_size = 4;
+            static constexpr std::size_t k_max_size = 65536;
+            static constexpr bool        k_is_shareable = !k_widens; ///< Q31 true, Q15 false (class docstring)
 
             /// The constant exponent of scaling::fixed, and the upper bound of
             /// scaling::block_floating: log2 n + the profile's input pre-shift
@@ -226,9 +227,40 @@ namespace tap::dsp {
 
             /// In-place forward transform: N samples -> packed spectrum, scaled
             /// by 2^-e. @return e (see the class docstring); nodiscard because
-            /// under block floating point it is the output's scale.
-            [[nodiscard]] int forward_inplace(Sample* data) noexcept {
-                wide* const a = enter(data);
+            /// under block floating point it is the output's scale. Q15 (the
+            /// widening profile) runs through the per-object work buffer and
+            /// is non-const; Q31 runs in place over the caller's buffer and the
+            /// const tables, and is const — the k_is_shareable trait, checked
+            /// by the compiler.
+            [[nodiscard]] int forward_inplace(Sample* data) noexcept
+                requires k_widens
+            {
+                return forward_on(enter(data), data);
+            }
+            [[nodiscard]] int forward_inplace(Sample* data) const noexcept
+                requires(!k_widens)
+            {
+                return forward_on(data, data);
+            }
+
+            /// In-place inverse transform: packed spectrum -> N samples, the
+            /// unnormalized inverse scaled by 2^-e. @return e. Constness as
+            /// forward_inplace.
+            [[nodiscard]] int inverse_inplace(Sample* data) noexcept
+                requires k_widens
+            {
+                return inverse_on(enter(data), data);
+            }
+            [[nodiscard]] int inverse_inplace(Sample* data) const noexcept
+                requires(!k_widens)
+            {
+                return inverse_on(data, data);
+            }
+
+          private:
+            /// The forward transform over the kernel's view `a` of the caller's
+            /// buffer `data` (the work buffer for Q15, `data` itself for Q31).
+            int forward_on(wide* a, Sample* data) const noexcept {
                 // The fixed policy's cumulative shift is tracked beside the
                 // exponent actually applied; the two coincide under
                 // scaling::fixed and the first bounds the second under
@@ -243,12 +275,10 @@ namespace tap::dsp {
                 return leave(a, data, e, cum);
             }
 
-            /// In-place inverse transform: packed spectrum -> N samples, the
-            /// unnormalized inverse scaled by 2^-e. @return e.
-            [[nodiscard]] int inverse_inplace(Sample* data) noexcept {
-                wide* const a   = enter(data);
-                int         e   = 0;
-                int         cum = arith::k_fixed_scaling_input_pre_shift + 1; // pre-shift and the pre-pass bit
+            /// The inverse transform over the kernel's view, as forward_on.
+            int inverse_on(wide* a, Sample* data) const noexcept {
+                int e   = 0;
+                int cum = arith::k_fixed_scaling_input_pre_shift + 1; // pre-shift and the pre-pass bit
                 e += shift_block(a, stage_shift(a, 1, e, cum));
                 real_post_pass<true>(a);
                 e = complex_kernel<true>(a, e, cum);
@@ -256,21 +286,16 @@ namespace tap::dsp {
                 return leave(a, data, e, cum);
             }
 
-          private:
-            static constexpr bool k_widens = !std::is_same_v<Sample, wide>; ///< Q15: I/O width != kernel width
-
-            /// The kernel's view of the caller's buffer: the widened work
-            /// buffer for Q15, the buffer itself for Q31.
-            wide* enter(Sample* data) noexcept {
-                if constexpr (k_widens) {
-                    for (std::size_t i = 0; i < m_n; ++i) {
-                        m_work[i] = arith::widen(data[i]);
-                    }
-                    return m_work.data();
+            /// Q15 only: widen the caller's block into the work buffer, the
+            /// kernel's view of it (Q31's view is the caller's buffer itself,
+            /// passed straight through by the const overloads above).
+            wide* enter(Sample* data) noexcept
+                requires k_widens
+            {
+                for (std::size_t i = 0; i < m_n; ++i) {
+                    m_work[i] = arith::widen(data[i]);
                 }
-                else {
-                    return data;
-                }
+                return m_work.data();
             }
 
             /// Hands the block back to the caller. Q15 narrows Q2.29 -> Q0.15
@@ -278,7 +303,7 @@ namespace tap::dsp {
             /// block is first shifted so that it fits below full scale, one
             /// more stage of growth 1 whose shift is 0 under scaling::fixed
             /// (the fixed schedule already put the result within +-1.0).
-            int leave(wide* a, Sample* data, int e, int cum) noexcept {
+            int leave(wide* a, Sample* data, int e, int cum) const noexcept {
                 if constexpr (k_widens) {
                     e += shift_block(a, stage_shift(a, 1, e, cum));
                     for (std::size_t i = 0; i < m_n; ++i) {
@@ -364,7 +389,7 @@ namespace tap::dsp {
             /// shifts its inputs by stage_shift() before the butterfly (2 bits
             /// of growth per radix-4 stage, 1 per radix-2). Returns e.
             template <bool Inverse>
-            int complex_kernel(wide* a, int e, int& cum) noexcept {
+            int complex_kernel(wide* a, int e, int& cum) const noexcept {
                 const std::size_t m = m_n / 2;
                 std::size_t       span;
                 for (span = m; span >= 4; span /= 4) {
