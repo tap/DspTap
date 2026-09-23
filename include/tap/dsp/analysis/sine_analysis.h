@@ -67,6 +67,7 @@
 #include <type_traits>
 #include <utility>
 
+#include "tap/dsp/detail/math.h"
 #include "tap/dsp/sample_traits.h"
 
 namespace tap::dsp::analysis {
@@ -254,7 +255,7 @@ namespace tap::dsp::analysis {
 
     /// Signal-to-(residual) ratio in dB for a fitted sine.
     inline double snr_db(const sine_fit& f) {
-        return 10.0 * std::log10((f.amplitude * f.amplitude * 0.5) / (f.residual_rms * f.residual_rms));
+        return tap::dsp::detail::power_db((f.amplitude * f.amplitude * 0.5) / (f.residual_rms * f.residual_rms));
     }
 
 } // namespace tap::dsp::analysis

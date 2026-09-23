@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "tap/dsp/analysis/sine_analysis.h"
+#include "tap/dsp/detail/math.h"
 #include "tap/dsp/kaiser.h" // solve_dense for the joint LS
 
 namespace tap::dsp::analysis {
@@ -236,7 +237,7 @@ namespace tap::dsp::analysis {
         for (const auto& f : fits) {
             signal += f.power();
         }
-        return 10.0 * std::log10(signal / resid_power);
+        return tap::dsp::detail::power_db(signal / resid_power);
     }
     // ANCHOR_END: pw_metric
 
