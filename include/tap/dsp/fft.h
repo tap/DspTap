@@ -41,7 +41,7 @@
 // D6) together with the extern "C" rdft / rdft_f declarations this header
 // carried for it. The reference copy lives under tests/reference/ooura/ and
 // is compiled only by tests/test_fft_parity_ooura.cpp, the bit-identity gate
-// for the engine (which declares it through tests/reference/ooura/rdft.h).
+// for the engine (which declares it through tests/reference/ooura_rdft.h).
 // tap::dsp is a pure INTERFACE target unless TAP_DSP_FFT_CMSIS is on, in
 // which case it links the CMSIS-DSP objects (root CMakeLists.txt).
 

@@ -6,6 +6,9 @@
 # excludes ^third_party/ by path and is a taphouse file that is not edited
 # per repo, so this directory-local config disables clang-format for the
 # files below it instead (the tidy gate reads the compile database, from
-# which tests/CMakeLists.txt excludes these two TUs). Not a taphouse file.
+# which tests/CMakeLists.txt excludes these two TUs). Only the two vendored
+# files live here; the declaration header the gate includes is DspTap's own
+# and sits above this directory (tests/reference/ooura_rdft.h) so the house
+# formatter keeps checking it. Not a taphouse file.
 DisableFormat: true
 SortIncludes: Never

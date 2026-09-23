@@ -186,7 +186,7 @@ target_compile_definitions(tap_dsp_tests PRIVATE TAP_DSP_PARITY_MAX_N=${TAP_DSP_
 # exists only under TAP_DSP_FFT_CMSIS and carries CMSIS objects alone), and
 # the gate's whole point is to compare against the C independently of how the
 # library builds. The parity executables link one of these and NOT tap::dsp,
-# so their rdft/rdft_f resolve here (declared by tests/reference/ooura/rdft.h)
+# so their rdft/rdft_f resolve here (declared by tests/reference/ooura_rdft.h)
 # and no backend define (vDSP on Apple, CMSIS on the M55) reaches them.
 # Both files move together because the float half of the gate compares
 # against rdft_f; without fftsg_float.c it would be port-vs-port.
@@ -196,7 +196,9 @@ target_compile_definitions(tap_dsp_tests PRIVATE TAP_DSP_PARITY_MAX_N=${TAP_DSP_
 # the compile database except third_party/ and fetched deps; the reference C
 # is vendored code that was excluded by that path until it moved, and is
 # excluded by this property now. clang-format is disabled for the directory
-# by tests/reference/ooura/.clang-format for the same reason.
+# by tests/reference/ooura/.clang-format for the same reason; the declaration
+# header the gate includes (tests/reference/ooura_rdft.h) is DspTap's own and
+# sits above that directory so the house formatter still covers it.
 #
 #   ..._nocontract  fp-contraction OFF. Bit identity between the C and its C++
 #                   transliteration holds only if both compile to the same

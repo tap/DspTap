@@ -1,9 +1,12 @@
 # Third-party notices
 
-DspTap's own code — everything outside `third_party/` and
-`tests/reference/ooura/`: `include/tap/dsp/`, `tests/`, `tools/`, `notebooks/`,
-`bench/`, `scripts/`, `cmake/`, `docs/` and the build files — is licensed under
-the MIT License — see [`LICENSE`](LICENSE).
+DspTap's own code — everything outside `third_party/` and the two Ooura
+files under `tests/reference/ooura/` (`fftsg.c`, `fftsg_float.c`; the
+directory-local `.clang-format` beside them and the declaration header
+`tests/reference/ooura_rdft.h` above them are DspTap's): `include/tap/dsp/`,
+`tests/`, `tools/`, `notebooks/`, `bench/`, `scripts/`, `cmake/`, `docs/` and
+the build files — is licensed under the MIT License — see
+[`LICENSE`](LICENSE).
 
 It bundles the following third-party code, each retaining its own license
 text:

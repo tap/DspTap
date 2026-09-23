@@ -9,11 +9,11 @@
 //
 //   ooura_ref<Sample>      the raw rdft / rdft_f of Takuya Ooura's fftsg.c,
 //                          from the REFERENCE copy of the C under
-//                          tests/reference/ooura/ (fftsg.c and fftsg_float.c;
-//                          declared by rdft.h there) that this target's CMake
-//                          block compiles (tests/CMakeLists.txt). Since
-//                          Stage 2c that copy is the only C in the repo: it
-//                          left the shipping tree (Decision D6) and nothing
+//                          tests/reference/ooura/ (fftsg.c and fftsg_float.c,
+//                          declared by tests/reference/ooura_rdft.h) that this
+//                          target's CMake block compiles (tests/CMakeLists.txt).
+//                          Since Stage 2c that copy is the only C in the repo:
+//                          it left the shipping tree (Decision D6) and nothing
 //                          but this gate compiles it.
 //   engine_under_test      the C++20 port, detail::split_radix_rdft
 //                          (include/tap/dsp/fft/split_radix.h), since Stage 2a.
@@ -107,7 +107,7 @@
 
 #include <gtest/gtest.h>
 
-#include "reference/ooura/rdft.h"
+#include "reference/ooura_rdft.h"
 #include "support/signals.h"
 #include "tap/dsp/fft/split_radix.h"
 
@@ -125,7 +125,7 @@ namespace {
     // Raw Ooura, called exactly as fftsg.c documents: ip[0] = 0 requests table
     // initialization on the first call, and the workspace geometry is the one
     // readme.txt prescribes (ip: 2 + sqrt(n/2), w: n/2). rdft / rdft_f are
-    // declared by tests/reference/ooura/rdft.h and come from the reference C
+    // declared by tests/reference/ooura_rdft.h and come from the reference C
     // library this target links (see the CMake block); the library itself has
     // not linked any C since Stage 2c.
     // ------------------------------------------------------------------------
