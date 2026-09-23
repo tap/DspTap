@@ -50,7 +50,7 @@ profiles" below.
 | Inverse scale | `inverse_inplace` unnormalized (caller applies `2/N`); `inverse()` applies `2/N` | same | the unnormalized inverse over `2^e`, same constant `e` under `fixed` (`FixedInverseCarriesTheSameExponent`); `inverse()` applies no `2/N`; round trip `x == out · 2^(e_fwd + e_inv + 1 − log2 N)` (`RoundTripReconstructsInputPerPolicy`) | same |
 | Round-trip identity | `x` reproduced to `1e-12` abs at N = 1024 (`RoundTripReproducesInput`) | `2e-5` abs at N = 1024 (`RoundTripReproducesInput`) | 0.51 reconstructed LSB at N = 1024 (fixed; the output narrowing's half LSB), pinned 1.02 (`RoundTripReproducesInput`) | 3.34 reconstructed LSB at N = 1024 (fixed), pinned 6.7; 41.5 under block floating point (the DC bias), pinned 83 |
 | Saturation-free input | n/a (floating point) | n/a | full scale ±1: input placed with 2 guard bits (`<< 14`, not 16); the int32 kernel performs no saturating operation for any input; the output narrowing clamps only at the rail itself (0.5 LSB, the full-scale Nyquist alternation); worst case vs the golden model 0.50 / 0.75 LSB (fixed / BFP), pinned 1.0 / 1.5 (`SaturationFreeWorstCaseDoesNotWrap`) | `fixed`: one input pre-shift (−6 dB); `block_floating`: full scale, the headroom rule; worst case 4.25 / 15.99 LSB at index 0 (fixed / BFP), pinned 8.5 / 32 |
-| Noise floor | 1.85e-16 relative 2-norm error of the forward vs the compensated-DFT oracle on full-scale uniform noise at N = 256, measured 2026-09-23 on x86-64 Linux (GCC 13.3.0 and Clang 18.1.3 -O3, glibc 2.39; both print the same value), pinned at 4× for the libm and fp-contraction spread across hosts (`fft_oracle_floor.DoubleForwardTracksCompensatedDft`); the Higham correctness envelope the oracle sweeps to N = 65536 is separate (`test_fft_oracle.cpp`) | 1.12e-7 relative 2-norm error vs `double` at N = 512 on the engine itself (so the same number on the M55 / macOS backend legs), measured as above, pinned at 2× (`RealFftCrossPrecision.FloatEngineTracksDoubleAtN512`) — the audit's Part 6 N2 probe value was 1.105e-7 on other material; and `< 1e-6` at N = 1024 through `basic_real_fft` (`FloatTracksDouble`) | fixed: 0.29 LSB rms (the narrow's own rounding) at every N and level; per-bin SNR 69.1 / 66.5 / 60.2 dB at 0 dBFS, N = 256 / 512 / 2048; BFP 87 – 91 dB at 0 dBFS (`NoiseFloorTracksWelchModel`; the full table in "The fixed-point profiles" §5) | fixed: 0.67 – 0.75 LSB rms, level-independent; 152.0 / 149.4 / 142.8 dB at 0 dBFS; BFP 157 – 161 dB |
+| Noise floor | 1.85e-16 relative 2-norm error of the forward vs the compensated-DFT oracle on full-scale uniform noise at N = 256, measured 2026-09-23 on x86-64 Linux (GCC 13.3.0 and Clang 18.1.3 -O3, glibc 2.39; both print the same value), pinned at 4× for the libm and fp-contraction spread across hosts (`fft_oracle_floor.DoubleForwardTracksCompensatedDft`); the spread the pin exists for is in the CI logs of tap/DspTap#31 (run 35847675386): 1.8928e-16 on `cortex-m4-softfp` / `cortex-m4f` / `cortex-m33` (jobs 107137662986 / 107137663129 / 107137662923) and 1.6643e-16 on `cortex-m55` (107137663056), newlib's libm and each leg's contraction; the hosted legs run ctest non-verbose and print no value. The Higham correctness envelope the oracle sweeps to N = 65536 is separate (`test_fft_oracle.cpp`) | 1.12e-7 relative 2-norm error vs `double` at N = 512 on the engine itself, so the same *engine* is measured on the M55 / macOS backend legs (where `basic_real_fft<float>` is CMSIS / vDSP), measured as above, pinned at 2× (`RealFftCrossPrecision.FloatEngineTracksDoubleAtN512`); the value moves in the last bits with libm and fp-contraction (D9), not the engine: 1.1236e-7 on x86-64 and the soft-float `cortex-m4-softfp` leg, 1.1650e-7 on the VFMA legs `cortex-m4f` / `cortex-m33` / `cortex-m55` (same run and jobs), all inside the pin — the audit's Part 6 N2 probe value was 1.105e-7 on other material; and `< 1e-6` at N = 1024 through `basic_real_fft` (`FloatTracksDouble`) | fixed: 0.29 LSB rms (the narrow's own rounding) at every N and level; per-bin SNR 69.1 / 66.5 / 60.2 dB at 0 dBFS, N = 256 / 512 / 2048; BFP 87 – 91 dB at 0 dBFS (`NoiseFloorTracksWelchModel`; the full table in "The fixed-point profiles" §5) | fixed: 0.67 – 0.75 LSB rms, level-independent; 152.0 / 149.4 / 142.8 dB at 0 dBFS; BFP 157 – 161 dB |
 | Latency | 0 (block transform, no internal delay) | 0 | 0 | 0 |
 | Alignment | none required on `Sample*` | none (vDSP's internal split buffers are placed by the wrapper, not the caller) | none | none |
 | Shareability across threads | the engine builds its tables in the constructor and its transforms are `const noexcept`, so one engine object is shareable once constructed; `basic_real_fft`'s transforms stay non-const this stage (its float sibling may be a scratch-carrying backend) and the `is_shareable` engine trait is `TODO(stage 4)` | not through `basic_real_fft` today: the vDSP / CMSIS engines carry scratch; false for those engines — `TODO(stage 4)` | **false**: the in-place int16 API needs the per-object int32 work buffer (a recorded deviation from audit Part 7, which listed both fixed profiles as shareable) | no mutable state during a transform (the caller's buffer and the const tables only), but the transforms are non-const this stage; the trait says true at Stage 4 |
@@ -483,14 +483,26 @@ Reading it against the model:
   every stage) the biases add coherently into the DC bin: under fixed
   scaling each later 2-bit shift quarters what accumulated, under block
   floating point a stage typically shifts one bit against a magnitude gain
-  of two and the bias roughly doubles per stage instead. The battery sees it
+  of two, so the same bias is carried into a finer output LSB instead of
+  being quartered. The battery sees it
   as the Q31 maxima all sitting at index 0 or 1: 4.25 LSB (fixed, N = 2048)
   and 15.99 LSB (block floating, N = 1024) in the saturation sweep, 6 / 62
   LSB in F(x) + F(−x), 41.5 reconstructed LSB in the BFP round trip (pinned
   83), with bins 1 – 3 and their mirrors carrying part of it through the
   slowly rotating early twiddles. Beyond N = 2048 no committed test measures
-  it (the Stage 3c notebook does, to N = 65536, where it keeps growing with
-  the stage count). Q15 never sees it (below the narrow's quantum).
+  it; the Stage 3c notebook (tap/DspTap#30) does, to N = 65536, and the
+  reading depends on the unit. Counted in the LSB of the constant exponent,
+  the coherent sum at index 0 / 1 of F(x) + F(−x) on the battery's −0 dBFS
+  noise is about 4 LSB under both policies and flat in N: fixed scaling 4,
+  4, 6, 5, 6, 6, 8, 7, 9 LSB and block floating point 3.5, 3.3, 3.1, 4.0,
+  4.2, 4.1, 4.3, 4.4, 4.4 LSB for N = 256 … 65536 (the fixed inverse of a
+  full-scale constant levels off at 4.25 – 4.4 LSB the same way). Block
+  floating point returns e = 7, 7, 8, 9, 9, 10, 10, 11, 11 there, 2 … 6
+  bits under the constant, so in its own finer output LSB the same bias
+  reads 14, 26, 25, 32, 67, 66, 137, 141, 279: it grows by the exponent gap
+  2^(const − e), not with the stage count (the notebook's numbers,
+  re-measured on the header at tap/DspTap#31). Q15 never sees it (below the
+  narrow's quantum).
   Convergent (half-even) rounding would remove it; that would be a different
   `shr_round` contract in `fft_arith.h`, pinned by its own numbers, and is
   not this kernel's decision to make.
@@ -559,6 +571,8 @@ VFMA, any x86 built with `-march`). Therefore:
    | `cortex-m33` (105446230920) | same toolchain, single-precision FPU (VFMA) | 4 … 4096 | 0 | 0 |
    | `cortex-m55` (105446230931) | same toolchain, MVE (VFMA); CMSIS on for `tap::dsp` but the parity binaries do not link it | 4 … 4096 | 0 | 0 |
    | local, this port's development host | g++ 13.3.0 and clang++ 18.1.3, x86-64 without `-march` | 4 … 65536, 2^20 | 0 | 0 |
+   | local, at tap/DspTap#31 (2b review) | g++ 13.3.0 `-O3 -march=haswell` (FMA, GCC contracts across statements after inlining) | 4 … 65536, 2^20 | 0 | **> 0 at N = 1024, 4096, 16384, 65536, 2^20** (0 at 2048, 8192, 32768); the informational target's per-value ulp distance reaches 256 / 4 (fwd / inv) at 1024 and 16384 / 65536 at 2^20 on bins near zero; the review's independent harness on `basic_real_fft<float>` vs the C: 56 of 1200 blocks differ at N ≥ 1024, max \|Δ\| / max \|ref\| = 3.6e-7 |
+   | local, at tap/DspTap#31 (2b review) | clang++ 18.1.3 `-O3 -march=haswell` (FMA, per-statement contraction) | 4 … 65536, 2^20 | 0 | 0 |
 
    Zero everywhere, including the four FMA-capable legs (macOS arm64, M4F,
    M33, M55): because every statement is textually identical on the two
@@ -567,11 +581,17 @@ VFMA, any x86 built with `-march`). Therefore:
    the port print identical output checksums on every Ooura key (see the
    instruction-count table). That is a property of these compilers on these
    statements, not a guarantee, which is why the gate stays at
-   `-ffp-contract=off`. Not measured, and not claimed: x86-64 built with
-   `-march` (FMA), where the objdump probe shows g++ fusing the two sides
-   differently after inlining (588 fused instructions in a TU instantiating
-   the port vs 372 in the two C files, `-O3 -march=haswell`; clang 221 vs
-   333; both 0 / 0 with the flag).
+   `-ffp-contract=off`. Measured at 2b, and not claimed: x86-64 built with
+   `-march` (FMA). g++ 13.3.0 `-O3 -march=haswell` keeps `double` identical
+   and moves `float` at N = 1024, 4096, 16384, 65536 and 2^20 (the two rows
+   above: a few float ulp relative to the block's peak, 3.6e-7 in the
+   review's harness, large per-value ulp counts only on bins near zero);
+   clang++ 18.1.3 at the same flags is identical for both precisions. That
+   is what the objdump probe predicted: g++ fuses the two sides differently
+   after inlining (588 fused instructions in a TU instantiating the port vs
+   372 in the two C files, `-O3 -march=haswell`; clang 221 vs 333; both
+   0 / 0 with the flag). The gate at `-ffp-contract=off` is 6 / 6 on both
+   compilers at `-march=haswell`.
 3. **Decided at Stage 2b, stated in `fft.h`'s class docstring: `tap::dsp`
    does NOT export `-ffp-contract=off`** (or any contraction setting) to its
    consumers, and the header sets none; the engine is compiled under whatever
@@ -587,8 +607,9 @@ VFMA, any x86 built with `-march`). Therefore:
    that code, in exchange for a cross-compiler bit reproducibility that libm's
    last-bit `cos` / `sin` differences already deny across hosts. What the
    header promises is therefore the observation, not a guarantee: the identity
-   held at default flags on these compilers on these statements; x86-64 with
-   `-march` is measured to fuse the two sides differently and is not claimed.
+   held at default flags on these compilers on these statements; g++ on
+   x86-64 with `-march` is measured to move the float profile's last bits
+   (clang does not) and is not claimed.
    A consumer that needs bit reproducibility across its own compilers sets the
    flag on its own targets.
 
@@ -668,6 +689,23 @@ the parity gate depends on.
   against newlib's libm, on the four QEMU legs (arm-none-eabi-gcc 13.2.1);
   locally also on clang++ 18.1. Every leg green on the first CI run of the
   PR.
+
+### Compile-time cost of the flip (audit D8, for the record)
+
+Audit D8 (no explicit-instantiation escape hatch) rested on Part 4's
+estimate; from Stage 2b `fft.h` includes `fft/split_radix.h` (2,582 lines)
+in every consumer translation unit, so the cost is now measured. At
+tap/DspTap#31 on the development container (Intel Xeon @ 2.10 GHz, Ubuntu
+24.04, g++ 13.3.0, clang++ 18.1.3; min of 5 compiles, load < 1): a TU that
+includes `fft.h` preprocesses to 81,042 lines against 78,558 at `b08f6c6`
+(`-std=c++20 -E`); a TU instantiating `real_fft` and `real_fft32` with one
+`forward_inplace` each compiles in g++ `-O2` 0.69 → 1.73 s and `-O0` 0.68 →
+0.89 s, clang++ `-O2` 0.83 → 1.36 s and `-O0` 0.75 → 0.84 s. The 2b
+process review measured the same independently (g++ `-O2` 0.71 → 1.70 s,
+`-O0` 0.76 → 0.90 s; clang++ `-O2` 0.82 → 1.35 s, `-O0` unchanged). About
+one second per optimized TU that instantiates both profiles, consistent
+with the audit's "1.3 s as C++ for the whole file"; D8 stands unless
+MuTap's build shows a regression these numbers do not predict.
 
 ## Size and instruction counts, per target
 
@@ -755,8 +793,9 @@ Against the ±3 % band: the port executes 0.1 – 1.3 % fewer instructions than
 the C on the M4 and M33 keys (inside the band) and 4.7 – 5.6 % fewer on
 `m55-ooura` (IMPROVED beyond the band, hence the re-record per D11 rather
 than an absorb). The port's counts through `basic_real_fft` differ from the
-Stage 2a `_port` adapter's by 0.0 – 0.1 % (the wrapper's own prologue and
-the DONE line), which is why the bare keys were re-recorded from a run of
+Stage 2a `_port` adapter's by 0.00 – 0.26 % (`m55-ooura` 512: 89,047,005 →
+89,276,321; the wrapper's own prologue and the DONE line), which is why the
+bare keys were re-recorded from a run of
 the routed class rather than copied from the 2a table. `m55` (CMSIS) is
 untouched by the flip: +35 / +75 instructions out of 52 / 55 million, the
 wrapper's two dropped vectors and three more characters in the printed
@@ -797,9 +836,12 @@ Read against the ±3 % ratchet 2b will apply: the port executes 0.1 % to
 band on the low side (the two-sided gate would flag an improvement beyond
 3 % on `m55-ooura`, 0.9417 / 0.9521, so 2b re-records rather than absorbs
 it; `m33` at 0.9862 / 0.9915 and the M4 keys are inside). Against CMSIS-DSP
-Helium on the deployed `m55` profile the port is 1.7 – 1.9× the count, the
-same order as the "~3× fewer instructions" the CMSIS wrapper quotes for the
-C; `m55` stays on CMSIS and the port is its fallback, as today. The port's
+Helium on the deployed `m55` profile the port is 1.7 – 1.9× the count (and
+the C itself 1.81× / 1.97×: the 2b seeding run 35844483811 counts the `m55`
+key's `_c` pair at 94,561,988 / 52,382,366 and 107,806,511 / 54,858,195,
+C / CMSIS, which is the figure the CMSIS wrapper's comment and the README
+quote in place of the consumers' transform-only "~3×"); `m55` stays on
+CMSIS and the port is its fallback, as today. The port's
 count on the `m55` key (89,407,453) differs from the same port binary's
 count on `m55-ooura` (89,047,005) by 0.4 %: the two builds differ only in
 what `tap::dsp` links, so this is startup and layout, not the transform.
@@ -826,10 +868,13 @@ is a few percent faster, the double forward a few tenths of a percent
 slower: the same statements, one compiler, differently inlined), which is
 what the instruction counts on the Cortex-M keys also say. Both binaries
 print the same output checksums (`f32=-4753.16699`, `f64=-1903.0533955268113`).
-`TODO(stage 4)`: Ooura-port vs vDSP same-binary on Apple Silicon. The existing
-"~3× faster / ~3× fewer instructions vs autovectorized Ooura" claims in
-`fft.h` and the README are the consumers' measurements on the vendored C and
-are re-measured here, not carried forward on trust.
+`TODO(stage 4)`: Ooura-port vs vDSP same-binary on Apple Silicon. Of the
+consumers' "~3× faster / ~3× fewer instructions vs autovectorized Ooura"
+claims, the M55 one is replaced in `fft.h` and the README by the bench's own
+whole-scenario figure (C / CMSIS 1.81× / 1.97× on the `m55` key, above); the
+Apple one is stated there as what it is, MuTap's transform-only measurement
+on the vendored C (tap/MuTap#31), and is not re-measured in this repo until
+the same-binary comparison exists.
 
 ## Provenance and licensing
 

@@ -62,9 +62,12 @@ void cdft_f(int n, int isgn, float* a, int* ip, float* w);
 // EXACT numeric contract (Ooura's: same packed layout, exp(+i) sign
 // convention, unnormalized inverse), so every intermediate spectrum matches
 // the default build to float epsilon and the whole float32 test battery stays
-// a valid oracle. Measured vs the autovectorized vendored C, to which the
-// engine is bit-identical: ~3x fewer instructions on the M55, ~3x faster on
-// Apple Silicon per transform (bench/README.md, docs/fft-design.md).
+// a valid oracle. Against the vendored C, to which the engine is
+// bit-identical: on the M55 icount key the C executes 1.81x (N = 512) /
+// 1.97x (N = 2048) the instructions of the CMSIS build over the whole
+// ratchet scenario (bench/README.md, run 35844483811); the "~3x faster on
+// Apple Silicon" figure is MuTap's transform-only measurement on the C
+// (tap/MuTap#31), not re-measured here (Stage 4, docs/fft-design.md).
 #if defined(TAP_DSP_FFT_CMSIS) && defined(TAP_DSP_FFT_ACCELERATE)
 #error "TAP_DSP_FFT_CMSIS and TAP_DSP_FFT_ACCELERATE are mutually exclusive"
 #endif
@@ -363,8 +366,12 @@ namespace tap::dsp {
     /// The split-radix engine is the C++20 transliteration of Ooura's rdft
     /// and is BIT-IDENTICAL to the vendored C for both precisions
     /// (tests/test_fft_parity_ooura.cpp, Decision D10), so the flip changed no
-    /// output bit of any consumer; tests/test_fft_routing.cpp pins that this
-    /// class's output is byte-identical to the engine's.
+    /// output bit of any consumer built at default fp-contraction (measured
+    /// on every CI platform) or with clang and FMA; the one measured
+    /// exception is a g++ x86-64 build with -march (FMA), which moves the
+    /// float profile's last bits at N >= 1024 (the fp-contraction policy
+    /// below, D9). tests/test_fft_routing.cpp pins that this class's output
+    /// is byte-identical to the engine's.
     ///
     /// FFT size must be a power of 2 (>= 4), fixed at construction. Workspace
     /// (bit-reversal and trig tables) is allocated AND BUILT in the constructor
@@ -418,9 +425,11 @@ namespace tap::dsp {
     /// every Ooura bench key; MuTap's fingerprint rows byte-identical through
     /// the flip, float rows included, with no flag set anywhere), because the
     /// engine's statements are textually the C's and each compiler fuses both
-    /// sides alike. That is an observation, not a guarantee: x86-64 built
-    /// with -march (FMA) is measured to fuse the two sides differently and is
-    /// not claimed. Why no export: an INTERFACE -ffp-contract=off would reach
+    /// sides alike. That is an observation, not a guarantee: g++ on x86-64
+    /// built with -march (FMA) is measured to fuse the two sides differently
+    /// (float moves by a few ulp at N >= 1024, double does not; clang with
+    /// the same flags is identical) and is not claimed. Why no export: an
+    /// INTERFACE -ffp-contract=off would reach
     /// every consumer translation unit that includes this header and would
     /// pessimize the VFMA / FMA targets the float profile exists for (the
     /// M55, Apple arm64) for the whole of that code, in exchange for a

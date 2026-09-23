@@ -818,7 +818,9 @@ namespace {
     // here); this is the number the engine actually lands at. Measured
     // 2026-09-23 (x86-64 Linux, GCC 13.3.0 and Clang 18.1.3 -O3, glibc 2.39,
     // the split-radix engine as routed at Stage 2b; both compilers print the
-    // same value): 1.8455e-16. Pinned at 4x,
+    // same value): 1.8455e-16; the QEMU legs of tap/DspTap#31's CI (run
+    // 35847675386, newlib) print 1.8928e-16 on cortex-m4-softfp / m4f / m33
+    // and 1.6643e-16 on cortex-m55. Pinned at 4x,
     // not the battery's usual 2x: the last bits of a double transform depend
     // on libm's cos/sin (glibc, newlib, UCRT, Apple differ) and on the leg's
     // fp-contraction (fft.h, D9), and an rms over 256 values is the wrong

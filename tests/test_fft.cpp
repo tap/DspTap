@@ -501,12 +501,16 @@ namespace {
     // contract table, "Noise floor"): the same metric at N = 512 on the
     // split-radix engine itself, which is basic_real_fft<float> wherever no
     // backend define is active and is bit-identical to the vendored C's float
-    // build on every leg, so the number is the shipping float profile's on
-    // every host and does not change on the M55 / macOS backend legs.
-    // Measured 2026-09-23 (x86-64 Linux, GCC 13.3.0 and Clang 18.1.3 -O3,
-    // glibc 2.39, the engine as routed at Stage 2b; both compilers print the
-    // same value): 1.1236e-7, against the audit's Part 6 N2 probe value of
-    // 1.105e-7 (different material; the probe was never a committed test).
+    // build on every leg, so the same ENGINE is measured on every host,
+    // including the M55 / macOS backend legs where the class itself is CMSIS /
+    // vDSP. The same engine, not the same last bits: libm's cos/sin and the
+    // leg's fp-contraction (fft.h, D9) move them. Measured 2026-09-23 (x86-64
+    // Linux, GCC 13.3.0 and Clang 18.1.3 -O3, glibc 2.39, the engine as routed
+    // at Stage 2b; both compilers print the same value): 1.1236e-7, against
+    // the audit's Part 6 N2 probe value of 1.105e-7 (different material; the
+    // probe was never a committed test). The QEMU legs of tap/DspTap#31's CI
+    // (run 35847675386, newlib): 1.1236e-7 on the soft-float cortex-m4,
+    // 1.1650e-7 on the VFMA cortex-m4f / m33 / m55.
     // Pinned at 2x: the float rounding sequence is fixed by the statements,
     // and the VFMA legs and libm differences move the last bits, not the rms.
     constexpr double k_float_engine_tracks_double_512 = 2.25e-7;

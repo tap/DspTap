@@ -18,8 +18,8 @@ each profile chosen once, at construction, by the sample type and the build:
 | Engine | Profiles | Selected by | What it is |
 |---|---|---|---|
 | split-radix (`fft/split_radix.h`) | `double`; `float` unless a backend is on | default | the C++20 transliteration of Ooura's `rdft`, **bit-identical** to the vendored C it replaced (both precisions; `tests/test_fft_parity_ooura.cpp`), tables built in the constructor |
-| CMSIS-DSP Helium | `float` | `TAP_DSP_FFT_CMSIS` (default ON for the bare-metal Cortex-M55 profile) | Arm's radix-4/8 MVE real FFT, re-presented in the same contract to float epsilon; ~3× fewer instructions per transform on the M55 |
-| Apple vDSP | `float` | `TAP_DSP_FFT_ACCELERATE` (default ON on Apple) | `vDSP_fft_zrip`, same contract to float epsilon; ~3× faster per transform on Apple Silicon |
+| CMSIS-DSP Helium | `float` | `TAP_DSP_FFT_CMSIS` (default ON for the bare-metal Cortex-M55 profile) | Arm's radix-4/8 MVE real FFT, re-presented in the same contract to float epsilon; on the `m55` icount key the vendored C (to which the split-radix engine is bit-identical) executes 1.81× (N = 512) / 1.97× (N = 2048) the instructions of the CMSIS build over the whole ratchet scenario, transform plus the class's copy loop, 2/N scaling and checksum ([run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811), `bench/README.md`); MuTap's transform-only figure on the C was ~3×, not re-measured here |
+| Apple vDSP | `float` | `TAP_DSP_FFT_ACCELERATE` (default ON on Apple) | `vDSP_fft_zrip`, same contract to float epsilon; ~3× faster per transform on Apple Silicon is MuTap's transform-only measurement on the vendored C (tap/MuTap#31), not re-measured in this repo (the same-binary comparison is Stage 4) |
 | int32 radix-4 (`fft/fixed_point.h`) | Q15, Q31 | the sample type | one kernel over Q1.30 twiddles under two scaling policies, returning an exponent |
 
 The two float32 backends are mutually exclusive, apply to `float` only (double
@@ -37,12 +37,18 @@ words. `basic_real_fft<double>` and `basic_real_fft<float>` now hold a
 tables are built in the constructor rather than on the first transform, and the
 float-I/O-on-double overloads `forward(const float*, float*)` /
 `inverse(const float*, float*)` are `[[deprecated]]` (Decision D5, one consumer
-cycle). What did not change: any output bit. Every transform through
-`basic_real_fft` produces the same bytes as before the flip, for `double` and
-for `float` (MuTap's fingerprint harness, float rows included, was
-byte-identical through the bump); no consumer source needs editing and no
-float pin moves. `tap::dsp` sets no `-ffp-contract` flag and exports none
-(Decision D9; the reasoning is in `fft.h`'s class docstring).
+cycle). What did not change, as measured: any output bit at default
+fp-contraction on every CI platform (x86-64 without `-march`, MSVC, Apple
+arm64, the four Cortex-M legs) and on clang with FMA. Every transform through
+`basic_real_fft` produced the same bytes as before the flip there, for
+`double` and for `float`, and MuTap's fingerprint harness (float rows
+included) was byte-identical through the bump at MuTap's flags; no consumer
+source needs editing and no float pin moves. The one measured exception is a
+g++ x86-64 build with `-march` (FMA), where `basic_real_fft<float>` moves by a
+few float ulp at N ≥ 1024 (`double` unchanged; clang at the same flags
+identical) — the fp-contraction table in `docs/fft-design.md`. `tap::dsp`
+sets no `-ffp-contract` flag and exports none (Decision D9; the reasoning is
+in `fft.h`'s class docstring).
 
 **Header-only from Stage 2c.** Until then the `tap_dsp_fft` static library
 still carries the reference C (`third_party/ooura/fftsg.c`, `fftsg_float.c`),
@@ -57,8 +63,8 @@ of a floating scale:
 
 | Profile | Alias | Engine | Forward scale | Noise floor (fixed point: per-bin SNR, full-scale white noise, N = 512) | Target |
 |---|---|---|---|---|---|
-| `double` | `real_fft` | split-radix | X | golden model: 1.85e-16 relative 2-norm error vs the compensated-DFT oracle at N = 256 (pinned 4×, `DoubleForwardTracksCompensatedDft`) | desktop, reference |
-| `float` | `real_fft32` | split-radix (vDSP / CMSIS-Helium backends) | X | 1.12e-7 relative 2-norm error vs double at N = 512 (pinned 2×, `FloatEngineTracksDoubleAtN512`); < 1e-6 at N = 1024 | Cortex-M4F, M33, M55, Hexagon HVX, Apple Silicon |
+| `double` | `real_fft` | split-radix | X | golden model: 1.85e-16 relative 2-norm error vs the compensated-DFT oracle at N = 256 on x86-64, 1.66 – 1.89e-16 on the Cortex-M legs (pinned 4×, `DoubleForwardTracksCompensatedDft`) | desktop, reference |
+| `float` | `real_fft32` | split-radix (vDSP / CMSIS-Helium backends) | X | 1.12e-7 relative 2-norm error vs double at N = 512 on x86-64 and the soft-float M4, 1.17e-7 on the VFMA legs (pinned 2×, `FloatEngineTracksDoubleAtN512`); < 1e-6 at N = 1024 | Cortex-M4F, M33, M55, Hexagon HVX, Apple Silicon |
 | `std::int16_t` (Q15), `scaling::fixed` | `real_fft_q15` | int32 radix-4, Q1.30 twiddles | X / N, e = log2 N | 0.29 LSB rms (the output rounding); 66.5 dB at 0 dBFS, 26.6 dB at −40 dBFS | Cortex-M4 (soft-float), M33 |
 | `std::int32_t` (Q31), `scaling::fixed` | `real_fft_q31` | same kernel, in place | X / 2N, e = log2 N + 1 | 0.68 LSB rms; 149.4 dB at 0 dBFS, 109.4 dB at −40 dBFS | Cortex-M4, M33, M55 |
 | Q15, `scaling::block_floating` | `real_fft_q15_bfp` | same, per-stage headroom scan | X / 2^e, 0 ≤ e ≤ log2 N | 90.6 dB at 0 dBFS, 80.6 dB at −40 dBFS | round-trip consumers |
