@@ -6,7 +6,8 @@ dependency — consumed as a git submodule by the individual libraries.
 
 Today it holds seven primitives, plus the [FIR substrate](#the-fir-substrate) —
 the shared design-math / sample-format / kernel layer under SampleRateTap and
-RatioTap:
+RatioTap — and the [scalar helpers](#tapdspmathh--periodic-hann-and-decibel-helpers)
+(`tap/dsp/math.h`) the consuming libraries call instead of re-typing them:
 
 ## `tap::dsp::real_fft` — real FFT with a fixed numeric contract
 
@@ -451,6 +452,23 @@ multitone fit, `program_weighted_snr_db` — the program-weighted metric with
 Fisher-weighted ratio pooling). Instrument floors on exact synthetic signals
 are pinned by `tests/test_analysis.cpp`, so a consumer's quality gate never
 silently rests on a degraded instrument.
+
+## `tap/dsp/math.h` — periodic Hann and decibel helpers
+
+The three scalar formulas the primitives build on, public so consumers call
+the same functions instead of re-typing the expressions:
+`periodic_hann(i, n)` = `0.5 - 0.5 * std::cos(2.0 * std::numbers::pi * double(i) / double(n))`
+(the DFT-even window, denominator `n`, not the symmetric `n - 1` form),
+`power_db(r)` = `10.0 * std::log10(r)` and `amplitude_db(r)` =
+`20.0 * std::log10(r)`, all in double. The expressions and their association
+order are contract points: pvoc and log_mel build their windows from
+`periodic_hann` and the analysis instruments report through `power_db`, so a
+consumer that swaps its own copy of one of these exact expressions for the
+helper moves no bit (`tests/test_math.cpp` pins helper against literal over a
+sweep of `i`/`n` and ratios, on every host and QEMU leg). There is no exported
+pi: use `std::numbers::pi`, which is the double the helpers use.
+`tap::dsp::detail` re-exports the same three functions by using-declaration for
+the headers' own call sites.
 
 ## Notebooks
 

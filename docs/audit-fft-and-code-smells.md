@@ -419,6 +419,10 @@ allocation in the decimator's process path) are owned here too.
   `split_radix_rdft::cftrec4` / `cftleaf` inlining, not in pvoc. That is the configuration
   D9 leaves unclaimed, in a form D9 does not yet describe (handed to Stage 4 above); the
   tool's header now says how to read it.
+- *Helpers promoted to `tap/dsp/math.h` for consumers* (after Stage 6): `periodic_hann`,
+  `power_db` and `amplitude_db` are public in `tap::dsp`, same expressions, and
+  `detail/math.h` re-exports them by using-declaration; `k_pi` stays in `detail`
+  (consumers use `std::numbers::pi`).
 - *`tests/support/`* keeps two synthesizers, not one: the bin-exact `tone` (FFT oracles) and
   the Hz-at-a-rate `sine` (audio batteries) associate differently, and merging them would move
   the pinned numbers. Likewise `mt19937_signal` stays beside `random_signal` for the three
