@@ -16,7 +16,9 @@ the log-mel/PCEN feature extractor (`log_mel.h`) and the fixed-ratio decimators 
 SampleRateTap for the two rate converters (SampleRateTap, RatioTap): Kaiser prototype design
 (`kaiser.h`), the sample-format traits (`sample_traits.h`: double/float/Q15/Q31), the FIR dot kernels
 (`fir_kernels.h`), row-sum-preserving quantization (`quantize.h`), and the measurement
-instruments (`analysis/`). See `README.md` for each asset's contract summary.
+instruments (`analysis/`) — plus the public scalar helpers consumers share (`math.h`: the
+periodic Hann window and the dB conversions; pi is `std::numbers::pi`). See `README.md` for each
+asset's contract summary.
 
 ## The design discipline (load-bearing — every primitive follows it)
 
