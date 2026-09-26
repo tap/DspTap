@@ -42,9 +42,9 @@ argv), all built from `icount/icount_main.cpp`:
 
 | scenario | profile | N | what is measured | targets | gated |
 |---|---|---|---|---|---|
-| `rfft_f32_512` | float | 512 | `basic_real_fft<float>` as built: the split-radix engine since Stage 2b; CMSIS-DSP Helium behind it on `m55` | all legs | yes |
+| `rfft_f32_512` | float | 512 | `basic_real_fft<float>` as built: the srdif engine (`fft/srdif.h`; a port of a third-party split-radix engine from Stage 2b until the srdif re-record below, the vendored C before that); CMSIS-DSP Helium behind it on `m55` | all legs | yes |
 | `rfft_f32_2048` | float | 2048 | as above | all legs | yes |
-| `rfft_f64_512` | double | 512 | `basic_real_fft<double>`: the split-radix engine | host-class only: soft-float double is not a profile, so the bare-metal legs neither build nor baseline it | no key counts it |
+| `rfft_f64_512` | double | 512 | `basic_real_fft<double>`: the srdif engine | host-class only: soft-float double is not a profile, so the bare-metal legs neither build nor baseline it | no key counts it |
 | `rfft_q15_512` | Q15 (`std::int16_t`, `scaling::fixed`) | 512 | `basic_real_fft<std::int16_t>`: the int32 fixed-point kernel, Q15 I/O | all legs (fixed point is a profile on the soft-float M4 too) | yes, since Stage 2c |
 | `rfft_q31_512` | Q31 (`std::int32_t`, `scaling::fixed`) | 512 | `basic_real_fft<std::int32_t>` | all legs | yes, since Stage 2c |
 | `rfft_q31_2048` | Q31 | 2048 | as above | all legs | yes, since Stage 2c |
@@ -78,13 +78,14 @@ integer FNV-1a-64 fold over its bit pattern (`bench_common.h`), printed at
 the end:
 
 ```
-TAP_DSP_ICOUNT_DONE ok=1 engine=basic_real_fft backend=split_radix scenario=rfft_f32_512 checksum=0x662dd085b5b88325
+TAP_DSP_ICOUNT_DONE ok=1 engine=basic_real_fft backend=srdif scenario=rfft_f32_512 checksum=0xd26ebf9b45534325
 ```
 
-The fold is exact and order-sensitive: two runs of the same binary print the
-same value, and a 1-ulp change in any single output changes it (verified by
-nudging one spectrum bin at one iteration with `nextafterf`: `0x662dd085b5b88325`
-becomes `0x259510dc8721cba8`). A floating running sum cannot promise that — it
+(the `m4f` key's line on the srdif engine). The fold is exact and
+order-sensitive: two runs of the same binary print the same value, and a
+1-ulp change in any single output changes it (verified by nudging one
+spectrum bin at one iteration with `nextafterf`, on the engine and checksum of
+the time: `0x662dd085b5b88325` became `0x259510dc8721cba8`). A floating running sum cannot promise that — it
 absorbs differences below the accumulator's ulp — which is why the checksum
 is an integer hash: it was the fingerprint the job compared between the C
 and the port on the QEMU legs at the bench's own build flags, beside the
@@ -98,7 +99,7 @@ precision; within eight output LSB referred to the input, i.e.
 fixed-point ones (the contract's round-trip identity, `fft.h`; eight is the
 header's pinned Q31 single-transform worst case rounded to a power of two,
 against 0.52 / 3.6 LSB measured in this workload for Q15 / Q31); `backend=`
-names what the build routed `basic_real_fft` through: `split_radix`,
+names what the build routed `basic_real_fft` through: `srdif`,
 `cmsis` on the `m55` key, `accelerate` on Apple, `fixed_point` for Q15 /
 Q31.
 
@@ -107,7 +108,9 @@ floating scenarios execute 109 M, 125 M and 108 M instructions (the three
 fixed-point ones 434 M, 407 M and 495 M at `-O3`, of which the kernel's two
 radix-4 stage functions are 71-80 %; construction is under 0.5 %).
 Construction plus the one-time table build plus the print is under
-0.2 M — well under the 1 % the design asks for. The share of the count that
+0.2 M — well under the 1 % the design asks for (for the srdif engine, whose
+tables are integer arithmetic, construction measures 0.10 M / 0.40 M
+instructions at N = 512 / 2048 on the Cortex-M4F: 0.11 % / 0.37 %). The share of the count that
 is not the transform itself — the class's out-of-place copies, the 2/N
 scaling loop and the fold — is 16.1 % / 14.0 % / 16.6 %
 (`main` inclusive minus the transform's inclusive count, measured on the C
@@ -131,11 +134,11 @@ audit Part 3); the outcome is in the table below.
 
 | key | core | QEMU machine | float32 FFT |
 |---|---|---|---|
-| `m4-softfp` | Cortex-M4, `-mfloat-abi=soft` | `mps2-an386` | split-radix engine (every float op a library call) |
-| `m4f` | Cortex-M4F, `fpv4-sp-d16` | `mps2-an386` | split-radix engine |
-| `m33` | Cortex-M33, no MVE | `mps2-an505` | split-radix engine |
+| `m4-softfp` | Cortex-M4, `-mfloat-abi=soft` | `mps2-an386` | srdif engine (every float op a library call) |
+| `m4f` | Cortex-M4F, `fpv4-sp-d16` | `mps2-an386` | srdif engine |
+| `m33` | Cortex-M33, no MVE | `mps2-an505` | srdif engine |
 | `m55` | Cortex-M55, Helium | `mps3-an547` | CMSIS-DSP — the deployed profile |
-| `m55-ooura` | Cortex-M55, `-DTAP_DSP_FFT_CMSIS=OFF` | `mps3-an547` | split-radix engine — the fallback (the key keeps its pre-flip name; the engine is bit-identical to the Ooura C it names) |
+| `m55-ooura` | Cortex-M55, `-DTAP_DSP_FFT_CMSIS=OFF` | `mps3-an547` | srdif engine — the fallback (the key keeps the historical name of the vendored C the ratchet was seeded on) |
 
 JSON carries no comments, so the provenance of every recorded set lives here,
 in the table below: the `main` run that recorded it, and the GCC and QEMU
@@ -186,6 +189,14 @@ shape is fixed so the record stays greppable:
 | m55-ooura | rfft_q15_512 | — | 684,157,511 | — | **seeded at Stage 2c** (the Q15/Q31 scenarios Stage 3b specified, Part 11; `basic_real_fft<std::int16_t \| std::int32_t>` under `scaling::fixed`, the int32 kernel on every key: fixed point has no backend, so the two M55 keys measure the same binary) | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (workflow_dispatch on the PR branch at `21b3488`; the PR's compare-mode run confirms +0.00 %) | `8350f13` (the #32 squash on `main`, filled in after tap/MuTap#55 pinned it, per #32's reviewer notes) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
 | m55-ooura | rfft_q31_512 | — | 657,595,969 | — | **seeded at Stage 2c** (the Q15/Q31 scenarios Stage 3b specified, Part 11; `basic_real_fft<std::int16_t \| std::int32_t>` under `scaling::fixed`, the int32 kernel on every key: fixed point has no backend, so the two M55 keys measure the same binary) | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (workflow_dispatch on the PR branch at `21b3488`; the PR's compare-mode run confirms +0.00 %) | `8350f13` (the #32 squash on `main`, filled in after tap/MuTap#55 pinned it, per #32's reviewer notes) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
 | m55-ooura | rfft_q31_2048 | — | 806,142,635 | — | **seeded at Stage 2c** (the Q15/Q31 scenarios Stage 3b specified, Part 11; `basic_real_fft<std::int16_t \| std::int32_t>` under `scaling::fixed`, the int32 kernel on every key: fixed point has no backend, so the two M55 keys measure the same binary) | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (workflow_dispatch on the PR branch at `21b3488`; the PR's compare-mode run confirms +0.00 %) | `8350f13` (the #32 squash on `main`, filled in after tap/MuTap#55 pinned it, per #32's reviewer notes) | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m4-softfp | rfft_f32_2048 | 2,294,360,259 | 2,244,317,934 | -2.18 % | **re-recorded at the srdif replacement**: the floating engine behind `basic_real_fft<float>` on these keys is now `fft/srdif.h` (a split-radix DIF kernel of length N/2 written from the literature), which replaced the port of a third-party split-radix engine; every float output bit changes (new checksums) and the counts fall on every key, beyond the −3 % band on m4f 512, both m33 scenarios and m55-ooura 512, so the exact new counts are recorded (Part 11 / D11). Fixed-point scenarios and the `m55` (CMSIS) key are not re-recorded: measured inside the band (fixed point +0.49 … +1.15 %, CMSIS +0.00 %) with no change to that code. `docs/fft-design.md`, "The floating engine (srdif)" | measured locally with `scripts/icount.py` exactly as `bench.yml` runs it (fresh Release build per key, TAP_DSP_BUILD_TESTS=OFF, the pinned plugin header), 2026-09-26; **pending** the confirming `workflow_dispatch` on the branch | **pending** | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m4-softfp | rfft_f32_512 | 1,864,929,141 | 1,815,063,718 | -2.67 % | **re-recorded at the srdif replacement**: the floating engine behind `basic_real_fft<float>` on these keys is now `fft/srdif.h` (a split-radix DIF kernel of length N/2 written from the literature), which replaced the port of a third-party split-radix engine; every float output bit changes (new checksums) and the counts fall on every key, beyond the −3 % band on m4f 512, both m33 scenarios and m55-ooura 512, so the exact new counts are recorded (Part 11 / D11). Fixed-point scenarios and the `m55` (CMSIS) key are not re-recorded: measured inside the band (fixed point +0.49 … +1.15 %, CMSIS +0.00 %) with no change to that code. `docs/fft-design.md`, "The floating engine (srdif)" | measured locally with `scripts/icount.py` exactly as `bench.yml` runs it (fresh Release build per key, TAP_DSP_BUILD_TESTS=OFF, the pinned plugin header), 2026-09-26; **pending** the confirming `workflow_dispatch` on the branch | **pending** | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m4f | rfft_f32_2048 | 111,278,416 | 108,030,219 | -2.92 % | **re-recorded at the srdif replacement**: the floating engine behind `basic_real_fft<float>` on these keys is now `fft/srdif.h` (a split-radix DIF kernel of length N/2 written from the literature), which replaced the port of a third-party split-radix engine; every float output bit changes (new checksums) and the counts fall on every key, beyond the −3 % band on m4f 512, both m33 scenarios and m55-ooura 512, so the exact new counts are recorded (Part 11 / D11). Fixed-point scenarios and the `m55` (CMSIS) key are not re-recorded: measured inside the band (fixed point +0.49 … +1.15 %, CMSIS +0.00 %) with no change to that code. `docs/fft-design.md`, "The floating engine (srdif)" | measured locally with `scripts/icount.py` exactly as `bench.yml` runs it (fresh Release build per key, TAP_DSP_BUILD_TESTS=OFF, the pinned plugin header), 2026-09-26; **pending** the confirming `workflow_dispatch` on the branch | **pending** | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m4f | rfft_f32_512 | 97,138,544 | 94,003,130 | -3.23 % | **re-recorded at the srdif replacement**: the floating engine behind `basic_real_fft<float>` on these keys is now `fft/srdif.h` (a split-radix DIF kernel of length N/2 written from the literature), which replaced the port of a third-party split-radix engine; every float output bit changes (new checksums) and the counts fall on every key, beyond the −3 % band on m4f 512, both m33 scenarios and m55-ooura 512, so the exact new counts are recorded (Part 11 / D11). Fixed-point scenarios and the `m55` (CMSIS) key are not re-recorded: measured inside the band (fixed point +0.49 … +1.15 %, CMSIS +0.00 %) with no change to that code. `docs/fft-design.md`, "The floating engine (srdif)" | measured locally with `scripts/icount.py` exactly as `bench.yml` runs it (fresh Release build per key, TAP_DSP_BUILD_TESTS=OFF, the pinned plugin header), 2026-09-26; **pending** the confirming `workflow_dispatch` on the branch | **pending** | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m33 | rfft_f32_2048 | 115,465,626 | 108,470,414 | -6.06 % | **re-recorded at the srdif replacement**: the floating engine behind `basic_real_fft<float>` on these keys is now `fft/srdif.h` (a split-radix DIF kernel of length N/2 written from the literature), which replaced the port of a third-party split-radix engine; every float output bit changes (new checksums) and the counts fall on every key, beyond the −3 % band on m4f 512, both m33 scenarios and m55-ooura 512, so the exact new counts are recorded (Part 11 / D11). Fixed-point scenarios and the `m55` (CMSIS) key are not re-recorded: measured inside the band (fixed point +0.49 … +1.15 %, CMSIS +0.00 %) with no change to that code. `docs/fft-design.md`, "The floating engine (srdif)" | measured locally with `scripts/icount.py` exactly as `bench.yml` runs it (fresh Release build per key, TAP_DSP_BUILD_TESTS=OFF, the pinned plugin header), 2026-09-26; **pending** the confirming `workflow_dispatch` on the branch | **pending** | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m33 | rfft_f32_512 | 100,945,841 | 94,382,323 | -6.50 % | **re-recorded at the srdif replacement**: the floating engine behind `basic_real_fft<float>` on these keys is now `fft/srdif.h` (a split-radix DIF kernel of length N/2 written from the literature), which replaced the port of a third-party split-radix engine; every float output bit changes (new checksums) and the counts fall on every key, beyond the −3 % band on m4f 512, both m33 scenarios and m55-ooura 512, so the exact new counts are recorded (Part 11 / D11). Fixed-point scenarios and the `m55` (CMSIS) key are not re-recorded: measured inside the band (fixed point +0.49 … +1.15 %, CMSIS +0.00 %) with no change to that code. `docs/fft-design.md`, "The floating engine (srdif)" | measured locally with `scripts/icount.py` exactly as `bench.yml` runs it (fresh Release build per key, TAP_DSP_BUILD_TESTS=OFF, the pinned plugin header), 2026-09-26; **pending** the confirming `workflow_dispatch` on the branch | **pending** | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m55-ooura | rfft_f32_2048 | 102,784,096 | 100,091,803 | -2.62 % | **re-recorded at the srdif replacement**: the floating engine behind `basic_real_fft<float>` on these keys is now `fft/srdif.h` (a split-radix DIF kernel of length N/2 written from the literature), which replaced the port of a third-party split-radix engine; every float output bit changes (new checksums) and the counts fall on every key, beyond the −3 % band on m4f 512, both m33 scenarios and m55-ooura 512, so the exact new counts are recorded (Part 11 / D11). Fixed-point scenarios and the `m55` (CMSIS) key are not re-recorded: measured inside the band (fixed point +0.49 … +1.15 %, CMSIS +0.00 %) with no change to that code. `docs/fft-design.md`, "The floating engine (srdif)" | measured locally with `scripts/icount.py` exactly as `bench.yml` runs it (fresh Release build per key, TAP_DSP_BUILD_TESTS=OFF, the pinned plugin header), 2026-09-26; **pending** the confirming `workflow_dispatch` on the branch | **pending** | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
+| m55-ooura | rfft_f32_512 | 89,276,321 | 86,188,216 | -3.46 % | **re-recorded at the srdif replacement**: the floating engine behind `basic_real_fft<float>` on these keys is now `fft/srdif.h` (a split-radix DIF kernel of length N/2 written from the literature), which replaced the port of a third-party split-radix engine; every float output bit changes (new checksums) and the counts fall on every key, beyond the −3 % band on m4f 512, both m33 scenarios and m55-ooura 512, so the exact new counts are recorded (Part 11 / D11). Fixed-point scenarios and the `m55` (CMSIS) key are not re-recorded: measured inside the band (fixed point +0.49 … +1.15 %, CMSIS +0.00 %) with no change to that code. `docs/fft-design.md`, "The floating engine (srdif)" | measured locally with `scripts/icount.py` exactly as `bench.yml` runs it (fresh Release build per key, TAP_DSP_BUILD_TESTS=OFF, the pinned plugin header), 2026-09-26; **pending** the confirming `workflow_dispatch` on the branch | **pending** | 13.2.1 (15:13.2.rel1-2) | 8.2.2 (1:8.2.2+ds-0ubuntu1.18) |
 
 `before` is `—` for a seed. `main SHA` is the commit on `main` whose push
 run measured the numbers: a pull-request head SHA stops resolving after
@@ -236,6 +247,10 @@ policy is under "Size runs in the same job" below. `.text` is the row of
 | m55-ooura | `rfft_f32_512` | 39,281 | 40,512 | **recorded at Stage 2c**: measured + 3 %, rounded up to 64 bytes | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (`21b3488`; MinSizeRel, `size -A` `.text`) | 13.2.1 (15:13.2.rel1-2) |
 | m55-ooura | `rfft_q15_512` | 27,097 | 27,968 | **recorded at Stage 2c**: measured + 3 %, rounded up to 64 bytes | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (`21b3488`; MinSizeRel, `size -A` `.text`) | 13.2.1 (15:13.2.rel1-2) |
 | m55-ooura | `rfft_q31_512` | 26,593 | 27,392 | **recorded at Stage 2c**: measured + 3 %, rounded up to 64 bytes | [run 35861317022](https://github.com/tap/DspTap/actions/runs/35861317022) (`21b3488`; MinSizeRel, `size -A` `.text`) | 13.2.1 (15:13.2.rel1-2) |
+| m4-softfp | `rfft_f32_512` | 32,201 | 33,216 | **re-recorded at the srdif replacement** (ceiling 54,912 before): measured + 3 %, rounded up to 64 bytes; the srdif engine builds its tables from integer arithmetic, so the float probe no longer links libm's double `sin` / `cos` | measured locally as `bench.yml` builds the probe (MinSizeRel, `size -A` `.text`), 2026-09-26; **pending** the confirming CI run | 13.2.1 (15:13.2.rel1-2) |
+| m4f | `rfft_f32_512` | 30,033 | 30,976 | **re-recorded at the srdif replacement** (ceiling 45,952 before): measured + 3 %, rounded up to 64 bytes; the srdif engine builds its tables from integer arithmetic, so the float probe no longer links libm's double `sin` / `cos` | measured locally as `bench.yml` builds the probe (MinSizeRel, `size -A` `.text`), 2026-09-26; **pending** the confirming CI run | 13.2.1 (15:13.2.rel1-2) |
+| m33 | `rfft_f32_512` | 29,417 | 30,336 | **re-recorded at the srdif replacement** (ceiling 45,376 before): measured + 3 %, rounded up to 64 bytes; the srdif engine builds its tables from integer arithmetic, so the float probe no longer links libm's double `sin` / `cos` | measured locally as `bench.yml` builds the probe (MinSizeRel, `size -A` `.text`), 2026-09-26; **pending** the confirming CI run | 13.2.1 (15:13.2.rel1-2) |
+| m55-ooura | `rfft_f32_512` | 29,297 | 30,208 | **re-recorded at the srdif replacement** (ceiling 40,512 before): measured + 3 %, rounded up to 64 bytes; the srdif engine builds its tables from integer arithmetic, so the float probe no longer links libm's double `sin` / `cos` | measured locally as `bench.yml` builds the probe (MinSizeRel, `size -A` `.text`), 2026-09-26; **pending** the confirming CI run | 13.2.1 (15:13.2.rel1-2) |
 
 ### Seeding, and how the job decides what to do
 
@@ -342,6 +357,7 @@ python3 scripts/icount.py --merge a.json b.json    # fold per-key files into one
 | 2c / 3b (fixed point; the Q15/Q31 scenarios seeded at 2c) | the seed itself gates nothing; every later `SMMULR`, Helium or table-layout change to the Q15/Q31 kernel has a number to beat |
 | 4 (engine as a parameter) | a backend regression on the deployed `m55` profile, or the `m55-ooura` fallback quietly getting slower |
 | 6 (hygiene) | the hygiene pass slowing the hot path unnoticed |
+| srdif (the floating engine replaced) | the replacement costing more than the engine it replaced on any key: the gate was "no float scenario above its baseline", met on all four portable-engine keys (−2.2 … −6.5 %) before the counts were re-recorded (table above) |
 
 **Stage 4 (engine parameter + ABI tag), tap/DspTap#35: what the ratchet
 caught, and a harness defect fixed without a re-record.** Measured locally
