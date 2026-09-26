@@ -1219,7 +1219,7 @@ opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
   config-driven classes apply the mandatory size gate — `basic_log_mel<Sample>::
   supports_geometry`, `basic_pvoc<Sample>::k_min_size` / `k_max_size` / `supports_size`,
   derived from the engine — and the capi gates on them. A3/A4: the "HardFault" promise and
-  "`int` is `std::int32_t` on every CI target" are withdrawn in `fft.h`, `cmsis.h` and the
+  "`int` is `std::int32_t` on all CI legs" are withdrawn in `fft.h`, `cmsis.h` and the
   design note, with measured replacements. Record: docs/fft-design.md, "After the final
   audit".
 

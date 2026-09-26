@@ -572,10 +572,12 @@ top-level). The per-platform float32 backend defaults follow the target: vDSP
 on Apple; CMSIS where the compiler targets floating-point Helium — a compile
 check on `__ARM_FEATURE_MVE & 2` under your toolchain's flags, so it does not
 matter how the toolchain spells the CPU (`-mcpu=cortex-m55`, `cortex-m85`,
-`-march=armv8.1-m.main+mve.fp`); the split-radix engine elsewhere, including
-Cortex-M0+/M4/M7/M33 toolchains. Flags the check cannot see (options added per
-target after the toolchain) leave it OFF, which costs speed, never the
-contract. Override with `-DTAP_DSP_FFT_CMSIS=ON|OFF`,
+`-march=armv8.1-m.main+mve.fp`, hard or softfp float ABI); the split-radix
+engine elsewhere, including Cortex-M0+/M4/M7/M33 and bare-metal Cortex-A/R
+toolchains. The check sees the C++ compiler with `CMAKE_CXX_FLAGS` only (keep
+the CPU flags identical in `CMAKE_C_FLAGS`, which the CMSIS objects use) and
+re-runs on every configure; flags it cannot see (per-config or per-target
+options) leave it OFF, which costs speed, never the contract. Override with `-DTAP_DSP_FFT_CMSIS=ON|OFF`,
 `-DTAP_DSP_FFT_ACCELERATE=OFF` etc.
 
 ## Provenance

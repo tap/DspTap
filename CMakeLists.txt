@@ -53,38 +53,54 @@ target_compile_features(tap_dsp INTERFACE cxx_std_20)
 #
 # Default: ON exactly when the target compiler provides floating-point Helium
 # (MVE-F) — the Cortex-M55 / M85 class — and OFF everywhere else: desktop, the
-# Max/C-ABI host builds (incl. Apple Silicon arm64), Hexagon, and every Cortex-M
-# without MVE-F (M0+/M4/M7/M33). Detected by a compile check on the compiler's
-# own predefined macro, __ARM_FEATURE_MVE with the floating-point bit (2) set,
-# under the configured flags (CMAKE_CXX_FLAGS, i.e. the toolchain file's
-# CMAKE_CXX_FLAGS_INIT) — so it does not matter how a consumer's toolchain
-# spells the CPU (-mcpu=cortex-m55, -mcpu=cortex-m85,
+# Max/C-ABI host builds (incl. Apple Silicon arm64), Hexagon, every Cortex-M
+# without MVE-F (M0+/M4/M7/M33), and bare-metal Cortex-A / R. Detected by a
+# compile check on the compiler's own predefined macro, __ARM_FEATURE_MVE with
+# the floating-point bit (2) set, so it does not matter how a consumer's
+# toolchain spells the CPU (-mcpu=cortex-m55, -mcpu=cortex-m85,
 # -march=armv8.1-m.main+mve.fp, a CMAKE_SYSTEM_PROCESSOR of "arm" or anything
 # else). Measured with arm-none-eabi-gcc 13.2: -mcpu=cortex-m55/m85 with
-# -mfloat-abi=hard define it as 3; cortex-m55+nomve.fp as 1 (integer MVE only,
-# default OFF); cortex-m55 with -mfloat-abi=soft, cortex-m33, cortex-m4(f) and
-# cortex-m7 not at all. Until this check (audit build.md F3) the default was ON
-# for every CMAKE_SYSTEM_NAME Generic + arm target, so a consumer's own M7 or
-# M33 toolchain silently got the CMSIS engine: float size range 32 … 4096
-# instead of 4 … 2^30, and the fft_cmsis ABI tag.
+# -mfloat-abi=hard or softfp define it as 3 (default ON); cortex-m55+nomve.fp
+# as 1 (integer MVE only, default OFF); cortex-m55 with -mfloat-abi=soft,
+# cortex-m33, cortex-m4(f) and cortex-m7 not at all. Until this check (audit
+# build.md F3) the default was ON for every CMAKE_SYSTEM_NAME Generic + arm
+# target, so a consumer's own M7 or M33 toolchain (or a bare-metal Cortex-A/R
+# one) silently got the CMSIS engine: float size range 32 … 4096 instead of
+# 4 … 2^30, and the fft_cmsis ABI tag.
 #
-# Flags the check cannot see (per-target or per-directory options added after
-# the toolchain) leave the default OFF: the split-radix engine is correct on
-# every target, so a missed detection costs speed, never the contract. An
-# explicit -DTAP_DSP_FFT_CMSIS=ON / OFF always wins. ON without MVE-F detected
-# is allowed on a 32-bit Arm target, with a warning (CMSIS-DSP then compiles
-# its non-Helium C, same 32 … 4096 range); ON for anything that is not 32-bit
-# Arm (x86, arm64/Apple Silicon) is a configure error.
+# What the check sees: the C++ compiler with CMAKE_CXX_FLAGS (the toolchain
+# file's CMAKE_CXX_FLAGS_INIT plus any -DCMAKE_CXX_FLAGS), and nothing else —
+# not CMAKE_C_FLAGS (the CMSIS objects compile as C; keep the CPU flags the
+# same in both, as every toolchain here does), not CMAKE_CXX_FLAGS_<CONFIG>,
+# not per-target or per-directory options, and not the caller's
+# CMAKE_REQUIRED_* (the check resets them). Flags it cannot see leave the
+# default OFF: the split-radix engine is correct on every target, so a missed
+# detection costs speed, never the contract. It re-runs on every configure
+# (its cached result is cleared first), so a re-configure with different
+# flags re-detects. An explicit -DTAP_DSP_FFT_CMSIS=ON / OFF always wins — and,
+# like any option(), a cached ON survives a re-configure with non-Helium
+# flags, which is why ON without MVE-F detected warns: allowed on a 32-bit
+# Arm target, with a warning (CMSIS-DSP then compiles its non-Helium C, same
+# 32 … 4096 range); ON for anything that is not 32-bit Arm (x86, arm64/Apple
+# Silicon) is a configure error.
 # ------------------------------------------------------------------------------
 include(CheckCXXSourceCompiles)
+include(CMakePushCheckState)
 # A compile-only check: a static-library try_compile never links, so it works
 # on a bare-metal toolchain whether or not the toolchain file set
 # CMAKE_TRY_COMPILE_TARGET_TYPE (no startup files or linker script needed).
-# Function scope keeps both settings away from the caller's try_compiles.
+# Function scope keeps CMAKE_TRY_COMPILE_TARGET_TYPE away from the caller's
+# try_compiles; the push/pop keeps the caller's CMAKE_REQUIRED_* (flags,
+# definitions, includes, libraries, link options) out of this check; the
+# unset makes it re-run on every configure instead of trusting a result
+# cached under other flags.
 function(_tap_dsp_target_defines condition result)
     set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+    cmake_push_check_state(RESET)
     set(CMAKE_REQUIRED_QUIET ON)
+    unset(${result} CACHE)
     check_cxx_source_compiles("#if !(${condition})\n#error \"${result}: no\"\n#endif\nint main() { return 0; }\n" ${result})
+    cmake_pop_check_state()
 endfunction()
 _tap_dsp_target_defines("defined(__ARM_FEATURE_MVE) && (__ARM_FEATURE_MVE & 2)" TAP_DSP_HAVE_MVE_FLOAT)
 if(TAP_DSP_HAVE_MVE_FLOAT)

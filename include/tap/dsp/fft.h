@@ -209,10 +209,12 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     /// basic_real_fft<std::int16_t> / <std::int32_t, scaling::block_floating>
     /// (the fixed-point profiles, unchanged; the docstrings say std::int32_t
     /// and mean it: `int` IS std::int32_t on the three hosted CI legs —
-    /// glibc, MSVC, Apple — so there basic_real_fft<int> is the Q31 profile,
-    /// but on arm-none-eabi, all four QEMU legs, std::int32_t is `long`
-    /// (newlib's __INT32_TYPE__) and basic_real_fft<int> does not compile;
-    /// `Int32IsIntOnTheHostsAndLongOnArmNoneEabi` pins which on every leg),
+    /// glibc, MSVC, Apple — and under clang for arm-none-eabi, so there
+    /// basic_real_fft<int> is the Q31 profile, but under arm-none-eabi-gcc
+    /// (all four QEMU legs) std::int32_t is `long` (the compiler's
+    /// __INT32_TYPE__, from GCC's target configuration, not from newlib) and
+    /// basic_real_fft<int> does not compile;
+    /// `Int32IsLongOnlyUnderArmNoneEabiGcc` pins which on every leg),
     /// and
     /// basic_real_fft<float, scaling::fixed> / <double, scaling::fixed>, the spelling all four
     /// profiles shared before Stage 4 (the capi's generic seam writes it):

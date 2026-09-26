@@ -139,6 +139,8 @@ jobs:
           -DTAP_DSP_WERROR=ON
           ${{ matrix.extra }}
 
+      # The first grep only prints the detection result for the log (it
+      # never fails the step); the second is the assertion.
       - name: Default FFT backend is the detected one
         run: |
           grep '^TAP_DSP_HAVE_MVE_FLOAT:' build-${{ matrix.name }}/CMakeCache.txt || true

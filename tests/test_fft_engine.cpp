@@ -329,22 +329,27 @@ namespace {
     }
 
     // ------------------------------------------------------------------------
-    // `int` and the Q31 profile, per target (fft.h, class docstring). The Q31
-    // profile is basic_real_fft<std::int32_t> on every target; whether `int`
-    // spells it depends on the target's std::int32_t: int on the three hosted
-    // legs (glibc, MSVC, Apple), long on arm-none-eabi (newlib's
-    // __INT32_TYPE__ is long int — all four QEMU legs), where
-    // basic_real_fft<int> does not compile (the primary template's
-    // static_assert). The row the log carries is the measurement.
+    // `int` and the Q31 profile, per compiler (fft.h, class docstring). The
+    // Q31 profile is basic_real_fft<std::int32_t> everywhere; whether `int`
+    // spells it depends on the compiler's __INT32_TYPE__ (the compiler's
+    // target configuration, not the C library): int on the three hosted legs
+    // (glibc, MSVC, Apple) and under clang for arm-none-eabi (measured, clang
+    // 18.1.3 --target=arm-none-eabi -mcpu=cortex-m55), long int under
+    // arm-none-eabi-gcc — all four QEMU legs — where basic_real_fft<int> does
+    // not compile (the primary template's static_assert). The prediction
+    // below is for exactly those two compiler families; the row the log
+    // carries is the measurement.
     // ------------------------------------------------------------------------
-#if defined(__arm__) && defined(__GNUC__) && !defined(__linux__) && !defined(__APPLE__)
-    constexpr bool k_int32_is_long = true; // arm-none-eabi (newlib)
+#if defined(__arm__) && defined(__GNUC__) && !defined(__clang__) && !defined(__linux__) && !defined(__APPLE__)
+    constexpr bool k_int32_is_long = true; // arm-none-eabi-gcc (GCC's newlib-stdint target config)
 #else
-    constexpr bool k_int32_is_long = false;
+    constexpr bool k_int32_is_long = false; // hosts, and clang for arm-none-eabi (int)
 #endif
+    static_assert(std::is_same_v<std::int32_t, int> || std::is_same_v<std::int32_t, long>,
+                  "std::int32_t is int or long on every compiler this repo targets");
     static_assert(std::is_same_v<tap::dsp::basic_real_fft<std::int32_t>, tap::dsp::real_fft_q31>);
 
-    TEST(fft_engine, Int32IsIntOnTheHostsAndLongOnArmNoneEabi) {
+    TEST(fft_engine, Int32IsLongOnlyUnderArmNoneEabiGcc) {
         std::printf("[ measured ] std::int32_t is %s on this target\n", std::is_same_v<std::int32_t, int> ? "int"
                                                                         : std::is_same_v<std::int32_t, long>
                                                                             ? "long"
