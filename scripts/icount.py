@@ -54,9 +54,8 @@ import sys
 # Both M4 flavours (soft-float and M4F) run on the same board model; the
 # difference is the toolchain's -mfloat-abi. m55 and m55-ooura likewise share
 # the AN547: the key records which float32 backend the binaries were built
-# with (CMSIS-DSP Helium, the deployed profile, or the split-radix fallback;
-# the "-ooura" key name predates the Stage 2b port and the baselines are
-# keyed on it).
+# with (CMSIS-DSP Helium, the deployed profile, or the srdif fallback; the
+# "-ooura" key name is historical and the baselines are keyed on it).
 MACHINES = {
     "m4-softfp": "mps2-an386",
     "m4f": "mps2-an386",
@@ -127,7 +126,7 @@ def merge(path: pathlib.Path, files: list[str]) -> int:
 
 def describe(fields: dict[str, str]) -> str:
     """The DONE line's engine and backend fields, printed beside every count
-    so the log says what the binary measured (split_radix, cmsis, fixed_point)."""
+    so the log says what the binary measured (srdif, cmsis, fixed_point)."""
     return f"[engine={fields.get('engine', '?')} backend={fields.get('backend', '?')}]"
 
 

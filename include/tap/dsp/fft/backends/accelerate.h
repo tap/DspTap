@@ -1,5 +1,5 @@
 /// @file accelerate.h
-/// @brief Apple vDSP (Accelerate) float32 real FFT engine, re-presenting the split-radix contract.
+/// @brief Apple vDSP (Accelerate) float32 real FFT engine, re-presenting the library's floating contract.
 // SPDX-License-Identifier: MIT
 // Copyright 2025-2026 Timothy Place and the DspTap contributors.
 //
@@ -27,8 +27,8 @@
 
 namespace tap::dsp::detail {
 
-    /// Wraps Apple's vDSP real FFT (Accelerate) to reproduce the split-radix
-    /// engine's exact float32 contract (Ooura's). vDSP works in split-complex
+    /// Wraps Apple's vDSP real FFT (Accelerate) to reproduce the srdif
+    /// engine's exact float32 contract (fft.h). vDSP works in split-complex
     /// form, in the engineering convention exp(-i2*pi/N), with a 2x-scaled
     /// forward; the wrapper deinterleaves/reinterleaves (ctoz/ztoc),
     /// conjugates the imaginary bins, and applies the measured scales — x0.5
@@ -41,7 +41,7 @@ namespace tap::dsp::detail {
     ///   - Size range k_min_size = 4 … k_max_size = 2^20, a power of two.
     ///     vDSP documents no maximum; 2^20 is the bound the float oracle
     ///     (tests/test_fft_oracle.cpp) has always stated for this engine and
-    ///     is the size the split-radix gate itself runs to. The wrapper is
+    ///     is the size the floating battery constructs to. The wrapper is
     ///     swept through the class by the oracle's closed forms to 65536 on
     ///     the macOS leg and pinned bin-for-bin at 512 / 2048; sizes between
     ///     65536 and 2^20 are inside the stated range on vDSP's word, not on
@@ -66,15 +66,18 @@ namespace tap::dsp::detail {
     ///            which is the gate; fft_backend_parity cannot see this
     ///            class of bug because it runs a single process against a
     ///            single allocation.
-    ///   IT DOES  agree with the split-radix engine to <4e-7 measured as
+    ///   IT DOES  agree with the portable engine to <4e-7 measured as
     ///            peak-normalized absolute error, which is what "relative"
-    ///            meant when the bound was recorded.
-    ///   IT DOES NOT agree with the split-radix engine per bin. On material
+    ///            meant when the bound was recorded (measured against the
+    ///            split-radix port that preceded the srdif engine; the
+    ///            parity test holds vDSP to the same bound against srdif).
+    ///   IT DOES NOT agree with the portable engine per bin. On material
     ///            where most bins are numerically empty — an on-bin tone,
     ///            say — per-bin relative error against a double-precision
     ///            reference runs to 1e6 and beyond, for BOTH engines. The
-    ///            split-radix engine is not the accurate one there; measured
-    ///            on Intel it is ~4x worse than vDSP against double. Any
+    ///            portable engine is not the accurate one there; measured
+    ///            on Intel (the preceding engine) it is ~4x worse than
+    ///            vDSP against double. Any
     ///            consumer whose behaviour depends on the contents of empty
     ///            bins is depending on rounding noise, and no engine choice
     ///            fixes that.
@@ -170,7 +173,7 @@ namespace tap::dsp::detail {
         // Apple M1 / macOS 26.5.2 / Xcode 26.6, median per-bin relative
         // error against a double-precision reference at N=2048:
         //
-        //   material         64-byte aligned   NOT 64-byte aligned   split-radix
+        //   material         64-byte aligned   NOT 64-byte aligned   portable (*)
         //   broadband        1.6e-07           1.2e-07               1.2e-07
         //   tone, off-bin    1.3e-06           1.3e-06               6.4e-07
         //   tone, ON-bin     0.65              1.2e-07               1.1e-07
@@ -178,7 +181,10 @@ namespace tap::dsp::detail {
         // On material whose spectrum has exactly-empty bins — an on-bin
         // tone is the clean case — the 64-byte-aligned kernel puts the
         // MEDIAN bin 65% away from truth, while the other kernel and the
-        // split-radix engine both track it to float epsilon. Any leakage
+        // portable engine both track it to float epsilon ((*) measured on
+        // the split-radix port that preceded the srdif engine; the tonal
+        // accuracy gate in tests/test_fft_backend.cpp holds srdif and
+        // vDSP to the same 1e-5 median bound). Any leakage
         // that lifts those bins above the noise floor hides the difference,
         // which is why a peak-normalized parity check cannot see it.
         //

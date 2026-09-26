@@ -143,7 +143,7 @@ class RealFFT:
     profiles, basic_real_fft<Sample, Scaling> for Q15 / Q31). `profile` is one of
 
         "double"   the golden model
-        "float"    the embedded floating profile (the split-radix engine, or the vDSP/CMSIS
+        "float"    the embedded floating profile (the srdif engine, or the vDSP/CMSIS
                    backend the build selected — see `RealFFT.backend()`)
         "q15"      std::int16_t, Q0.15 I/O, tap::dsp::scaling::fixed
         "q31"      std::int32_t, Q0.31 I/O, scaling::fixed
@@ -162,7 +162,7 @@ class RealFFT:
     everywhere an exponent appears.
 
     `forward`/`inverse` take and return float64 arrays in the header's PACKED layout and
-    Ooura's exp(+i) sign convention, whatever the profile, in the DOUBLE profile's units: the
+    the library's exp(+i) sign convention, whatever the profile, in the DOUBLE profile's units: the
     float profile converts at the boundary; the fixed-point profiles quantize the input to
     their Q format at the C boundary (round half away from zero, saturating at +-full scale)
     and return the native result already multiplied by 2^e, so the array compares directly to
@@ -228,10 +228,10 @@ class RealFFT:
 
     @staticmethod
     def backend() -> str:
-        """The float32 engine this build compiled: "split_radix" (the C++20 engine of
-        fft/split_radix.h, bit-identical to the Ooura C it replaced; "ooura" until Stage 2c),
-        "accelerate" or "cmsis". The double profile is always the split-radix engine; the
-        fixed-point profiles are always the portable int32 kernel."""
+        """The float32 engine this build compiled: "srdif" (the portable engine of fft/srdif.h;
+        "split_radix" for the engine it replaced, "ooura" before Stage 2c), "accelerate" or
+        "cmsis". The double profile is always the srdif engine; the fixed-point profiles are
+        always the portable int32 kernel."""
         return _lib.dsptap_fft_backend().decode()
 
     def forward_with_exponent(self, x: np.ndarray) -> tuple[np.ndarray, int]:
@@ -330,7 +330,7 @@ class RealFFT:
 
     @staticmethod
     def unpack(packed: np.ndarray) -> np.ndarray:
-        """Packed Ooura spectrum -> complex bins 0..n/2 in the engineering convention
+        """Packed spectrum (fft.h's layout) -> complex bins 0..n/2 in the engineering convention
         (conjugated: rfft-compatible)."""
         packed = np.asarray(packed, dtype=np.float64)
         n = packed.size
@@ -342,7 +342,7 @@ class RealFFT:
 
     @staticmethod
     def pack(bins: np.ndarray) -> np.ndarray:
-        """Engineering-convention complex bins 0..n/2 -> packed Ooura spectrum (float64,
+        """Engineering-convention complex bins 0..n/2 -> packed spectrum (fft.h's layout, float64,
         length n). The imaginary parts of DC and Nyquist are discarded (the packing has no
         slot for them; a real signal's are zero)."""
         bins = np.asarray(bins, dtype=np.complex128)

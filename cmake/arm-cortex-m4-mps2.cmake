@@ -56,7 +56,7 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 
 # No Helium on the M4: the compiler defines no __ARM_FEATURE_MVE for this
 # -mcpu, so the root CMakeLists.txt's MVE-F check leaves TAP_DSP_FFT_CMSIS OFF
-# (the split-radix float32 engine) without a pin here. Until that check the
+# (the srdif float32 engine) without a pin here. Until that check the
 # default was ON for every Generic+arm system and this file pinned it OFF.
 
 # Largest transform the FFT test sweeps run on this leg (tests/CMakeLists.txt

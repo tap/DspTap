@@ -14,7 +14,7 @@
 # host-class and gets the double scenario; the Cortex-M legs are not.
 #
 # Everything here measures tap::dsp::basic_real_fft as built (bench_common.h):
-# the split-radix engine, or CMSIS / vDSP behind the class for float where the
+# the srdif engine, or CMSIS / vDSP behind the class for float where the
 # build says so, and the int32 kernel for the fixed-point profiles. From
 # Stage 2b until 2c a TAP_DSP_BENCH_ENGINE cache variable could also point the
 # bench at the vendored C, and the float scenarios and probe were built a

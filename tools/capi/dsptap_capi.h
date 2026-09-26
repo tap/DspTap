@@ -80,7 +80,7 @@ typedef struct dsptap_decimator_s* dsptap_decimator;
 
 /// Numeric profile of a real FFT handle: which tap::dsp::basic_real_fft<Sample, Scaling>
 /// instantiation it runs. DOUBLE is the golden model; FLOAT is the embedded floating profile
-/// (the split-radix engine, or the platform backend the build selected — see
+/// (the srdif engine, or the platform backend the build selected — see
 /// dsptap_fft_backend). Q15 and Q31
 /// are the fixed-point profiles (std::int16_t in Q0.15, std::int32_t in Q0.31) under
 /// tap::dsp::scaling::fixed; Q15_BFP and Q31_BFP the same two under
@@ -104,7 +104,7 @@ typedef struct dsptap_decimator_s* dsptap_decimator;
 ///
 /// Size: dsptap_fft_create returns NULL unless basic_real_fft<profile>::supports_size(size),
 /// the power-of-two interval [k_min_size, k_max_size] of the engine the profile runs on (fft.h,
-/// Stage 4): the floating profiles' range is the selected engine's — split-radix 4 … 2^30, vDSP
+/// Stage 4): the floating profiles' range is the selected engine's — srdif 4 … 2^30, vDSP
 /// 4 … 2^20, CMSIS-DSP 32 … 4096 — and the four fixed-point profiles' is [4, 65536]
 /// (fft/fixed_point.h). The header's constructor states the same range as a debug-assertion
 /// precondition; this entry point is the release-mode gate, so it returns NULL rather than
@@ -119,7 +119,7 @@ typedef struct dsptap_decimator_s* dsptap_decimator;
 /// Create a real FFT of `size` points in the given profile. All workspace is allocated here; the
 /// transforms below are allocation-free.
 /// @param size     a power of two inside the profile's engine range (see the profile codes:
-///                 4 … 2^30 split-radix, 4 … 2^20 vDSP, 32 … 4096 CMSIS, 4 … 65536 fixed point)
+///                 4 … 2^30 srdif, 4 … 2^20 vDSP, 32 … 4096 CMSIS, 4 … 65536 fixed point)
 /// @param profile  one of the DSPTAP_FFT_PROFILE_* codes
 /// @return the handle, or NULL on a bad size, an unknown profile, or allocation failure
 DSPTAP_API dsptap_fft dsptap_fft_create(int size, int profile) DSPTAP_NOEXCEPT;
@@ -132,11 +132,11 @@ DSPTAP_API int dsptap_fft_profile(dsptap_fft h) DSPTAP_NOEXCEPT;
 /// sizeof the profile's native sample (8 for DOUBLE, 4 for FLOAT, 2 for Q15 / Q15_BFP, 4 for
 /// Q31 / Q31_BFP) — the element width of the buffers the *_inplace_raw transforms take.
 DSPTAP_API int dsptap_fft_sample_bytes(dsptap_fft h) DSPTAP_NOEXCEPT;
-/// The float32 engine this build compiled: "split_radix" (the C++20 engine of
-/// fft/split_radix.h, bit-identical to the Ooura C it replaced; the string was "ooura" until
-/// Stage 2c), "accelerate" (Apple vDSP) or "cmsis" (CMSIS-DSP Helium). The double profile is
-/// always the split-radix engine; the four fixed-point profiles are always the portable int32
-/// kernel (fft/fixed_point.h), on every host.
+/// The float32 engine this build compiled: "srdif" (the portable engine of fft/srdif.h; the
+/// string was "split_radix" for the engine it replaced, and "ooura" before Stage 2c),
+/// "accelerate" (Apple vDSP) or "cmsis" (CMSIS-DSP Helium). The double profile is always the
+/// srdif engine; the four fixed-point profiles are always the portable int32 kernel
+/// (fft/fixed_point.h), on every host.
 DSPTAP_API const char* dsptap_fft_backend(void) DSPTAP_NOEXCEPT;
 /// The exponent contract's constant for this handle's size: basic_real_fft<Sample,
 /// Scaling>::fixed_scaling_exponent(size) — the exponent every transform of a Q15 / Q31 handle
@@ -252,7 +252,7 @@ DSPTAP_API int dsptap_psola_process(dsptap_psola h, const double* in, double* ou
 
 /// Create a phase-vocoder shifter (tap::dsp::basic_pvoc<double>), or NULL unless
 /// basic_pvoc<double>::supports_size(fft_size) — a power of two in [64, 2^28], the class's range
-/// intersected with its FFT engine's (split-radix for double on every build) — or on allocation
+/// intersected with its FFT engine's (srdif for double on every build) — or on allocation
 /// failure.
 DSPTAP_API dsptap_pvoc dsptap_pvoc_create(int fft_size) DSPTAP_NOEXCEPT;
 DSPTAP_API void        dsptap_pvoc_destroy(dsptap_pvoc h) DSPTAP_NOEXCEPT;

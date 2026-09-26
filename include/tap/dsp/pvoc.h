@@ -74,8 +74,8 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///     (supports_size): at least 64, at most 2^28 (the int32 sample
     ///     clock), and inside the size range of the FFT engine this profile
     ///     runs — the range is DERIVED from the engine, not a constant:
-    ///       double, every build             64 … 2^28   (split-radix 4 … 2^30)
-    ///       float, split-radix default      64 … 2^28
+    ///       double, every build             64 … 2^28   (srdif 4 … 2^30)
+    ///       float, srdif default            64 … 2^28
     ///       float, vDSP (macOS)             64 … 2^20
     ///       float, CMSIS-DSP (M55 build)    64 … 4096
     ///     Frequency resolution and transient smearing both scale with it;

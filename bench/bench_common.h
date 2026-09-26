@@ -22,8 +22,8 @@ namespace tap::dsp::bench {
     /// What every bench binary measures: tap::dsp::basic_real_fft<Sample> as
     /// built, i.e. over the engine the build selected as that profile's
     /// default (Stage 4: default_real_fft_engine_t<Sample> for the floating
-    /// profiles) — the split-radix engine (include/tap/dsp/fft/split_radix.h)
-    /// for double and, where no backend define is active, for float; the
+    /// profiles) — the srdif engine (include/tap/dsp/fft/srdif.h) for double
+    /// and, where no backend define is active, for float; the
     /// accelerated engine behind the same class where the build routes
     /// float32 through one (TAP_DSP_FFT_CMSIS on the `m55` key, vDSP on
     /// Apple); the int32 fixed-point kernel (fft/fixed_point.h) for the Q15
@@ -32,7 +32,7 @@ namespace tap::dsp::bench {
     ///
     /// From Stage 2a until Stage 2c this header also carried an engine
     /// selector (TAP_DSP_BENCH_ENGINE) and an adapter that presented the
-    /// vendored Ooura C behind the class's surface, so every float scenario
+    /// vendored C behind the class's surface, so every float scenario
     /// could be counted twice and the job could print the C/port ratio and
     /// whether the two output checksums agreed. Stage 2c retired the C from
     /// the shipping tree (docs/audit-fft-and-code-smells.md, Part 3; the
@@ -43,10 +43,11 @@ namespace tap::dsp::bench {
     /// which include the print — did not move at 2c, nor at Stage 4: the
     /// engine became an explicit class parameter there, but the printed
     /// field stays the class's name (the `backend=` field already names the
-    /// engine the default resolved to: split_radix / cmsis / accelerate /
+    /// engine the default resolved to: srdif / cmsis / accelerate /
     /// fixed_point) because the recorded baselines include the print and a
     /// longer string is a counted change (the 2b re-record measured +75
-    /// instructions for three characters, bench/README.md).
+    /// instructions for three characters, bench/README.md; the srdif
+    /// re-record took the field's rename from "split_radix" with it).
     constexpr const char* k_engine_name = "basic_real_fft";
 
     /// The transform under test.
@@ -55,8 +56,8 @@ namespace tap::dsp::bench {
 
     /// Which backend the transform under test runs on: what the class was
     /// built over, from the macros fft.h switches on (the accelerated
-    /// backends apply to float only; double is always the split-radix
-    /// engine, Q15 and Q31 always the fixed-point kernel).
+    /// backends apply to float only; double is always the srdif engine, Q15
+    /// and Q31 always the fixed-point kernel).
     template <typename Sample>
     constexpr const char* backend_name() noexcept {
         if constexpr (std::is_same_v<Sample, float>) {
@@ -65,14 +66,14 @@ namespace tap::dsp::bench {
 #elif defined(TAP_DSP_FFT_ACCELERATE)
             return "accelerate";
 #else
-            return "split_radix";
+            return "srdif";
 #endif
         }
         else if constexpr (std::is_integral_v<Sample>) {
             return "fixed_point";
         }
         else {
-            return "split_radix";
+            return "srdif";
         }
     }
 
