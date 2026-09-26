@@ -138,20 +138,42 @@ namespace {
     // Measured 2026-09-18 on x86-64 Linux (Ubuntu 24.04, glibc 2.39), GCC
     // 13.3.0 and clang 18.1.3 -O3 (identical: the kernel is integer
     // arithmetic and the tables are the same libm), on the Stage 3b kernel
-    // as merged in tap/DspTap#27, and pinned at 2x. The measured values, in
-    // the pins' order:
+    // as merged in tap/DspTap#27, and pinned at 2x; re-measured 2026-09-26
+    // (below). The measured values, in the pins' order, as of the latter:
     //   Q15/fixed  0.500 / 0.562 /  -  / 1.00 / 0.0005 / 1.055 / 0.022 / 0.500
-    //   Q31/fixed  4.250 / 3.382 /  -  / 6.00 / 0.8125 / 1.744 / 0.383 /  -
+    //   Q31/fixed  4.250 / 3.382 /  -  / 6.00 / 0.8125 / 1.751 / 0.384 /  -
     //   Q15/bfp    0.750 / 5.000 / 1.0 / 1.00 / 0.0156 / 1.041 / 0.535 / 0.500
-    //   Q31/bfp   15.988 / 41.50 / 4.0 / 62.0 / 1.0469 / 2.321 / 0.644 /  -
+    //   Q31/bfp   15.988 / 41.50 / 4.0 / 62.0 / 1.0469 / 2.315 / 0.644 /  -
     // The Q31 block-floating maxima all sit at index 0 or 1: the DC/Nyquist
     // path, where round-half-up biases add coherently (fixed_point.h,
     // "Honest limit"). bfp_vs_fixed_lsb is read by the block-floating rows
     // only and q15_vs_q31_lsb by the Q15 rows only; the others carry 0.0.
+    //
+    // Re-measured 2026-09-26 on x86-64 Linux (glibc 2.39, GCC 13.3.0 -O3)
+    // after the real post-pass / pre-pass was re-derived from the literature
+    // (fixed_point.h, real_post_pass): every measured value above is
+    // unchanged to the printed digit, and the output fingerprints and table
+    // checksums below are the same bit patterns, except the two Welch-model
+    // ratios, whose model's post-pass stage was rewritten for that
+    // arrangement (the product on (M - 2) / (M - 1) of the measured bins,
+    // on a difference of twice the signal variance): Q31/fixed noise
+    // 1.744 -> 1.751 (pin 3.49 -> 3.51), tone 0.383 -> 0.384; Q31/bfp noise
+    // 2.321 -> 2.315 (pin 4.65 -> 4.63); the Q15 ratios unchanged. Pinned
+    // at 2x as before.
+    //
+    // Scope: the sweeps run N <= 2048 (k_sweep_sizes), and the pins hold
+    // there only. The Q31 block-floating DC-path maxima grow with the gap
+    // between the constant and the returned exponent at larger N: the same
+    // saturation sweep run at one size at a time (2026-09-26, same host)
+    // gives 31.0 / 32.0 / 59.0 / 76.0 / 80.0 LSB at N = 4096 / 8192 / 16384
+    // / 32768 / 65536 (inverse of full-scale binary noise, index 0) and
+    // F(x) + F(-x) maxima of 121 / 126 / 137 / 141 / 286 LSB, beyond the
+    // 32 / 124 pins; Q31 fixed stays within its pins (4.70 / 4.25 / 4.25 /
+    // 4.74 / 4.72 LSB, F(x) + F(-x) 8 / 7 / 8 / 8 / 9 LSB).
     constexpr pin_table k_pins_q15_fixed{1.0, 1.13, 0.0, 2.0, 0.001, 2.11, 0.044, 1.0};
-    constexpr pin_table k_pins_q31_fixed{8.5, 6.77, 0.0, 12.0, 1.63, 3.49, 0.77, 0.0};
+    constexpr pin_table k_pins_q31_fixed{8.5, 6.77, 0.0, 12.0, 1.63, 3.51, 0.77, 0.0};
     constexpr pin_table k_pins_q15_bfp{1.5, 10.0, 2.0, 2.0, 0.032, 2.09, 1.07, 1.0};
-    constexpr pin_table k_pins_q31_bfp{32.0, 83.0, 8.0, 124.0, 2.1, 4.65, 1.29, 0.0};
+    constexpr pin_table k_pins_q31_bfp{32.0, 83.0, 8.0, 124.0, 2.1, 4.63, 1.29, 0.0};
 
     template <typename Cfg>
     constexpr const pin_table& pins() {
@@ -414,6 +436,24 @@ namespace {
             a[0] = lo;
             a[1] = lo;
             p.push_back({"dc and nyquist INT_MIN", a});
+        }
+        // The pre-pass's own worst case (docs/fft-design.md §3): every bin
+        // pair conjugate-antisymmetric at the rails, a[k] = (hi, hi) and
+        // a[M-k] = (lo, hi), so v = conj a[M-k] = -u to within an LSB and the
+        // difference u - v the pre-pass multiplies by conj C_k reaches the
+        // bound its proof uses, 2 * sqrt(2) x the shifted full scale, at every
+        // k, including k = 1 where |C_k| is largest (1/sqrt(2)). DC and
+        // Nyquist at the rail of the same sign make (a[0] + a[1]) / 2 the
+        // largest the k = 0 statement can see. The INT_MIN-led twin swaps
+        // the rails.
+        for (const bool from_min : {false, true}) {
+            const Sample        p0 = from_min ? lo : hi;
+            const Sample        p1 = from_min ? hi : lo;
+            std::vector<Sample> a(n, p0);
+            for (std::size_t k = n / 4 + 1; k < n / 2; ++k) {
+                a[2 * k] = p1; // a[M-k] = (p1, p0): conj a[M-k] = (p1, -p0) ~ -(p0, p0)
+            }
+            p.push_back({from_min ? "antisymmetric pairs from INT_MIN" : "antisymmetric pairs", a});
         }
         return p;
     }
@@ -1121,8 +1161,11 @@ namespace {
     //     (1 - 4^-s) q^2/12 (3/4 of q^2/12 for one bit, 15/16 for two).
     //   - Structure: a radix-4 DIF complex FFT of length M = N/2 (one stage
     //     per factor of 4, spans M, M/4, ..., down to 4; a radix-2 stage when
-    //     log2 M is odd), then <<CLEAN-ROOM: the real post-pass's structure
-    //     as the model sees it>>. Under fixed scaling the
+    //     log2 M is odd), then a one-bit shift and the real post-pass: per
+    //     bin pair (k, M-k), 1 <= k < M/2, one complex product
+    //     G = C_k (u - v), C_k = (1 + i W_N^k) / 2, u = a[k], v = conj a[M-k],
+    //     and Y[k] = u - G, Y[M-k] = conj(v + G); DC / Nyquist (a sum and a
+    //     difference) and bin N/4 (C = 0) take no product. Under fixed scaling the
     //     Q31 profile folds its one-bit input pre-shift into the first
     //     stage's shift (a single 3-bit rounding).
     //   - Per stage, per output component. Shift-before-butterfly: each of
@@ -1139,8 +1182,17 @@ namespace {
     //     LSB of Q1.30), uniform, adds 2 * P * 2^-62 / 3 on the rotated
     //     outputs, P being the signal variance per component entering the
     //     rotation.
-    //   - Post-pass: <<CLEAN-ROOM: what its shift and its products inject,
-    //     and the gain it carries earlier noise and the signal with>>.
+    //   - Post-pass. Its outputs are the linear map (u, v) -> (u (1 - C_k)
+    //     + v C_k, and the mirror), and |1 - C_k|^2 + |C_k|^2 = (|1 - i W|^2 +
+    //     |1 + i W|^2) / 4 = 1 for every k: a white signal and any noise
+    //     present before the pass (u and v uncorrelated) reach each output
+    //     component with power gain 1 after the shift's 1/4 -- the model's
+    //     stage with sum_gain 1 and shift 1, whose shift injects 1 * v(1).
+    //     The product G adds its two mul_coeff roundings, 2 q^2/12, to both
+    //     outputs of every pair, i.e. on the measured bins 1 .. M-1 all but
+    //     N/4: a fraction (M - 2) / (M - 1). The coefficient's quantisation
+    //     acts on u - v, whose variance is 2P for u of variance P, so it adds
+    //     2 * 2P * 2^-62 / 3 there (product_signal = 2).
     //   - Propagation: noise present after a stage reaches the output through
     //     each later stage u with power gain sum_gain_u * 4^-shift_u (a sum of
     //     sum_gain_u uncorrelated terms through unit-magnitude twiddles, then
@@ -1177,6 +1229,7 @@ namespace {
         int    sum_gain;          ///< inputs summed into each output component
         int    max_shift;         ///< the fixed-scaling shift, and the BFP maximum
         double rotation_fraction; ///< fraction of output components that see a twiddle rotation
+        double product_signal;    ///< signal variance of the product's input, per unit of the stage's
     };
 
     std::vector<stage_spec> kernel_stages(std::size_t n, bool fold_pre_shift, bool q15_final_shift) {
@@ -1184,17 +1237,22 @@ namespace {
         const std::size_t       m = n / 2;
         for (std::size_t span = m; span >= 4; span /= 4) {
             const double rotated = 0.75 * (1.0 - 4.0 / static_cast<double>(span)); // 3 of 4 outputs, q != 0
-            stages.push_back({4, 2, rotated});
+            stages.push_back({4, 2, rotated, 1.0});
         }
         if (stages.empty() || (m >> (2 * stages.size())) == 2) {
-            stages.push_back({2, 1, 0.0}); // the radix-2 final stage (log2 M odd)
+            stages.push_back({2, 1, 0.0, 1.0}); // the radix-2 final stage (log2 M odd)
         }
         if (fold_pre_shift) {
             stages.front().max_shift += 1; // Q31 fixed: pre-shift and first stage, one rounding
         }
-        stages.push_back({1, 1, 1.0}); // the real post-pass
+        // The real post-pass: one product G = C_k (u - v) per bin pair, on
+        // every interior bin but N/4 (the measured bins 1 .. M-1, so a
+        // fraction (M - 2) / (M - 1) of them), none on DC / Nyquist; u - v
+        // carries twice the signal variance of u.
+        const double interior = static_cast<double>(m) - 1.0;
+        stages.push_back({1, 1, (interior - 1.0) / interior, 2.0});
         if (q15_final_shift) {
-            stages.push_back({1, 31, 0.0}); // Q15 BFP: the shift before the narrow, unbounded
+            stages.push_back({1, 31, 0.0, 1.0}); // Q15 BFP: the shift before the narrow, unbounded
         }
         return stages;
     }
@@ -1246,7 +1304,8 @@ namespace {
                 noise += static_cast<double>(st.sum_gain) * (1.0 - pow2(-2 * shifts[t])) * rounding;
             }
             if (st.rotation_fraction > 0.0) {
-                noise += st.rotation_fraction * (2.0 * rounding + 2.0 * signal * twiddle_lsb * twiddle_lsb / 3.0);
+                noise += st.rotation_fraction
+                         * (2.0 * rounding + 2.0 * st.product_signal * signal * twiddle_lsb * twiddle_lsb / 3.0);
             }
         }
         noise += q_out_extra * q_out_extra / 12.0;
@@ -1360,15 +1419,18 @@ namespace {
     }
 
     // |w_q - w| <= 0.5 LSB of Q1.30 on every host, for the kernel twiddles
-    // (W_M^k, M = N/2, interleaved cos/sin) and <<CLEAN-ROOM: the post-pass
-    // table>>: each is cos/sin from libm rounded
+    // (W_M^k, M = N/2, interleaved cos/sin) and the post-pass coefficients
+    // (C_k = (1 + i W_N^k) / 2, k < N/4, interleaved (1 - sin) / 2, cos / 2,
+    // the real part as the integer 2^29 minus the rounded sine half): each is
+    // cos/sin from libm rounded
     // once by make_coeff (half away from zero), never a recurrence. The
     // reference is libm too, on the exact turn fraction; two double
     // evaluations of the same angle differ by ~1e-16, far inside the 2^-20
     // LSB slack, so a last-bit libm difference passes here (the checksum
     // below is where it is detected) while a recurrence-drifted or
-    // Q1.14-derived table fails. The exact entries (1, 0, i) and the
-    // k <-> M-k symmetry are checked bit-exactly.
+    // Q1.14-derived table fails. The exact entries (1, 0, i; C_0 = (1/2,
+    // 1/2)), the k <-> M-k symmetry and the post-pass complement
+    // C_k real + C_(N/4-k) imaginary == 1/2 are checked bit-exactly.
     TEST(fft_fixed_tables, TwiddleTableIsWithinHalfLsb) {
         constexpr double one   = 0x1p30;
         constexpr double slack = 0.5 + 0x1p-20;
@@ -1398,9 +1460,39 @@ namespace {
                 ASSERT_EQ(table[2 * k + 1], -table[2 * (m - k) + 1]) << "sin symmetry m=" << m << " k=" << k;
             }
 
-            // <<CLEAN-ROOM: the post-pass table's accuracy and exact-entry checks>>
+            // The post-pass table: C_k = (1 + i W_n^k) / 2 for k < n/4,
+            // interleaved ((1 - sin) / 2, cos / 2), both in [0, 1/2].
+            const auto post = tap::dsp::detail::make_real_post_pass_table(n);
+            ASSERT_EQ(post.size(), n / 2) << "n=" << n;
+            constexpr std::int32_t half       = std::int32_t{1} << 29;
+            double                 worst_post = 0.0;
+            for (std::size_t k = 0; k < n / 4; ++k) {
+                const double turns = static_cast<double>(k) / static_cast<double>(n); // exact
+                const double re    = (1.0 - std::sin(2.0 * std::numbers::pi * turns)) * 0.5 * one;
+                const double im    = std::cos(2.0 * std::numbers::pi * turns) * 0.5 * one;
+                const double er    = std::fabs(static_cast<double>(post[2 * k]) - re);
+                const double ei    = std::fabs(static_cast<double>(post[2 * k + 1]) - im);
+                worst_post         = std::max({worst_post, er, ei});
+                ASSERT_LE(er, slack) << "post-pass real n=" << n << " k=" << k;
+                ASSERT_LE(ei, slack) << "post-pass imaginary n=" << n << " k=" << k;
+                ASSERT_GE(post[2 * k], 0) << "n=" << n << " k=" << k;
+                ASSERT_LE(post[2 * k], half) << "n=" << n << " k=" << k;
+                ASSERT_GE(post[2 * k + 1], 0) << "n=" << n << " k=" << k;
+                ASSERT_LE(post[2 * k + 1], half) << "n=" << n << " k=" << k;
+            }
+            // Exact entries: C_0 = (1/2, 1/2); and, bit-exactly by
+            // construction (the real part is 2^29 minus the quantized sine,
+            // and the sine of n/4 - k is the cosine of k), the complement
+            // (1 - sin theta_k) / 2 + cos theta_(n/4 - k) / 2 = 1/2, which at
+            // k = n/8 is the entry's own two parts.
+            EXPECT_EQ(post[0], half) << "n=" << n;
+            EXPECT_EQ(post[1], half) << "n=" << n;
+            for (std::size_t k = 1; k < n / 4; ++k) {
+                ASSERT_EQ(post[2 * k] + post[2 * (n / 4 - k) + 1], half) << "complement n=" << n << " k=" << k;
+            }
             if (n <= 2048) {
-                std::printf("[ measured ] tables n=%lu: max |w_q - w| = %.6f LSB\n", ul(n), worst);
+                std::printf("[ measured ] tables n=%lu: max |w_q - w| = %.6f LSB (twiddles), %.6f LSB (post-pass)\n",
+                            ul(n), worst, worst_post);
             }
         }
     }
@@ -1420,7 +1512,10 @@ namespace {
         };
         // Taken 2026-09-18 on x86-64 Linux, glibc 2.39 (GCC 13.3.0 and clang
         // 18.1.3 agree), on the Stage 3b kernel as merged in tap/DspTap#27;
-        // unchanged by the octant-symmetric generator (2026-09-22). The other
+        // unchanged by the octant-symmetric generator (2026-09-22). The
+        // post-pass table re-derived from the literature (2026-09-26, same
+        // host; tables.h, make_real_post_pass_table) reproduces the pinned
+        // post-pass checksums at all three N. The other
         // CI hosts (macOS arm64, Windows UCRT, the newlib QEMU legs) either
         // reproduce these or the difference is a recorded finding per host
         // and N.
@@ -1493,45 +1588,64 @@ namespace {
     // moves the ratio by about 3% of the pin's slack); this test is what
     // makes "the two-rounding form is the contract" enforceable.
     //
+    // Sizes: N = 512 and 2048 (log2 M even: radix-4 stages only) and, since
+    // 2026-09-26, N = 64 and 1024 (log2 M odd: the radix-2 final stage). An
+    // audit found a rounding mutation in radix2_stage that survived every
+    // test while only the even sizes were fingerprinted; replaying it
+    // (2026-09-26, one input of the radix-2 butterfly truncated instead of
+    // shr_round'ed) now fails six of the eight Q31 fingerprints at N = 64
+    // and 1024 (fixed and block floating) and nothing else in the battery;
+    // not the Q15 ones, for the same reason as above.
+    //
     // Input: full-scale white noise from the shared xorshift32, seed
     // 0x2545F491 ^ N, used as the time block for the forward and as the
     // packed spectrum for the inverse (the two pins are independent). Values
     // taken 2026-09-22 on x86-64 Linux (glibc 2.39, GCC 13.3.0 and clang
-    // 18.1.3 identical) on the Stage 3b kernel as merged in tap/DspTap#27;
+    // 18.1.3 identical) on the Stage 3b kernel as merged in tap/DspTap#27,
+    // reproduced unchanged 2026-09-26 by the post-pass re-derived from the
+    // literature, when the N = 64 and 1024 rows were taken (same host, GCC);
     // the other CI hosts (macOS arm64, Windows UCRT, the four newlib QEMU
     // legs) reproduce them, and a host that does not is a finding to record
     // per host and pin (as for the table checksums), never a skip.
-    struct fingerprint_pins {
-        std::uint64_t forward_512;
-        std::uint64_t inverse_512;
-        std::uint64_t forward_2048;
-        std::uint64_t inverse_2048;
+    struct fingerprint_pin {
+        std::size_t   n;
+        std::uint64_t forward;
+        std::uint64_t inverse;
     };
+    using fingerprint_pins = std::array<fingerprint_pin, 4>;
     template <typename Cfg>
-    constexpr fingerprint_pins k_fingerprints{0, 0, 0, 0};
+    constexpr fingerprint_pins k_fingerprints{};
     template <>
-    constexpr fingerprint_pins k_fingerprints<q15_fixed>{0x4f175f4249270f31ull, 0x0f3c8b2a39ec223bull,
-                                                         0xaa3d6d7935f2236eull, 0xd8fff1abc5ade94aull};
+    constexpr fingerprint_pins k_fingerprints<q15_fixed>{{{64, 0x29355eaac4c15217ull, 0xd10427650a15c342ull},
+                                                          {512, 0x4f175f4249270f31ull, 0x0f3c8b2a39ec223bull},
+                                                          {1024, 0xabaa8554cba3d8daull, 0x1b417fb8dc837419ull},
+                                                          {2048, 0xaa3d6d7935f2236eull, 0xd8fff1abc5ade94aull}}};
     template <>
-    constexpr fingerprint_pins k_fingerprints<q31_fixed>{0x2b68021a254d5404ull, 0xd566c7d6240f5833ull,
-                                                         0x78836f72717d5823ull, 0x1bf3a2198038ef4cull};
+    constexpr fingerprint_pins k_fingerprints<q31_fixed>{{{64, 0x6eee8293137e8261ull, 0x0de61b45c89f40a7ull},
+                                                          {512, 0x2b68021a254d5404ull, 0xd566c7d6240f5833ull},
+                                                          {1024, 0xcc59db586410cc5cull, 0x91f8f9bd2f4acb9bull},
+                                                          {2048, 0x78836f72717d5823ull, 0x1bf3a2198038ef4cull}}};
     template <>
-    constexpr fingerprint_pins k_fingerprints<q15_bfp>{0x25e5ec565482430eull, 0x8347e29c2a96a280ull,
-                                                       0x056ef3dccd411b3aull, 0xd3a7cfeef3f95a75ull};
+    constexpr fingerprint_pins k_fingerprints<q15_bfp>{{{64, 0x6dc19a83a7478ac9ull, 0x6b970962e30e0dd8ull},
+                                                        {512, 0x25e5ec565482430eull, 0x8347e29c2a96a280ull},
+                                                        {1024, 0xddfb71715b847027ull, 0xbeffd023b959b23dull},
+                                                        {2048, 0x056ef3dccd411b3aull, 0xd3a7cfeef3f95a75ull}}};
     template <>
-    constexpr fingerprint_pins k_fingerprints<q31_bfp>{0xced316f629630991ull, 0xf9887376e9bfa8a5ull,
-                                                       0x510fe44ccd740698ull, 0xe12bab5c64d06041ull};
+    constexpr fingerprint_pins k_fingerprints<q31_bfp>{{{64, 0xec9cb95de09207b1ull, 0x3f3ab7d45ce7e8c7ull},
+                                                        {512, 0xced316f629630991ull, 0xf9887376e9bfa8a5ull},
+                                                        {1024, 0x176564884747d5a0ull, 0x319260ba9e7b3960ull},
+                                                        {2048, 0x510fe44ccd740698ull, 0xe12bab5c64d06041ull}}};
 
     TYPED_TEST(fft_fixed_point_test, OutputFingerprintIsPinned) {
-        using cfg       = TypeParam;
-        using s         = typename cfg::sample;
-        const auto& pin = k_fingerprints<cfg>;
-        for (const std::size_t n : {std::size_t{512}, std::size_t{2048}}) {
-            const auto x = tap::dsp::test::random_signal<s>(n, 0x2545F491u ^ static_cast<std::uint32_t>(n), 1.0);
-            const auto f = run_forward<cfg>(x);
-            const auto i = run_inverse<cfg>(x);
-            const auto forward_sum = output_fingerprint(f.out, f.exponent);
-            const auto inverse_sum = output_fingerprint(i.out, i.exponent);
+        using cfg = TypeParam;
+        using s   = typename cfg::sample;
+        for (const auto& pin : k_fingerprints<cfg>) {
+            const std::size_t n = pin.n;
+            const auto        x = tap::dsp::test::random_signal<s>(n, 0x2545F491u ^ static_cast<std::uint32_t>(n), 1.0);
+            const auto        f = run_forward<cfg>(x);
+            const auto        i = run_inverse<cfg>(x);
+            const auto        forward_sum = output_fingerprint(f.out, f.exponent);
+            const auto        inverse_sum = output_fingerprint(i.out, i.exponent);
             // Printed before any assertion so a -V log carries every host's
             // values whether or not they match (two 32-bit halves: newlib's
             // printf has no %llx).
@@ -1540,13 +1654,11 @@ namespace {
                         static_cast<unsigned long>(forward_sum & 0xffffffffu), i.exponent,
                         static_cast<unsigned long>(inverse_sum >> 32),
                         static_cast<unsigned long>(inverse_sum & 0xffffffffu));
-            const std::uint64_t expected_forward = n == 512 ? pin.forward_512 : pin.forward_2048;
-            const std::uint64_t expected_inverse = n == 512 ? pin.inverse_512 : pin.inverse_2048;
-            EXPECT_NE(expected_forward, 0u) << "unmeasured fingerprint " << cfg::name() << " forward n=" << n;
-            EXPECT_NE(expected_inverse, 0u) << "unmeasured fingerprint " << cfg::name() << " inverse n=" << n;
-            EXPECT_EQ(forward_sum, expected_forward)
+            EXPECT_NE(pin.forward, 0u) << "unmeasured fingerprint " << cfg::name() << " forward n=" << n;
+            EXPECT_NE(pin.inverse, 0u) << "unmeasured fingerprint " << cfg::name() << " inverse n=" << n;
+            EXPECT_EQ(forward_sum, pin.forward)
                 << cfg::name() << " forward n=" << n << ": the kernel's output is not the pinned bit pattern";
-            EXPECT_EQ(inverse_sum, expected_inverse)
+            EXPECT_EQ(inverse_sum, pin.inverse)
                 << cfg::name() << " inverse n=" << n << ": the kernel's output is not the pinned bit pattern";
         }
     }
