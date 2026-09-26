@@ -22,7 +22,9 @@
 // fuses an a - b*c into one rounding, the default on Apple arm64 and on the
 // M55 leg), either of which can carry a double that lies within 2^-31 of a
 // rounding boundary onto the other side. The generators therefore contain no
-// contractible expression (<<CLEAN-ROOM: the post-pass generator's example>>),
+// contractible expression (the post-pass generator forms its real part
+// (1 - sin theta) / 2 as the integer 2^29 - make_coeff(sin theta / 2), not as
+// the double 0.5 - 0.5 * sin theta, which a contracting compiler fuses),
 // and fixed-point transform outputs
 // are host-identical only if the table is: the battery pins each certified
 // N's table checksum (FNV-1a-64 over the int32 bit patterns, in index order)
@@ -128,9 +130,67 @@ namespace tap::dsp::detail {
         return table;
     }
 
-    /// <<CLEAN-ROOM: make_real_post_pass_table (or whatever the derived
-    /// post-pass needs), its layout, its accuracy statement, and its
-    /// no-contractible-expression note (file header, D9).>>
+    /// Q1.30 coefficients of the real post-pass (forward) and pre-pass
+    /// (inverse) of a real transform of length n: C_k = (1 + i W_n^k) / 2,
+    /// W_n = exp(+2*pi*i/n), for the bins 0 <= k < n/4 (fixed_point.h,
+    /// fixed_point_rdft::real_post_pass, derives where C_k comes from; the
+    /// pre-pass uses conj C_k from the same table).
+    ///
+    /// Layout: n/2 entries, interleaved; for k in [0, n/4), with
+    /// theta_k = 2*pi*k/n:
+    ///   table[2k]     = 2^29 - make_coeff(sin(theta_k) / 2)   ~ (1 - sin theta_k) / 2
+    ///   table[2k + 1] = make_coeff(cos(theta_k) / 2)          ~ cos(theta_k) / 2
+    /// Both components lie in [0, 1/2] (theta_k in [0, pi/2)) and |C_k| <=
+    /// 1/sqrt(2). k = 0 is exactly (1/2, 1/2) = (2^29, 2^29), which the
+    /// transform does not read (DC and Nyquist take no product); nor does it
+    /// read k = n/4, C = 0, which is not stored. The pass reads k in
+    /// [1, n/4); the entry at index k serves the bin pair (k, n/2 - k).
+    ///
+    /// Accuracy: every entry is one make_coeff rounding (half away from zero)
+    /// of a double sin or cos scaled by the exact 1/2, and the real part is
+    /// the exact integer 2^29 minus that rounded value, so |C_q - C| <= 0.5
+    /// LSB of Q1.30 per component on every host (`TwiddleTableIsWithinHalfLsb`).
+    /// Only the first octant, k in [0, n/8], goes through libm; at k = n/8
+    /// the sine is set equal to the cosine, and for k in (n/8, n/4) the
+    /// quantized sine and cosine are the ones of n/4 - k swapped
+    /// (sin theta_(n/4 - k) = cos theta_k), exactly as make_twiddle_table does
+    /// for its own octants. The angle is 2*pi/n (exact for a power of two
+    /// times the double pi) times the integer k, one rounding, < 2^-47 rad
+    /// for n <= 2^16.
+    ///
+    /// No contractible expression (file header, Decision D9): the doubles
+    /// are a product of the angle step and k, and half a libm sin or cos, and
+    /// nothing is added to a product in double. The real part is deliberately
+    /// NOT the double 0.5 - 0.5 * sin(theta), which an FMA-contracting
+    /// compiler fuses into one rounding and so moves an entry lying near a
+    /// Q1.30 rounding boundary; the subtraction happens on the integers.
+    ///
+    /// @pre n is a power of two >= 4 (the real transform's length).
+    inline std::vector<fft_arith<std::int32_t>::coeff> make_real_post_pass_table(std::size_t n) {
+        assert(n >= 4 && (n & (n - 1)) == 0);
+        using arith                       = fft_arith<std::int32_t>;
+        constexpr arith::coeff    half    = arith::k_coeff_one / 2; // 2^29: 1/2 in Q1.30
+        const std::size_t         quarter = n / 4;
+        const std::size_t         octant  = n / 8; // 0 for n = 4: only k = 0 is evaluated
+        const double              step    = 2.0 * std::numbers::pi / static_cast<double>(n);
+        std::vector<arith::coeff> table(2 * quarter);
+        // First pass: table[2k] = make_coeff(sin / 2), table[2k + 1] = make_coeff(cos / 2).
+        for (std::size_t k = 0; k <= octant && k < quarter; ++k) {
+            const double angle = step * static_cast<double>(k);
+            table[2 * k + 1]   = arith::make_coeff(0.5 * std::cos(angle));
+            table[2 * k] = (k == octant && octant > 0) ? table[2 * k + 1] : arith::make_coeff(0.5 * std::sin(angle));
+        }
+        for (std::size_t k = octant + 1; k < quarter; ++k) { // sin theta_k = cos theta_(n/4 - k), and vice versa
+            const std::size_t j = quarter - k;
+            table[2 * k]        = table[2 * j + 1];
+            table[2 * k + 1]    = table[2 * j];
+        }
+        // Second pass, on the integers: the real part (1 - sin) / 2 = 2^29 - sin / 2.
+        for (std::size_t k = 0; k < quarter; ++k) {
+            table[2 * k] = static_cast<arith::coeff>(half - table[2 * k]);
+        }
+        return table;
+    }
 
     /// FNV-1a-64 over a table's bit patterns in index order: the checksum the
     /// battery pins per certified N so a host libm difference in the table is
