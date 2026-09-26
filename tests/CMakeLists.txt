@@ -298,6 +298,42 @@ endif()
 # ==============================================================================
 
 # ==============================================================================
+# Compile-fail check (tap/DspTap#40, the D4 expiry): the pre-Stage-4 spelling
+# basic_real_fft<float | double, scaling::fixed> must be rejected by fft.h's
+# named static_assert, with the D4 message as the ONLY error. Each case is an
+# object library excluded from `all` AND from the compile database (unlike the
+# tidy-only targets above, a TU meant not to compile must stay out of the
+# clang-tidy gate); the ctest builds it through
+# tests/compile_fail/expect_compile_failure.cmake, which requires the failure,
+# the message and an error count of one. Hosted GCC / Clang only: the QEMU
+# legs cross-compile, and MSVC words and counts its diagnostics differently;
+# the rule is compiler-independent C++, so the hosted legs pin it for all.
+# ==============================================================================
+if(NOT TAP_DSP_BARE_METAL AND NOT CMAKE_CROSSCOMPILING
+   AND CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$"
+   AND NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    foreach(_case IN ITEMS "0;Float" "1;Double" "2;CvQualified")
+        list(GET _case 0 _index)
+        list(GET _case 1 _name)
+        set(_target tap_dsp_compile_fail_fft_legacy_${_index})
+        add_library(${_target} OBJECT EXCLUDE_FROM_ALL compile_fail/fft_legacy_spelling.cpp)
+        set_target_properties(${_target} PROPERTIES EXPORT_COMPILE_COMMANDS OFF)
+        target_compile_definitions(${_target} PRIVATE TAP_DSP_COMPILE_FAIL_CASE=${_index})
+        target_link_libraries(${_target} PRIVATE tap::dsp tap_dsp_warnings)
+        add_test(NAME fft_compile_fail.LegacySpellingIsRejectedWithTheD4Message.${_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DBUILD_DIR=${PROJECT_BINARY_DIR}
+                -DTARGET=${_target}
+                -DCONFIG=$<CONFIG>
+                "-DEXPECT=pre-Stage-4 spelling, removed at the D4 expiry"
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/expect_compile_failure.cmake)
+        # The nested builds share one build tree: never two at once.
+        set_tests_properties(fft_compile_fail.LegacySpellingIsRejectedWithTheD4Message.${_name}
+            PROPERTIES RESOURCE_LOCK tap_dsp_compile_fail LABELS compile_fail)
+    endforeach()
+endif()
+
+# ==============================================================================
 # BEGIN Stage 4 addition (docs/audit-fft-and-code-smells.md, D4; audit F4): the
 # two-image test of the ABI tag. One translation unit, tests/abi/abi_tag_image.cpp,
 # built into two loadable modules — image A with the configured build's own

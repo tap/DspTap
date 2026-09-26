@@ -139,7 +139,8 @@ def _f64(x: np.ndarray):
 
 
 class RealFFT:
-    """tap::dsp::basic_real_fft<Sample, Scaling> through the C ABI. `profile` is one of
+    """tap::dsp::basic_real_fft through the C ABI (basic_real_fft<Sample> for the floating
+    profiles, basic_real_fft<Sample, Scaling> for Q15 / Q31). `profile` is one of
 
         "double"   the golden model
         "float"    the embedded floating profile (the split-radix engine, or the vDSP/CMSIS
@@ -220,7 +221,7 @@ class RealFFT:
 
     @property
     def exponent_bound(self) -> int:
-        """basic_real_fft<Sample, Scaling>::fixed_scaling_exponent(n): the exponent every
+        """basic_real_fft<std::int16_t | std::int32_t, Scaling>::fixed_scaling_exponent(n): the exponent every
         transform of a fixed-scaling profile returns and the upper bound under block floating
         point; 0 for the floating profiles."""
         return _lib.dsptap_fft_fixed_scaling_exponent(self._h)
