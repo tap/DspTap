@@ -606,11 +606,23 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///    shortfall. Largest deviation from the golden model over the
     ///    adversarial full-scale sweep, both directions: Q15 0.50 / 0.75 LSB
     ///    (fixed / block floating), Q31 4.25 / 15.99 LSB, at index 0 for
-    ///    Q31; pinned at 1.0 / 1.5 / 8.5 / 32. `SaturationFreeWorstCaseDoesNotWrap`.
+    ///    Q31; pinned at 1.0 / 1.5 / 8.5 / 32 over the battery's N = 4 / 8
+    ///    / 16 / 64 / 512 / 1024 / 2048. Above it the Q31 block-floating
+    ///    maximum grows with the exponent gap, with no closed form, and is
+    ///    pinned per size at 2x the measured 31.0 / 32.0 / 59.0 / 76.0 / 80.0
+    ///    LSB (index 0) at N = 4096 / 8192 / 16384 / 32768 / 65536: bounds
+    ///    62.01 / 63.99 / 118.01 / 152.0 / 160.02 LSB; Q31 fixed per size
+    ///    at 2x its 4.70 / 4.25 / 4.25 / 4.74 / 4.72 LSB; Q15 inside its
+    ///    N <= 2048 pins at every size. The F(x) + F(-x) rounding-asymmetry
+    ///    maxima likewise (Q31 block floating 121 / 126 / 137 / 141 / 286
+    ///    LSB, pinned at 2x). `SaturationFreeWorstCaseDoesNotWrap`, and
+    ///    host-only above 2048 `SaturationFreeWorstCaseIsPinnedPerLargeSize`,
+    ///    `RoundingBiasOnNegatedInputIsPinnedPerLargeSize`.
     ///  - Host identity. The fixed-point output is integer arithmetic over a
     ///    checksum-pinned table: for a fixed input it is one bit pattern on
-    ///    every host, pinned per profile, policy, direction and N = 512 /
-    ///    2048. `OutputFingerprintIsPinned`, `TwiddleTableChecksumIsPinned`.
+    ///    every host, pinned per profile, policy, direction and N = 64 / 512
+    ///    / 1024 / 2048 (the odd-log2-M sizes run the radix-2 stage).
+    ///    `OutputFingerprintIsPinned`, `TwiddleTableChecksumIsPinned`.
     ///  - Noise floor (output-referred, against the double golden model on
     ///    the same quantized input; N = 256 / 512 / 2048, 0 to -60 dBFS; the
     ///    numbers are the `[ floor ]` rows `NoiseFloorTracksWelchModel`
@@ -621,8 +633,8 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///    20 dB of level; block floating point keeps 84 - 91 dB (Q15) and
     ///    157 - 161 dB (Q31) at 0 dBFS and does not lose the low-level
     ///    signal (78 - 86 dB Q15, 154 - 156 dB Q31 at -40 dBFS). Welch's
-    ///    variance model predicts 0.57 - 0.59 LSB32 for the kernel; the
-    ///    measured/model ratio of 1.31 - 1.74 (Q31 fixed) is the
+    ///    variance model predicts 0.57 - 0.58 LSB32 for the kernel; the
+    ///    measured/model ratio of 1.31 - 1.75 (Q31 fixed) is the
     ///    round-half-up bias, largest at index 0 under block floating point
     ///    (fft/fixed_point.h, "Honest limit"). `NoiseFloorTracksWelchModel`,
     ///    `RoundingBiasOnNegatedInputIsBounded`, `Q15TracksDouble`, `Q31TracksDouble`,

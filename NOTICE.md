@@ -63,7 +63,9 @@ text:
   added at the top and stripped trailing whitespace — a partial copy of the
   original package with the notice attached, which the maintainer read as
   within the intent of the distribution grant; with that copy gone, the
-  derivative (the port) is the only question the grant has to answer.
+  derivative (the port) is the only question the grant has to answer for
+  trees after tap/DspTap#39 (the trees from #27 to before #39 also carry the
+  fixed-point transcription described below).
   `docs/fft-design.md` ("The bit-identity record after D6") records the
   upstream file's hash and how to re-verify the port against it.
 - Contact with the author (audit Part 5: "before Stage 2c merges, attempt the
@@ -87,6 +89,38 @@ text:
 - `readme.txt` stays at `third_party/ooura/readme.txt` permanently, as the
   license record for the derived code and the one fixed path the port
   header's banner cites.
+- The fixed-point engine (`include/tap/dsp/fft/fixed_point.h`,
+  `include/tap/dsp/fft/tables.h`) is DspTap's own, MIT, and carries no code
+  or text of the package. History, recorded because consumers pinned the trees
+  concerned: from Stage 3b (tap/DspTap#27, `b08f6c6`) until tap/DspTap#39,
+  its real post-pass, the inverse's pre-pass, their coefficient table and
+  the DC/Nyquist handling were a transcription of the package's
+  `rftfsub` / `rftbsub` / `makect` formulas into the fixed-point
+  arithmetic, and those trees fall under the same modification-grant
+  analysis as the port. tap/DspTap#39 removed that code and re-derived the
+  pass from the published literature (Cooley, Lewis & Welch 1970; Sorensen,
+  Jones, Heideman & Burrus 1987) under a recorded clean-room procedure: a
+  hand-off commit removed the transcription and every passage stating its
+  formulas; the implementer worked from a brief holding the published
+  half-length method in DspTap's convention and the numeric contract, was
+  barred from the package, the port, the removed text and its history, and
+  every other FFT library's source, and reported what it accessed. The
+  hand-off left the old table checksums and output fingerprints pinned in
+  the tests, so the result was checked against the removed code's bits,
+  not obtained blind. The derivation converged on the same arithmetic: an
+  arrangement of the published method with the fewest roundings within the
+  pass's one-bit growth budget is one complex product per bin pair (by
+  (1 + i W_N^k)/2, or equally (1 − i W_N^k)/2), every such arrangement over
+  a once-rounded table yields the same integers but for exact half-LSB
+  ties, and the result reproduces the previous output bit for bit. The
+  text — code, table generator, derivation — was written without access to
+  the package or the removed code; the dataflow, statement order, signs and
+  table layout are nonetheless the same as `rftfsub` / `rftbsub` /
+  `makect`'s, the published method in the arrangement that code also takes.
+  `docs/fft-design.md` ("The fixed-point post-pass, re-derived") records the
+  procedure, its shortfalls and the access statement. The maintainer's
+  judgement is that the fixed-point engine is not a derivative of the
+  package.
 - This is a maintainer judgement call, not legal advice. This file is the
   canonical statement; `README.md` and `docs/fft-design.md` point here.
 

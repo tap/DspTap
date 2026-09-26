@@ -29,10 +29,22 @@
 //     60(8), 1972 — rounding-noise accumulation across stages.
 //   A. V. Oppenheim and R. W. Schafer, Discrete-Time Signal Processing, 3rd
 //     ed., Sec. 9.7 — block floating point.
-//   The real post-pass formulas and the DC/Nyquist glue are transcribed from
-//   Ooura's rdft/rftfsub/rftbsub (fftsg.c; the same statements as the
-//   split-radix engine's in fft/split_radix.h) into the trait's arithmetic;
-//   the complex kernel is not Ooura's (Decision D2).
+//   J. W. Cooley, P. A. W. Lewis and P. D. Welch, "The fast Fourier
+//     transform algorithm: Programming considerations in the calculation of
+//     sine, cosine and Laplace transforms," J. Sound Vib. 12(3), 315-337,
+//     1970 — the transform of 2M real samples through one M-point complex
+//     transform: the real post-pass, the inverse's pre-pass and the
+//     DC/Nyquist pair.
+//   H. V. Sorensen, D. L. Jones, M. T. Heideman and C. S. Burrus,
+//     "Real-valued fast Fourier transform algorithms," IEEE Trans. Acoust.,
+//     Speech, Signal Process. ASSP-35(6), 849-863, 1987 — the same
+//     half-length method and its inverse, among the real-valued algorithms.
+//   The fixed-point arrangement of that method (which products, which
+//   roundings, the coefficient table) is derived here, in real_post_pass's
+//   docstring, from those equations and fft_arith.h; the complex kernel is
+//   DspTap's own (Decision D2). How this pass was re-derived, under a
+//   clean-room procedure (tap/DspTap#39): NOTICE.md and docs/fft-design.md,
+//   "The fixed-point post-pass, re-derived".
 
 #pragma once
 
@@ -85,9 +97,16 @@ namespace tap::dsp {
         /// decimation-in-frequency kernel of length M = N/2 (radix-2 final
         /// stage when log2 M is odd) with outputs placed so the result is
         /// bit-reversed, the permutation from make_bit_reversal_table, then
-        /// Ooura's real post-pass (rftfsub) and DC/Nyquist glue transcribed
-        /// into the trait's operations. The inverse mirrors rdft's isgn < 0
-        /// path: the DC/Nyquist pre-glue, rftbsub, the conjugate kernel.
+        /// a one-bit shift and the real post-pass (the half-length method of
+        /// Cooley, Lewis and Welch 1970): per bin pair (k, M - k) one complex
+        /// product by C_k = (1 + i W_N^k) / 2 (make_real_post_pass_table) and
+        /// four exact sums, two roundings per output component; DC and
+        /// Nyquist as the exact sum and difference of Z[0]'s two parts; bin
+        /// N/4 untouched. The inverse runs the pre-pass first (the same
+        /// statements with conj C_k, and DC/Nyquist halved with one one-bit
+        /// rounding), then the conjugate kernel and the permutation.
+        /// real_post_pass carries the derivation from the equations to the
+        /// statements.
         /// Every multiply is fft_arith<>::work::mul_coeff by a Q1.30 twiddle
         /// (one rounding per real product, two per complex product), every
         /// sum is the saturating add/sub, every scale is shr_round; the kernel
@@ -100,7 +119,7 @@ namespace tap::dsp {
         /// inverse_inplace result == data * 2^e and returns e. No 2/N is ever
         /// applied: the exponent carries the scale, and a round trip gives
         /// x == out * 2^(e_fwd + e_inv + 1 - log2 N) under both policies
-        /// (Ooura's unnormalized round trip has gain N/2).
+        /// (the golden model's unnormalized round trip has gain N/2).
         ///   - scaling::fixed: e == fixed_scaling_exponent(N)
         ///     == log2 N + fft_arith<Sample>::k_fixed_scaling_input_pre_shift
         ///     in both directions (Q15: log2 N, the forward output is exactly
@@ -142,7 +161,11 @@ namespace tap::dsp {
         /// prints (against basic_real_fft<double> on the same quantized
         /// input, output-referred, forward; N = 256 / 512 / 2048, white
         /// noise at 0 / -20 / -40 / -60 dBFS and an on-bin tone; the full
-        /// table is in docs/fft-design.md beside the Welch model):
+        /// table is in docs/fft-design.md beside the Welch model). Re-measured
+        /// 2026-09-26 on the post-pass re-derived from the literature
+        /// (real_post_pass): every number below is unchanged, the outputs
+        /// being the same bit patterns (`OutputFingerprintIsPinned`), except
+        /// the model ratio, whose post-pass term was re-derived with it:
         ///   - Q15, fixed: 0.26 - 0.30 LSB rms at every N and level, the
         ///     narrow's own round-half-up (1/sqrt(12) = 0.289); the int32
         ///     kernel's noise (0.58 LSB32 predicted) is 2^-14 of a Q15 LSB.
@@ -152,13 +175,15 @@ namespace tap::dsp {
         ///     deviation over the adversarial sweep 0.50 LSB (pinned 1.0,
         ///     `SaturationFreeWorstCaseDoesNotWrap`).
         ///   - Q31, fixed: 0.67 - 0.75 LSB rms at every N and level. Welch's
-        ///     variance-only model predicts 0.57 - 0.59 LSB; the measured /
-        ///     model power ratio is 1.31 - 1.74 (pinned 3.49), the remainder
+        ///     variance-only model predicts 0.57 - 0.58 LSB; the measured /
+        ///     model power ratio is 1.31 - 1.75 (pinned 3.51), the remainder
         ///     being the round-half-up bias of shr_round (+2^-(s+1) LSB per
-        ///     s-bit shift, +0.25 from the final one-bit shift on every
-        ///     component, earlier stages' biases arriving with rotated
-        ///     phases). Per-bin SNR on full-scale white noise 152.0 / 149.4 /
-        ///     142.8 dB at N = 256 / 512 / 2048. Largest deviation over the
+        ///     s-bit shift: the one-bit shift before the post-pass puts +0.25
+        ///     on every component entering it, which the pass carries to
+        ///     between 0 and +0.5 per output component, bin by bin through
+        ///     C_k; earlier stages' biases arrive with rotated phases).
+        ///     Per-bin SNR on full-scale white noise 152.0 / 149.4 / 142.8 dB
+        ///     at N = 256 / 512 / 2048. Largest deviation over the
         ///     adversarial sweep 4.25 LSB (inverse of a full-scale constant,
         ///     N = 2048, index 0; pinned 8.5).
         ///   - Block floating point: the floor follows the block, not the
@@ -170,7 +195,12 @@ namespace tap::dsp {
         ///     floor); 0.99 - 6.63 LSB rms as e falls from 9 to 0 (the
         ///     output is held at a larger scale; the SNR is the comparable
         ///     number); largest deviation 15.99 LSB (inverse of full-scale
-        ///     binary noise, N = 1024, index 0; pinned 32).
+        ///     binary noise, N = 1024, index 0; pinned 32 over the battery's
+        ///     N = 4 / 8 / 16 / 64 / 512 / 1024 / 2048; above them the same
+        ///     sweep measures 31.0 / 32.0 / 59.0 / 76.0 / 80.0 LSB at N =
+        ///     4096 / 8192 / 16384 / 32768 / 65536, the DC-path bias below
+        ///     growing with the exponent gap, pinned per size at 2x on the
+        ///     host, `SaturationFreeWorstCaseIsPinnedPerLargeSize`).
         ///   - Honest limit: the round-half-up bias accumulates coherently
         ///     along the unrotated (DC) path, and under block floating point,
         ///     where a stage typically shifts one bit against a magnitude
@@ -179,9 +209,13 @@ namespace tap::dsp {
         ///     at index 0 or 1, and as the mean of F(x) + F(-x)
         ///     (`RoundingBiasOnNegatedInputIsBounded`: 0.81 LSB Q31 fixed,
         ///     1.05 LSB Q31 block floating, pinned 1.63 / 2.1; the sum's
-        ///     maximum 6 / 62 LSB, pinned 12 / 124, at index 0 / 1). Beyond
-        ///     the battery's N <= 2048 it is unmeasured by any committed test
-        ///     (the Stage 3c notebook re-measures it up to N = 65536). Q15
+        ///     maximum 6 / 62 LSB, pinned 12 / 124, at index 0 / 1). Above
+        ///     the sweep sizes the host-only
+        ///     `RoundingBiasOnNegatedInputIsPinnedPerLargeSize` pins it per
+        ///     size for N = 4096 ... 65536 at 2x the measured values (Q31
+        ///     block floating: sum maximum 121 / 126 / 137 / 141 / 286 LSB,
+        ///     mean 0.93 - 1.00 LSB; Q31 fixed 7 - 9 / 0.45 - 0.67 LSB;
+        ///     docs/fft-design.md §3). Q15
         ///     never sees it (below the narrow's quantum). Convergent rounding
         ///     would remove it; that is a different trait contract
         ///     (fft_arith.h), not this kernel's choice.
@@ -519,55 +553,88 @@ namespace tap::dsp {
                 }
             }
 
-            /// Ooura's real post-pass and DC/Nyquist glue in the trait's
-            /// arithmetic (rdft / rftfsub forward, rdft isgn < 0 / rftbsub
-            /// inverse; fft/split_radix.h carries the same statements). The
-            /// block has already been shifted by this stage's shift. For each
-            /// bin k in [1, N/4) paired with N/2 - k (a[j..j+1] and
-            /// a[l..l+1], j = 2k, l = N - j), with (wkr, wki) from m_post:
-            ///   xr = a[j] - a[l];  xi = a[j+1] + a[l+1]
-            ///   forward: yr = wkr xr - wki xi;  yi = wkr xi + wki xr
-            ///   inverse: yr = wkr xr + wki xi;  yi = wkr xi - wki xr
-            ///   a[j] -= yr;  a[j+1] -= yi;  a[l] += yr;  a[l+1] -= yi
-            /// Bin N/4 (a[N/2], a[N/2+1]) is its own mirror and is untouched.
-            /// Glue: forward  a[0], a[1] = a[0] + a[1], a[0] - a[1]
-            ///       inverse  a[0], a[1] = (a[0] + a[1]) / 2, (a[0] - a[1]) / 2
-            /// (Ooura's a[1] = 0.5 (a[0] - a[1]); a[0] -= a[1], written with
-            /// one shr_round on each output instead of the second subtraction).
+            /// The real post-pass (forward: after the kernel, the permutation and
+            /// the one-bit shift) and pre-pass (Inverse: after the one-bit shift,
+            /// before the conjugate kernel). The half-length method of Cooley,
+            /// Lewis and Welch (1970) and Sorensen et al. (1987), in the
+            /// library's convention and arranged for fft_arith's operations.
+            ///
+            /// Forward. With M = N/2, z[n] = x[2n] + i x[2n+1] and Z the kernel's
+            /// length-M transform (W_M = exp(+2*pi*i/M)), the even and odd
+            /// samples' transforms are E[k] = (Z[k] + conj Z[M-k]) / 2 and
+            /// O[k] = (Z[k] - conj Z[M-k]) / (2i), both conjugate-symmetric,
+            /// and X[k] = E[k] + W_N^k O[k], X[M-k] = conj(E[k] - W_N^k O[k]).
+            /// The block entering here is a[k] = Z[k] * 2^-(s+1) (s the kernel's
+            /// shift, 1 the pass's own bit, which pays for its growth); the pass
+            /// must leave Y[k] = X[k] * 2^-(s+1), i.e.
+            /// Y[k] = (u + v) / 2 + (-i W_N^k)(u - v) / 2 with u = a[k],
+            /// v = conj a[M-k]. Writing (u + v) / 2 as u - (u - v) / 2 folds
+            /// the 1/2 and the rotation into ONE complex product:
+            ///   G = C_k (u - v),  C_k = (1 + i W_N^k) / 2   (make_real_post_pass_table)
+            ///   Y[k]   = u - G                   (= E + W O)
+            ///   Y[M-k] = a[M-k] + conj G         (= conj(v + G) = conj(E - W O))
+            /// per pair (k, M-k), 1 <= k < M/2: one sub and one add to form
+            /// u - v, the two-rounding complex multiply (rotate), and four exact
+            /// add/sub. Each output component carries TWO roundings (the two
+            /// mul_coeff of G) on top of the one-bit shift before the pass; no
+            /// shr_round is needed for the 1/2 factors, which live in C_k.
+            ///   - DC and Nyquist (k = 0): Z[0]'s partner is itself, E[0] =
+            ///     Re Z[0], O[0] = Im Z[0], W_N^0 = 1, W_N^M = -1, so
+            ///     X[0] = Re Z[0] + Im Z[0] and X[M] = Re Z[0] - Im Z[0]; the block
+            ///     already carries the 2^-(s+1), so Y[0] = a[0] + a[1] and
+            ///     Y[M] = a[0] - a[1] (packed at a[0], a[1]): exact, no rounding.
+            ///   - Bin N/4 (k = M/2, its own partner): W_N^(N/4) = i, C = 0, so
+            ///     Y[M/2] = a[M/2]: untouched, exact.
+            ///
+            /// Inverse. Given X, Z[k] = E[k] + i O[k] with E[k] = (X[k] +
+            /// conj X[M-k]) / 2 and W_N^k O[k] = (X[k] - conj X[M-k]) / 2 makes
+            /// the unnormalized length-M inverse kernel return
+            /// sum_k Z[k] W_M^-nk = M z[n] = (N/2)(x[2n] + i x[2n+1]), which is
+            /// the golden model's unnormalized inverse; so the pre-pass
+            /// carries no extra factor: entering a[k] = X[k] * 2^-(p+1) (p the
+            /// input pre-shift, 1 the pass's bit), it leaves Z[k] * 2^-(p+1).
+            /// With u = a[k], v = conj a[M-k]:
+            /// Z[k] = (u + v) / 2 + i W_N^-k (u - v) / 2 = u - conj(C_k)(u - v),
+            /// and conj Z[M-k] = v + conj(C_k)(u - v): the forward's statements
+            /// with the conjugate coefficient (rotate<true>), the same table.
+            ///   - k = 0: Z[0] = ((X[0] + X[M]) / 2, (X[0] - X[M]) / 2), so
+            ///     a[0] <- shr_round(a[0] + a[1], 1), a[1] <- shr_round(a[0] - a[1], 1):
+            ///     ONE one-bit rounding per component (the inverse's DC/Nyquist
+            ///     has a 1/2 that no coefficient absorbs).
+            ///   - k = M/2: conj(C) = 0, a[M/2] untouched.
+            ///
+            /// Bounds (docs/fft-design.md §3 is the proof): the entering block
+            /// has complex magnitude <= 2^29.5 (plus rounding slack) under both
+            /// policies; u - v <= 2^30.5, the partial products <= 2^29.5,
+            /// |G| <= 2^30 (|C_k| <= 1/sqrt(2)), and every output is <= 2^30 in
+            /// magnitude because the pair is energy-preserving,
+            /// |Y[k]|^2 + |Y[M-k]|^2 = (|u + v|^2 + |u - v|^2) / 2 = |u|^2 + |v|^2
+            /// (the same for the pre-pass); DC / Nyquist sums <= 2^30, the
+            /// inverse's halved ones <= 2^29.
             template <bool Inverse>
             void real_post_pass(wide* a) const noexcept {
                 const std::size_t m = m_n / 2;
                 const coeff*      c = m_post.data();
-                for (std::size_t j = 2; j < m; j += 2) {
-                    const std::size_t l   = m_n - j;
-                    const coeff       wkr = c[j];
-                    const coeff       wki = c[j + 1];
-                    const wide        xr  = work::sub(a[j], a[l]);
-                    const wide        xi  = work::add(a[j + 1], a[l + 1]);
-                    wide              yr;
-                    wide              yi;
-                    if constexpr (Inverse) {
-                        yr = work::add(work::mul_coeff(xr, wkr), work::mul_coeff(xi, wki));
-                        yi = work::sub(work::mul_coeff(xi, wkr), work::mul_coeff(xr, wki));
-                    }
-                    else {
-                        yr = work::sub(work::mul_coeff(xr, wkr), work::mul_coeff(xi, wki));
-                        yi = work::add(work::mul_coeff(xi, wkr), work::mul_coeff(xr, wki));
-                    }
-                    a[j]     = work::sub(a[j], yr);
-                    a[j + 1] = work::sub(a[j + 1], yi);
-                    a[l]     = work::add(a[l], yr);
-                    a[l + 1] = work::sub(a[l + 1], yi);
-                }
-                const wide a0 = a[0];
-                const wide a1 = a[1];
+                const wide        r = a[0];
+                const wide        i = a[1];
                 if constexpr (Inverse) {
-                    a[0] = work::shr_round(work::add(a0, a1), 1);
-                    a[1] = work::shr_round(work::sub(a0, a1), 1);
+                    a[0] = work::shr_round(work::add(r, i), 1);
+                    a[1] = work::shr_round(work::sub(r, i), 1);
                 }
                 else {
-                    a[0] = work::add(a0, a1);
-                    a[1] = work::sub(a0, a1);
+                    a[0] = work::add(r, i);
+                    a[1] = work::sub(r, i);
+                }
+                for (std::size_t k = 1; k < m / 2; ++k) {
+                    wide* const pk = a + 2 * k;               // u = a[k]
+                    wide* const pj = a + 2 * (m - k);         // v = conj a[M - k]
+                    wide        gr = work::sub(pk[0], pj[0]); // (u - v), real
+                    wide        gi = work::add(pk[1], pj[1]); // (u - v), imaginary
+                    rotate<Inverse>(gr, gi, c[2 * k], c[2 * k + 1]);
+                    pk[0] = work::sub(pk[0], gr);
+                    pk[1] = work::sub(pk[1], gi);
+                    pj[0] = work::add(pj[0], gr);
+                    pj[1] = work::sub(pj[1], gi);
                 }
             }
 
@@ -575,7 +642,7 @@ namespace tap::dsp {
 
             std::size_t                m_n;
             std::vector<coeff>         m_twiddles; ///< W_M^k, M = N/2, interleaved (tables.h)
-            std::vector<coeff>         m_post;     ///< real post-pass (wkr, wki) per bin
+            std::vector<coeff>         m_post;     ///< C_k = (1 + i W_N^k) / 2, k < N/4, interleaved (tables.h)
             std::vector<std::uint32_t> m_bitrev;   ///< permutation of the M complex outputs
             std::vector<wide>          m_work;     ///< Q15 only: the widened block
         };

@@ -124,7 +124,16 @@ in `fft.h` (Decision D3). Floors are the `[ floor ]` rows the battery's
 `NoiseFloorTracksWelchModel` prints (output-referred against the double
 golden model, N = 512, white noise); the Welch-model derivation and the full
 level sweep are in the design note, and the output bit patterns themselves
-are pinned per profile (`OutputFingerprintIsPinned`).
+are pinned per profile (`OutputFingerprintIsPinned`, N = 64 / 512 / 1024 /
+2048). The complex kernel is DspTap's own; the real post-pass and pre-pass
+around it are the half-length method of Cooley, Lewis and Welch (1970) and
+Sorensen et al. (1987), one Q1.30 product per bin pair and exact DC /
+Nyquist (design note §1). The deviation maxima the battery pins are
+measured at N = 4 / 8 / 16 / 64 / 512 / 1024 / 2048; above that the Q31
+block-floating maximum grows with the gap between its exponent and the fixed
+constant (31 – 80 LSB at N = 4096 … 65536), so a host-only test pins it, the
+F(x) + F(−x) asymmetry and the Q31 fixed maximum per size at 2× the measured
+values (design note §3).
 
 ```cpp
 #include "tap/dsp/fft.h"
@@ -573,7 +582,9 @@ See [`third_party/ooura/readme.txt`](third_party/ooura/readme.txt) and
 vendored-code provenance and licenses. The floating profiles run the C++20
 port of the same split-radix transform (`include/tap/dsp/fft/split_radix.h`,
 landed bit-identical to the C at Stage 2a, #28, and routed at Stage 2b, #31);
-the Q15 / Q31 profiles landed at Stage 3b (#27). At Stage 2c the vendored C
+the Q15 / Q31 profiles landed at Stage 3b (#27), and their real post-pass was
+re-derived from the literature under a clean-room procedure in #39
+(bit-identical; `NOTICE.md`). At Stage 2c the vendored C
 left the shipping tree, and a reference copy (`fftsg.c` and its float
 instantiation `fftsg_float.c`) under `tests/reference/ooura/` served the
 bit-identity gate alone until both MuTap and MuTap-Max pinned a tree
