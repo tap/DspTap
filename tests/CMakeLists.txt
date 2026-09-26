@@ -196,22 +196,8 @@ target_compile_definitions(tap_dsp_tests PRIVATE TAP_DSP_TEST_MAX_FFT_N=${TAP_DS
 # contract under /fp:precise; windows-latest is well past 17.0).
 set(_tap_dsp_nocontract_cxx "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>")
 
-# THE SPLIT-RADIX FINGERPRINTS (Decision D6/D10): FNV-1a-64 over the IEEE bit
-# patterns of detail::split_radix_rdft's double and float outputs, forward
-# and inverse, at every power of two from 4 to TAP_DSP_TEST_MAX_FFT_N (65536
-# at most), pinned to the values the vendored C produced (measured beside
-# the C at 6f6f77f, the last main that carried it, and by the gate's C-side
-# cross-check on every CI leg in the PR that retired it). Own target so it
-# owns -ffp-contract=off. Runs whole on the QEMU legs (no MAIN_FILTER): at
-# N <= 4096 it is milliseconds.
-tap_dsp_add_gtest_executable(tap_dsp_fft_split_radix_fingerprint
-    SOURCES test_fft_split_radix_fingerprint.cpp)
-target_compile_options(tap_dsp_fft_split_radix_fingerprint PRIVATE ${_tap_dsp_nocontract_cxx})
-target_compile_definitions(tap_dsp_fft_split_radix_fingerprint PRIVATE
-    TAP_DSP_TEST_MAX_FFT_N=${TAP_DSP_TEST_MAX_FFT_N})
-target_link_libraries(tap_dsp_fft_split_radix_fingerprint PRIVATE
-    tap::dsp
-    tap_dsp_warnings)
+# <<CLEAN-ROOM: the new floating engine's output-fingerprint target (the
+# split-radix fingerprint test and its pins are removed; see the brief).>>
 
 # ==============================================================================
 # END Stage 2a additions

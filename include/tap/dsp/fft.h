@@ -34,6 +34,7 @@
 
 #include "tap/dsp/detail/expects.h"
 #include "tap/dsp/fft/fixed_point.h"
+// <<CLEAN-ROOM: include the new floating engine's header here; fft/split_radix.h is removed>>
 #include "tap/dsp/fft/split_radix.h"
 
 // Header-only. No vendored C is compiled into what ships: the split-radix
@@ -398,9 +399,8 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     /// -march=x86-64-v3 at the default -ffp-contract=fast, the output of
     /// basic_real_fft depends on the TRANSLATION-UNIT CONTEXT, not only on
     /// the flags — an edit to unrelated code in the same TU (log_mel.h's
-    /// constructor) changed GCC's inlining of cftmdl2 into the split-radix
-    /// engine's cftrec4 / cftleaf (float cftrec4 went from 194 to 168
-    /// vfmadd instructions, double from 224 to 254) and moved pvoc's float
+    /// constructor) changed GCC's inlining inside the engine (the number of
+    /// fused multiply-adds it emitted moved in both precisions) and moved pvoc's float
     /// output bits while every pvoc function was instruction-identical;
     /// appending ~30 unrelated lines to the TU made the outputs identical
     /// again. The double codegen moved in that experiment too, so "double

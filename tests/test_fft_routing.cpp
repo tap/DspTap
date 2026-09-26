@@ -48,8 +48,8 @@
 namespace {
 
     // Sizes small enough for the QEMU legs (Part 10) and wide enough to cross
-    // every code path the split-radix engine dispatches on: n = 4 (no real
-    // post-pass, makect never called), 8 (the smallest post-pass), the
+    // every code path the engine dispatches on (<<CLEAN-ROOM: name them for
+    // the new engine>>), the
     // certified geometries 512 and 2048, and 4096 (the largest the emulated
     // legs run). An engine whose range excludes a size (CMSIS: 32 … 4096)
     // is checked at the sizes it supports.

@@ -77,10 +77,8 @@ namespace {
     //     eta = mu + gamma_4 (1 + mu),  gamma_4 ~ 4u,
     //
     // where u is the unit roundoff (epsilon / 2). mu is NOT one rounding here:
-    // Ooura's makewt takes cos/sin from libm for a quarter of the table and
-    // derives the rest arithmetically (w[2] = 0.5 / cos(2 delta), the halving
-    // recurrences 0.5 / wk1r, ...), and the float instantiation forms
-    // delta * j in float, so mu is a small multiple of u. With mu ~ 2-3u,
+    // <<CLEAN-ROOM: how the engine forms its twiddles, and therefore what mu
+    // is (a small multiple of u)>>. With mu ~ 2-3u,
     // eta ~ 6-7u and, for t * eta << 1, the 2-norm error is below about
     // 7 * u * log2(N) * ||y||_2. The largest single-element error cannot exceed
     // the 2-norm, and ||y||_2 comes free with the exact answer. Casting the
@@ -417,8 +415,8 @@ namespace {
     //   inverse (unnormalized, gain N/2 on a round trip):
     //            x[k] = (R[0] + R[N/2] * (-1)^k) / 2
     //                 + sum_{j=1}^{N/2-1} (R[j] cos(2*pi*j*k/N) + I[j] sin(2*pi*j*k/N))
-    // The inverse formula is fftsg.c's own statement of what rdft(n, -1, ...)
-    // computes; both are restated from the definition, not from the code path.
+    // The inverse formula is the library's documented contract (fft.h);
+    // both are restated from the definition, not from any code path.
     // ------------------------------------------------------------------------
     class compensated_dft {
       public:
