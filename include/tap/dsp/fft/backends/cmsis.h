@@ -10,8 +10,10 @@
 // translation unit that names detail::cmsis_real_fft_f32 explicitly). It
 // needs "arm_math.h" on the include path and the CMSIS-DSP objects at link
 // time (the tap_dsp_fft library the root CMakeLists.txt builds under
-// TAP_DSP_FFT_CMSIS), i.e. an Arm target with Helium; it is not a host
-// engine and nothing hosted compiles it.
+// TAP_DSP_FFT_CMSIS), i.e. an Arm target with Helium (the root CMakeLists.txt
+// defaults that option ON only when the compiler defines __ARM_FEATURE_MVE
+// with the floating-point bit); it is not a host engine and nothing hosted
+// compiles it.
 
 #pragma once
 
@@ -40,30 +42,41 @@ namespace tap::dsp::detail {
     /// 2048 / 4096.
     ///
     /// Engine contract numbers (what basic_real_fft reads from every engine):
-    ///   - Size range k_min_size = 32 … k_max_size = 4096, a power of two.
-    ///     This is CMSIS-DSP's own table: arm_rfft_fast_init_f32 dispatches
-    ///     on N through a switch over exactly {32, 64, …, 4096} and returns
+    ///   - Size range k_min_size = 32 … k_max_size = 4096, a power of two. This
+    ///     is CMSIS-DSP's own table: arm_rfft_fast_init_f32 dispatches on N
+    ///     through a switch over exactly {32, 64, …, 4096} and returns
     ///     ARM_MATH_ARGUMENT_ERROR for anything else, leaving the instance
     ///     uninitialized. Until Stage 4 the wrapper ignored that status and
     ///     fft.h documented "a power of two >= 4" for every profile, so N < 32
     ///     or N > 4096 under TAP_DSP_FFT_CMSIS was undefined behaviour — a
-    ///     HardFault at N = 4 on the M55 leg is how the oracle found it (audit
-    ///     Part 13). The constructor states the range as a precondition
-    ///     (TAP_EXPECTS: a debug assertion, STYLE.md §4), never truncates a
-    ///     size above k_max_size into the library's uint16_t argument (65536
-    ///     would arrive as 0), and checks the init status the same way.
-    ///     RELEASE-MODE BEHAVIOUR, DECIDED: the check evaluates to nothing, so
-    ///     a size outside the range remains a precondition violation — the
-    ///     instance stays zero-initialized and the first transform is
-    ///     undefined behaviour (a HardFault on the M55). Deliberately no
-    ///     defined fallback: a branch in the transforms would cost the hot
-    ///     path on every call for a case the precondition excludes, and would
-    ///     hand a consumer an object that silently transforms nothing.
-    ///     basic_real_fft<float, cmsis_real_fft_f32>::supports_size(n) is the
-    ///     mandatory gate wherever N comes from configuration (the capi's
-    ///     dsptap_fft_create applies it per profile; MuTap's config path must,
-    ///     docs/fft-design.md "MuTap bump checklist"); its values for this
-    ///     engine are pinned on the M55 leg (tests/test_fft_engine.cpp).
+    ///     HardFault at N = 4 in the first QEMU run of the Stage 2a oracle on
+    ///     the M55 leg is how it was found (tap/DspTap#24; audit Part 13). The
+    ///     constructor states the range as a precondition (TAP_EXPECTS: a debug
+    ///     assertion, STYLE.md §4), never truncates a size above k_max_size
+    ///     into the library's uint16_t argument (65536 would arrive as 0), and
+    ///     checks the init status the same way. RELEASE-MODE BEHAVIOUR,
+    ///     DECIDED: the check evaluates to nothing, so a size outside the range
+    ///     remains a precondition violation — the instance stays
+    ///     zero-initialized and every transform is undefined behaviour. No
+    ///     fault is promised, and mostly none happens: per the final audit's
+    ///     reading of the library (2026-09-26), it computes fftLen - 1 = -1
+    ///     from the zeroed instance, skips its loops and reads its coefficient
+    ///     table through a null pointer, and address 0 is readable memory on
+    ///     the M55 (ITCM on mps3-an547; the vector table on Cortex-M parts
+    ///     generally). Measured under QEMU in Release and MinSizeRel: N = 16
+    ///     and 8192 return a wrong spectrum and nothing faults; N = 4 returns a
+    ///     wrong spectrum and corrupts the heap, so a later, unrelated call
+    ///     fails — a HardFault in one probe, newlib's "Balloc succeeded"
+    ///     assertion in the next printf in another. Real silicon is not
+    ///     measured. Deliberately no defined fallback: a branch in the
+    ///     transforms would cost the hot path on every call for a case the
+    ///     precondition excludes, and would hand a consumer an object that
+    ///     silently transforms nothing. basic_real_fft<float,
+    ///     cmsis_real_fft_f32>::supports_size(n) is the mandatory gate wherever
+    ///     N comes from configuration (the capi's dsptap_fft_create applies it
+    ///     per profile; MuTap's config path must, docs/fft-design.md "MuTap
+    ///     bump checklist"); its values for this engine are pinned on the M55
+    ///     leg (tests/test_fft_engine.cpp).
     ///   - k_is_shareable = false: the transform runs through the per-object
     ///     scratch buffer (arm_rfft_fast_f32 is out of place), so two threads
     ///     may not transform through one object concurrently; the transforms

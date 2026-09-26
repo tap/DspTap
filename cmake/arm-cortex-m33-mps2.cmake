@@ -38,11 +38,10 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 
-# No Helium on the M33: the root CMakeLists defaults the CMSIS-DSP Helium FFT
-# backend ON for any Generic+arm system, so pin the split-radix float32 path
-# here (a plain `set` of the cache entry, which the option() then respects;
-# the toolchain is processed inside project(), before that option() runs).
-set(TAP_DSP_FFT_CMSIS OFF CACHE BOOL "No MVE on the Cortex-M33: split-radix float32 FFT")
+# No Helium on the M33: the compiler defines no __ARM_FEATURE_MVE for this
+# -mcpu, so the root CMakeLists.txt's MVE-F check leaves TAP_DSP_FFT_CMSIS OFF
+# (the split-radix float32 engine) without a pin here. Until that check the
+# default was ON for every Generic+arm system and this file pinned it OFF.
 
 # Largest transform the FFT test sweeps run on this leg (tests/CMakeLists.txt
 # reads it as a cache default): what fits the data region (2^20 needs five

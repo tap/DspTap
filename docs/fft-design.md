@@ -1029,7 +1029,7 @@ assertion is never the first to fire.
 |---|---|---|
 | split-radix (`double`, `float`) | 4 … 2^30 | the int-indexing bound of Ooura's arithmetic (n is an `int`; every index and table offset stays below 2^31). Exercised: bit identity 4 … 65536 and 2^20 (the gate), the oracle 4 … 65536. Above 2^20 the transform is the same statements over larger tables and is not separately measured. 2^30 rather than 2^20 so the precondition does not narrow what a consumer could construct before Stage 4 ("a power of two ≥ 4") |
 | vDSP (`float`, Apple) | 4 … 2^20 | vDSP documents no maximum; 2^20 is the bound the float oracle has always stated for this engine and the size the split-radix gate runs to. Through the class it is swept to 65536 on the macOS leg and pinned bin-for-bin at 512 / 2048; 65536 … 2^20 is inside the range on vDSP's word, not on a measurement here |
-| CMSIS-DSP (`float`, Cortex-M55) | **32 … 4096** | `arm_rfft_fast_init_f32` dispatches through a `switch` over exactly {32, …, 4096} and returns `ARM_MATH_ARGUMENT_ERROR` otherwise, leaving the instance uninitialized. Until Stage 4 the wrapper ignored that status and fft.h promised "≥ 4" for every profile: N = 4 hard-faulted on the M55 leg (audit Part 13, found by the oracle). The constructor now checks the status (`TAP_EXPECTS`) as well as the range |
+| CMSIS-DSP (`float`, Cortex-M55) | **32 … 4096** | `arm_rfft_fast_init_f32` dispatches through a `switch` over exactly {32, …, 4096} and returns `ARM_MATH_ARGUMENT_ERROR` otherwise, leaving the instance uninitialized. Until Stage 4 the wrapper ignored that status and fft.h promised "≥ 4" for every profile: N = 4 HardFaulted in the Stage 2a oracle's first QEMU run on the M55 leg (tap/DspTap#24; audit Part 13) — one outcome of undefined behaviour, not a promise (below). The constructor now checks the status (`TAP_EXPECTS`, debug builds) as well as the range |
 | fixed point (Q15, Q31) | 4 … 65536 | as at Stage 3b, now spelled through the same constants |
 
 What construction does out of range: `TAP_EXPECTS` is the house
@@ -1042,9 +1042,18 @@ accepted by the split-radix engine named in the same binary; 32 and 4096
 constructed and round-tripped under CMSIS), plus a Debug-only death test
 that runs in a local Debug configure (it passes there). **Release-mode
 behaviour, decided (35a/F1):** a violated precondition in a release build
-is undefined behaviour exactly as the plain `assert` it replaces was — for
-the CMSIS engine the instance stays zero-initialized and the first transform
-HardFaults; there is deliberately no defined fallback, because a branch in
+is undefined behaviour exactly as the plain `assert` it replaces was, and
+no fault is promised. For the CMSIS engine the instance stays
+zero-initialized, and the final audit (2026-09-26) measured what that does
+under QEMU (mps3-an547) in Release; re-measured for this record in Release
+and MinSizeRel at `ddadb74`, one probe binary per size: N = 16 and 8192
+return a wrong spectrum (max |CMSIS − split-radix| 6.60 at peak 6.52, and
+3593 at peak 3593) and **nothing faults**; N = 4 returns a wrong spectrum
+and corrupts the heap, so a later unrelated call fails — a HardFault after
+the transform in one probe, newlib's `Balloc succeeded` assertion in the
+next `printf` in another. (The HardFault at N = 4 that Stage 2a's oracle
+met is the same undefined behaviour, not a contract.) Real silicon is not
+measured. There is deliberately no defined fallback, because a branch in
 the transforms would cost the hot path on every call for a case the
 precondition excludes and would hand a consumer an object that silently
 transforms nothing. `supports_size` is therefore the *mandatory* gate
@@ -1060,6 +1069,86 @@ preconditions (and the backends' own) and nothing else.
 `tests/test_fft_oracle.cpp` reads each profile's sweep range from the class
 instead of carrying the CMSIS range under `#if`.
 
+### After the final audit: DspTap's own gates, and the CMSIS default
+
+The final audit (2026-09-26, SYNTHESIS A1–A4) found the rule above applied
+to consumers but not to DspTap's own configuration-driven classes, and the
+CMSIS backend reaching targets it was not written for. Both are closed here
+(tap/DspTap#41):
+
+- **The config-driven classes ask their engine.** `log_mel_geometry::valid()`
+  cannot know the engine (the geometry type is engine-independent and sits
+  outside the ABI tag) and accepted any power of two ≥ 4; `basic_pvoc` stated
+  a fixed [64, 2^28]. On the M55 build, `log_mel32` at `fft_size` 16 and 8192
+  — both `valid()` — returns wrong features with no fault (measured under
+  QEMU, Release: summed features 13.87 and −24.0 where the double profile at
+  the same geometry gives 19.86 and 20.97). Now `basic_log_mel<Sample>::
+  supports_geometry(g)` is `g.valid() && fft_type::supports_size(g.fft_size)`
+  and is the constructor's `@pre`; `basic_pvoc<Sample>` states `k_min_size =
+  max(64, engine min)` and `k_max_size = min(2^28, engine max)` with a
+  `constexpr supports_size(n)`, the constructor's `@pre`. Numbers per build:
+  log_mel double 4 … 2^30 everywhere, float 32 … 4096 under CMSIS, 4 … 2^20
+  under vDSP; pvoc double 64 … 2^28 everywhere, float 64 … 4096 under CMSIS,
+  64 … 2^20 under vDSP, 64 … 2^28 on the split-radix engine. Both classes
+  keep the precondition style they had (a bare `assert`; release builds do
+  not check). The capi's `dsptap_log_mel_create`, its two setters and
+  `dsptap_pvoc_create` gate on those predicates; the capi exposes the
+  double profiles only, whose engine is split-radix on every build, so no
+  host result changes (an `int` `fft_size` never exceeds 2^30). Pinned by
+  `log_mel_test.SupportsGeometryIsValidityAndTheEngineSizeRange` and
+  `pvoc_test.SupportsSizeIsTheEngineRangeInsideTheClassBounds`, typed over
+  both profiles on every host; the float instantiations run on the four
+  QEMU legs, where the M55 rejects 8192 (and 16, which pvoc's 64 rejects on
+  every build).
+- **`TAP_DSP_FFT_CMSIS` defaults ON only where the compiler targets
+  floating-point Helium.** It was ON for every `CMAKE_SYSTEM_NAME Generic` +
+  `arm` target; DspTap's M4 and M33 toolchains escaped only by pinning it
+  OFF, and a consumer's own M7 toolchain got the CMSIS engine silently
+  (float range 4 … 2^30 → 32 … 4096, tag `fft_split_radix` → `fft_cmsis`).
+  The root CMakeLists.txt now compiles a check on `__ARM_FEATURE_MVE & 2`
+  under the configured flags (a static-library `try_compile`, so it needs no
+  linker script on bare metal, whatever the toolchain file set
+  `CMAKE_TRY_COMPILE_TARGET_TYPE` to). Configure results, before (`ddadb74`)
+  → after, `TAP_DSP_FFT_CMSIS` with no `-D`: M55 (in-tree toolchain) ON → ON;
+  M33, M4 soft-float, M4F OFF → OFF (before: by the toolchain's pin; after:
+  by detection, the pins deleted); synthetic Cortex-M7 (`-mcpu=cortex-m7
+  -mfpu=fpv5-d16 -mfloat-abi=hard`) **ON → OFF**; host x86-64 OFF → OFF;
+  MuTap's own M55 toolchain file (`origin/main`, unedited, consumer-style
+  `add_subdirectory`) ON → ON. Also measured after: `-march=armv8.1-m.main+mve.fp+fp.dp`
+  with `CMAKE_SYSTEM_PROCESSOR cortex-m55` ON, `-mcpu=cortex-m85` ON,
+  `cortex-m55 -mfloat-abi=softfp` ON (`__ARM_FEATURE_MVE` 3, and
+  `tap_dsp_fft` builds — the review's measurement),
+  `cortex-m55+nomve.fp` (integer MVE only) OFF, `cortex-m55 -mfloat-abi=soft`
+  OFF, an M55 toolchain without `CMAKE_TRY_COMPILE_TARGET_TYPE` ON.
+  Bare-metal Cortex-A / R (`Generic` + `arm`) targets move ON → OFF like the
+  M7. What the check sees, stated so nobody reads more into it: the C++
+  compiler with `CMAKE_CXX_FLAGS` only — not `CMAKE_C_FLAGS` (the CMSIS
+  objects compile as C, so keep the CPU flags identical in both, as every
+  toolchain here does), not `CMAKE_CXX_FLAGS_<CONFIG>`, not per-target
+  options, and not the caller's `CMAKE_REQUIRED_*`, which the check resets
+  (`cmake_push_check_state(RESET)`; review repro: a consumer's
+  `CMAKE_REQUIRED_DEFINITIONS -D__ARM_FEATURE_MVE=3` on the M33 toolchain
+  selected CMSIS, and `CMAKE_REQUIRED_FLAGS -mfloat-abi=soft` on the M55
+  deselected it; both now detect from the toolchain). The cached result is
+  cleared before every check, so a re-configure with other flags re-detects
+  (review repro: M55 toolchain, then re-configure with M33
+  `CMAKE_CXX_FLAGS` / `CMAKE_C_FLAGS` — before, the M55 result stayed cached
+  and the Helium status line printed; now detection is 0, and since the
+  option keeps its cached ON the "ON without MVE-F" warning fires). Every
+  blind spot fails safe (OFF, split-radix) or needs deliberately split
+  flags. An
+  explicit `-DTAP_DSP_FFT_CMSIS=ON|OFF` still wins: ON on a 32-bit Arm
+  target without MVE-F configures with a warning (CMSIS-DSP builds its
+  non-Helium C, same 32 … 4096); ON for a target that is not 32-bit Arm —
+  x86, and arm64 / Apple Silicon, which the old `arm|ARM` regex let through
+  — is a configure error. The embedded CI job asserts the detected value per
+  leg (`TAP_DSP_FFT_CMSIS:BOOL=ON` on the M55, `OFF` on the other three), so
+  a broken detection cannot turn the M55 leg into a second split-radix leg
+  unnoticed.
+- **Two false statements withdrawn.** The "HardFault" promise (above, and
+  in `fft.h` and `fft/backends/cmsis.h`) and "`int` is `std::int32_t` on
+  all CI legs" (Shareability, below).
+
 ### Shareability as an engine trait
 
 `k_is_shareable` (the plan's `is_shareable`, under the house `k_` prefix):
@@ -1073,8 +1162,18 @@ the tests pin: for the six shipped instantiations const and shareable
 coincide (`test_fft_rt.cpp`, `test_fft_engine.cpp`). The Q31 fixed-point
 transforms became `const` behind `requires`-constrained overloads
 (`k_widens` selects the Q15 pair, which goes through the per-object work
-buffer and stays non-const). Also noted (35a/F7): `int` is `std::int32_t` on
-every CI target, so `basic_real_fft<int>` compiles and is the Q31 profile. The class's own transforms stay non-const on every profile
+buffer and stays non-const). Also noted (35a/F7), and corrected by the final
+audit and its review: `int` is `std::int32_t` on the three hosted CI legs
+(glibc x86-64, MSVC, Apple arm64) and under clang for arm-none-eabi
+(clang 18.1.3 `--target=arm-none-eabi -mcpu=cortex-m55`: `__INT32_TYPE__` is
+`int`), so there `basic_real_fft<int>` is the Q31 profile. Under
+arm-none-eabi-gcc — all four QEMU legs — `__INT32_TYPE__` is `long int` (the
+compiler's own macro, from GCC's newlib-stdint target configuration, not from
+newlib's headers), `std::int32_t` is `long`, and `basic_real_fft<int>` does not
+compile (the primary template's `static_assert`, measured with
+arm-none-eabi-g++ 13.2 for `-mcpu=cortex-m55`, `cortex-m33` and `cortex-m4`;
+`basic_real_fft<long>` is the Q31 profile there).
+`fft_engine.Int32IsLongOnlyUnderArmNoneEabiGcc` pins which on every leg. Spell the profile `std::int32_t`. The class's own transforms stay non-const on every profile
 (audit N11: the public API's constness must not depend on the selected
 engine). The `std::span` overloads Part 9 listed were not added: Stage 4
 added no overload to the transform surface, so there is nothing to equate
@@ -1224,7 +1323,12 @@ one level up in MuTap exactly as before.
 3. **Validate N with `basic_real_fft<Sample>::supports_size(n)` wherever a
    block size comes from configuration**, with the CMSIS numbers (32 …
    4096) in the error text: on the M55 a config block size outside that
-   range is a release-mode HardFault at the first `process()` otherwise.
+   range is undefined behaviour in a release build otherwise — measured as
+   a silently wrong spectrum (N = 16, 8192) or a corrupted heap (N = 4),
+   with no fault promised. For a DspTap class that holds the FFT itself,
+   gate on the class's predicate (`basic_log_mel<Sample>::
+   supports_geometry`, `basic_pvoc<Sample>::supports_size`), which asks the
+   same engine.
 4. Expect `partitioned_fdaf<double>` and the other double instantiations to
    carry a tag their layout does not need (the tag is keyed on the float
    default) — the same cost class as the fixed-point paragraph above; no
@@ -1850,6 +1954,23 @@ bump starts from.
   `docs/itu-compliance.md` glossary ("measured on Ooura") stays true and
   does not move. MuTap-Max (`544e756`) names no path under `tests/reference/`.
 
+- **After the contract-safety PR (#41): nothing is required of MuTap or
+  MuTap-Max; verified, not assumed** (MuTap `origin/main` `0385ea9`,
+  MuTap-Max `4cfcca3`, read 2026-09-26). MuTap's own
+  `cmake/arm-cortex-m55-mps3.cmake`, unedited, configures DspTap with the
+  MVE-F check true and `TAP_DSP_FFT_CMSIS` ON, so its default M55 leg (and
+  its `backend=cmsis abi=fft_cmsis` assertion), its split-radix M55 leg
+  (explicit `-DTAP_DSP_FFT_CMSIS=OFF`, still honoured) and its `m55` icount
+  key are unaffected; `ci.yml`'s comment "ON by default on the bare-metal
+  M55 profile" stays true. `cmake/arm-cortex-m33-mps2.cmake:40`'s
+  `set(TAP_DSP_FFT_CMSIS OFF CACHE …)` is now redundant — harmless; drop it
+  (and reword its reason) at a routine bump if wanted. MuTap uses
+  `log_mel` only through the capi / bridge (double profile, split-radix on
+  every build: no reachable `fft_size` is newly rejected) and `pvoc` not at
+  all in C++ (grepped); MuTap-Max builds for hosts only (CMSIS never ON),
+  names neither class, and its `CMakeLists.txt:90` comment ("OFF for every
+  host build") stays true. No mangled name, layout or output bit changes.
+
 ### The bit-identity record after D6
 
 The parity gate (`tests/test_fft_parity_ooura.cpp`, with an informational
@@ -2150,5 +2271,6 @@ byte-identical.
 | tap/DspTap#32 (`8350f13` on `main`) | 2c | none numerically | **no output bit and no contract point**: the vendored C leaves the shipping tree (`fftsg.c` and `fftsg_float.c` to `tests/reference/ooura/`, D6); `tap::dsp` is a pure INTERFACE target and `tap_dsp_fft` exists only under `TAP_DSP_FFT_CMSIS`; the `extern "C"` `rdft`/`cdft`/`rdft_f`/`cdft_f` declarations leave `fft.h` (a consumer that took them from there no longer links — none did: MuTap and MuTap-Max were grepped); the capi's `dsptap_fft_backend()` returns `"split_radix"` where it returned `"ooura"`; the Q15/Q31 ratchet scenarios are seeded and the `.text` ceilings set | MuTap fingerprint harness (scratch build of MuTap `0f6a7f0` with this tree as the submodule, `-DMUTAP_WERROR=ON`): 14 rows byte-identical to the current pin `b08f6c6`; DspTap icount at +0.00 % on every float key |
 | tap/DspTap#35 | 4 | none numerically | **no output bit** (the Ooura gate and the class-vs-engine memcmp are green on every leg; fixed-point icount checksums identical): `basic_real_fft`'s second template argument is the engine for the floating profiles (default `default_real_fft_engine_t<Sample>`); `k_min_size` / `k_max_size` / `supports_size` / `k_is_shareable` added; construction requires `supports_size(size)` (`TAP_EXPECTS`, debug) — the one narrowing is the CMSIS engine's 32 … 4096, which was already the library's behaviour (undefined outside it); `basic_real_fft`, `basic_pvoc`, `basic_log_mel` and the aliases move into `inline namespace fft_split_radix | fft_cmsis | fft_vdsp` (mangled names change: every consumer image is rebuilt on its bump, and two images with different defaults no longer share symbols); backends move to `fft/backends/`; the Q31 engine's transforms are `const`. Fingerprint A/B of this tree vs `main` (`tools/fingerprint`, 12 lines, review 35b): identical at g++ default flags, at `-O3 -DNDEBUG`, at `-O3 -DNDEBUG -march=x86-64-v3`, and on the Cortex-M33 leg | none yet (MuTap's bump: fingerprints must be byte-identical; its own embedders adopt the tag in `tap::mu` — checklist above) |
 | tap/DspTap#39 | post-program | Q15, Q31 | **no output bit**: the real post-pass / pre-pass, its table and the DC/Nyquist handling re-derived from the literature under a clean-room procedure ("The fixed-point post-pass, re-derived", including what the hand-off left in the tree), bit-identical to the transcription it replaces (every pinned fingerprint and checksum unchanged, as any single-product two-rounding arrangement predicts); fingerprints added at N = 64 and 1024 (the radix-2 stage); the inverse's antisymmetric-pair worst case added to the saturation sweep; the Q31 deviation and F(x) + F(−x) maxima pinned per size at N = 4096 … 65536 by two host-only tests (Q31 block floating 31–80 / 121–286 LSB measured, pinned at 2×); Welch-model ratio pins re-derived; Q15/Q31 icount +0.49 … +1.15 %, inside the band | none numerically (no consumer on fixed point); provenance: MuTap's `THIRD_PARTY_NOTICES.md` ("what remains of the package is the derived port") is incomplete for any pin in #27 … #38 and exact again once it pins past #39 (Consumer follow-ups) |
+| tap/DspTap#41 | final audit A1–A4 | `float` (the CMSIS build); `log_mel`, `pvoc` | **no output bit**. Build: `TAP_DSP_FFT_CMSIS` defaults ON only where the compiler targets MVE-F (`__ARM_FEATURE_MVE & 2`) — for a consumer's non-Helium bare-metal Arm toolchain (Cortex-M7, M33, …, and Cortex-A / R) that previously defaulted ON, the float engine moves from CMSIS-DSP to split-radix: size range 32 … 4096 → 4 … 2^30, ABI tag `fft_cmsis` → `fft_split_radix`; unchanged for every in-tree leg and for MuTap's M55 (measured). Contract points: `basic_log_mel<Sample>::supports_geometry` (valid() AND the engine's size predicate) is the constructor's `@pre`; `basic_pvoc<Sample>`'s range is derived, `[max(64, engine min), min(2^28, engine max)]` (float 64 … 4096 under CMSIS, 64 … 2^20 under vDSP), with `k_min_size` / `k_max_size` / `supports_size`; the capi's `log_mel` / `pvoc` create and setters gate on them. The narrowing is only where release builds were already undefined behaviour. Documentation: no fault is promised out of range (measured wrong output, or heap corruption at N = 4); `int` is Q31 on the hosts and under clang, not under arm-none-eabi-gcc | none needed (MuTap `0385ea9` / MuTap-Max `4cfcca3` read: nothing changes for them; "Consumer follow-ups") |
 | tap/DspTap#36 | D6 | none numerically | **no output bit and no contract point**: the reference C (`tests/reference/ooura/`), its declaration header and the parity gate with its informational twin are deleted; `tests/test_fft_split_radix_fingerprint.cpp` pins the engine's output bits at every power of two from 4 to 65536 (one float row; double per C library build, glibc as an FMA/SSE2 dispatch pair), measured equal to the C's on every leg ("The bit-identity record after D6"); nothing under `include/` changes but comments; the test-only cache variable `TAP_DSP_PARITY_MAX_N` is renamed `TAP_DSP_TEST_MAX_FFT_N` | none needed (no shipping code changed; icount ratchet expected +0.00 % on every key) |
 | tap/DspTap#40 | D4 expiry, D5 | `double`, `float` | **API break, no output bit**: `forward(const float*, float*)` / `inverse(const float*, float*)` on the double engine are deleted (D5; they allocated per call and were not `noexcept`), and `basic_real_fft<float \| double, scaling::fixed>` is a `static_assert` naming the one-argument form (D4 expiry; `detail::floating_engine_of` deleted). Every remaining spelling instantiates the same types as before, so no instruction a consumer can still write changes other than assertion line numbers (`TAP_EXPECTS` `__LINE__` immediates at `-O0` without `NDEBUG`: fft.h's line numbers moved; objects byte-identical to `ddadb74` at `-O2`/`-O3`/`-Os` on g++, clang, M33, M55 and M4, review of #40); the class now fails with the D4 message alone (error-recovery `engine`), pinned by the `fft_compile_fail.*` ctests | **consumers verified unaffected**: no use of either API in MuTap `origin/main`, MuTap `edf160e` (MuTap-Max's pin) or MuTap-Max `origin/main` (`git grep`); MuTap at both SHAs builds against this tree with `-DMUTAP_WERROR=ON`; no pin to re-measure |

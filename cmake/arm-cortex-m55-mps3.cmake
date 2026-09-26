@@ -1,8 +1,10 @@
 # Cross-compilation toolchain for Arm Cortex-M55, bare metal (newlib +
 # semihosting), executed on QEMU's MPS3 AN547 board model. Ported from
 # MuTap's cmake/arm-cortex-m55-mps3.cmake (itself from SampleRateTap's).
-# The only leg with MVE/Helium: the CMSIS-DSP float32 FFT backend defaults ON
-# here (root CMakeLists.txt) and its parity suite runs under emulation.
+# The only leg with MVE/Helium: -mcpu=cortex-m55 -mfloat-abi=hard defines
+# __ARM_FEATURE_MVE = 3 (integer + floating-point MVE), so the root
+# CMakeLists.txt's MVE-F check defaults the CMSIS-DSP float32 FFT backend ON
+# here, and its parity suite runs under emulation.
 #
 # Usage:
 #   cmake -B build-m55 -DCMAKE_TOOLCHAIN_FILE=cmake/arm-cortex-m55-mps3.cmake \
