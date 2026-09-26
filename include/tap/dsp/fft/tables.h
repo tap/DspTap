@@ -16,21 +16,26 @@
 // zero, saturating), so |w_q - w| <= 0.5 LSB of Q1.30 on every host
 // (`TwiddleTableIsWithinHalfLsb` in the battery); the kernel twiddles go
 // through libm for the first octant only and reach the rest of the circle by
-// exact symmetry. Two things can still move a coefficient by one Q1.30 LSB
-// between hosts: a libm last-bit difference (glibc, newlib, UCRT, Apple),
-// and fp-contraction of a generator expression (Decision D9: a compiler that
+// exact symmetry. Two things could move a coefficient by one Q1.30 LSB
+// between hosts: a libm last-bit difference (glibc, newlib, UCRT, Apple), and
+// fp-contraction of a generator expression (Decision D9: a compiler that
 // fuses an a - b*c into one rounding, the default on Apple arm64 and on the
-// M55 leg), either of which can carry a double that lies within 2^-31 of a
-// rounding boundary onto the other side. The generators therefore contain no
-// contractible expression (the post-pass generator forms its real part
-// (1 - sin theta) / 2 as the integer 2^29 - make_coeff(sin theta / 2), not as
-// the double 0.5 - 0.5 * sin theta, which a contracting compiler fuses),
-// and fixed-point transform outputs
-// are host-identical only if the table is: the battery pins each certified
-// N's table checksum (FNV-1a-64 over the int32 bit patterns, in index order)
-// so a libm difference is detected rather than silently absorbed
-// (`TwiddleTableChecksumIsPinned`), and pins the transforms' own output
-// fingerprints on top (`OutputFingerprintIsPinned`).
+// M55 leg). Neither can, for any size these tables are built for: measured
+// in quad precision (__float128 sinq / cosq of the double angle each
+// generator forms; 2026-09-26, x86-64, GCC 13.3.0), the libm-evaluated entry
+// nearest a Q1.30 rounding boundary is 2.79e-5 LSB (2^-15.1) from it in the
+// post-pass table over every n <= 65536 (n = 65536, k = 2915) and 4.68e-5
+// LSB in the kernel twiddles over every m <= 32768 (m = 32768, k = 767),
+// and at least 812 / 393 ulp of the double from it. So the tables are
+// identical on any host whose sin and cos are within 2^8 ulp, and a fused
+// a - b*c (under one ulp) could not move an entry either. The generators nevertheless contain no
+// contractible expression (D9; the post-pass generator forms its real part
+// (1 - sin theta) / 2 as the integer 2^29 - make_coeff(sin theta / 2)), and
+// fixed-point transform outputs are host-identical because the table is:
+// the battery pins each certified N's table checksum (FNV-1a-64 over the
+// int32 bit patterns, in index order), which confirms the above on every
+// host CI runs (`TwiddleTableChecksumIsPinned`), and pins the transforms'
+// own output fingerprints on top (`OutputFingerprintIsPinned`).
 
 #pragma once
 
@@ -158,12 +163,18 @@ namespace tap::dsp::detail {
     /// times the double pi) times the integer k, one rounding, < 2^-47 rad
     /// for n <= 2^16.
     ///
-    /// No contractible expression (file header, Decision D9): the doubles
-    /// are a product of the angle step and k, and half a libm sin or cos, and
-    /// nothing is added to a product in double. The real part is deliberately
-    /// NOT the double 0.5 - 0.5 * sin(theta), which an FMA-contracting
-    /// compiler fuses into one rounding and so moves an entry lying near a
-    /// Q1.30 rounding boundary; the subtraction happens on the integers.
+    /// Host identity (file header): no entry for any n <= 65536 lies nearer
+    /// a Q1.30 rounding boundary than 2.79e-5 LSB (n = 65536, k = 2915; at
+    /// least 2.6e-3 LSB for n <= 2048), nor nearer than 812 ulp of the
+    /// double sin or cos, so the table is the same on any host whose sin
+    /// and cos are within 2^8 ulp; the pinned checksums confirm it. No
+    /// contractible expression (Decision D9): the doubles are a product of
+    /// the angle step and k, and half a libm sin or cos, and nothing is
+    /// added to a product in double. The real part is formed on the
+    /// integers, not as the double 0.5 - 0.5 * sin(theta) (the a - b*c
+    /// shape D9 names; fused or not it would round to the same table, by
+    /// the margin above), which also makes the complement C_k real +
+    /// C_(n/4 - k) imaginary = 2^29 exact by construction.
     ///
     /// @pre n is a power of two >= 4 (the real transform's length).
     inline std::vector<fft_arith<std::int32_t>::coeff> make_real_post_pass_table(std::size_t n) {

@@ -42,7 +42,9 @@
 // a -V run records the current value beside the pin. Fixed seeds, no wall clock, no filesystem, no
 // <random>: the battery runs unchanged on the four QEMU legs (Part 10), where
 // N <= 2048 fixed point is cheap and the double golden model is the expensive
-// part, so sizes are kept modest and TAP_DSP_TEST_MAX_FFT_N caps the sweeps.
+// part, so sizes are kept modest and TAP_DSP_TEST_MAX_FFT_N caps the sweeps;
+// the per-size pins for N = 4096 ... 65536 are host-only (compiled out below
+// a cap of 65536).
 
 #include <algorithm>
 #include <array>
@@ -161,15 +163,14 @@ namespace {
     // 2.321 -> 2.315 (pin 4.65 -> 4.63); the Q15 ratios unchanged. Pinned
     // at 2x as before.
     //
-    // Scope: the sweeps run N <= 2048 (k_sweep_sizes), and the pins hold
-    // there only. The Q31 block-floating DC-path maxima grow with the gap
-    // between the constant and the returned exponent at larger N: the same
-    // saturation sweep run at one size at a time (2026-09-26, same host)
-    // gives 31.0 / 32.0 / 59.0 / 76.0 / 80.0 LSB at N = 4096 / 8192 / 16384
-    // / 32768 / 65536 (inverse of full-scale binary noise, index 0) and
-    // F(x) + F(-x) maxima of 121 / 126 / 137 / 141 / 286 LSB, beyond the
-    // 32 / 124 pins; Q31 fixed stays within its pins (4.70 / 4.25 / 4.25 /
-    // 4.74 / 4.72 LSB, F(x) + F(-x) 8 / 7 / 8 / 8 / 9 LSB).
+    // Scope: the sweeps run N = 4 / 8 / 16 / 64 / 512 / 1024 / 2048
+    // (k_sweep_sizes), and these pins hold there. Above 2048 the Q31
+    // block-floating DC-path maxima grow with the gap between the constant
+    // and the returned exponent, beyond the 32 / 124 pins, so the host-only
+    // "sizes above the sweeps" tests pin saturation_max_lsb,
+    // negation_sum_max_lsb and negation_bias_lsb per size for N = 4096 ...
+    // 65536 (k_large_pins_q31_fixed / _bfp, measured numbers beside them);
+    // the Q15 profiles stay inside these pins there and read them unchanged.
     constexpr pin_table k_pins_q15_fixed{1.0, 1.13, 0.0, 2.0, 0.001, 2.11, 0.044, 1.0};
     constexpr pin_table k_pins_q31_fixed{8.5, 6.77, 0.0, 12.0, 1.63, 3.51, 0.77, 0.0};
     constexpr pin_table k_pins_q15_bfp{1.5, 10.0, 2.0, 2.0, 0.032, 2.09, 1.07, 1.0};
@@ -715,29 +716,40 @@ namespace {
         }
     };
 
+    /// The saturation sweep at one size: every adversarial pattern, both
+    /// directions, against the golden model. `worst` takes the largest
+    /// deviation, `rail` the largest shortfall of the golden model below a
+    /// rail the output sits on. SaturationFreeWorstCaseDoesNotWrap runs it
+    /// over k_sweep_sizes, SaturationFreeWorstCaseIsPinnedPerLargeSize one size
+    /// at a time above them.
+    template <typename Cfg>
+    void saturation_sweep(std::size_t n, worst_case& worst, worst_case& rail) {
+        using s = typename Cfg::sample;
+        for (const bool inverse : {false, true}) {
+            const auto patterns = inverse ? adversarial_spectrum_patterns<s>(n) : adversarial_time_patterns<s>(n);
+            for (const auto& p : patterns) {
+                const auto r      = inverse ? run_inverse<Cfg>(p.x) : run_forward<Cfg>(p.x);
+                const auto golden = inverse ? golden_inverse(fractions(p.x)) : golden_forward(fractions(p.x));
+                const auto d      = deviation_from_golden<Cfg>(r.out, golden, r.exponent);
+                worst.note(d.max_lsb, inverse ? "inverse" : "forward", p.name, n, r.exponent, d.argmax);
+                for (std::size_t i = 0; i < n; ++i) {
+                    if (r.out[i] == Cfg::k_max || r.out[i] == Cfg::k_min) {
+                        const double g = std::fabs(golden[i]) * pow2(-r.exponent) / Cfg::k_lsb;
+                        rail.note(static_cast<double>(Cfg::k_max) - g, inverse ? "inverse" : "forward", p.name, n,
+                                  r.exponent, i);
+                    }
+                }
+            }
+        }
+    }
+
     TYPED_TEST(fft_fixed_point_test, SaturationFreeWorstCaseDoesNotWrap) {
         using cfg      = TypeParam;
-        using s        = typename cfg::sample;
         const auto pin = pins<cfg>().saturation_max_lsb;
         worst_case worst;
         worst_case rail; // largest shortfall of the golden model below a rail the output sits on
         for (const std::size_t n : k_sweep_sizes) {
-            for (const bool inverse : {false, true}) {
-                const auto patterns = inverse ? adversarial_spectrum_patterns<s>(n) : adversarial_time_patterns<s>(n);
-                for (const auto& p : patterns) {
-                    const auto r      = inverse ? run_inverse<cfg>(p.x) : run_forward<cfg>(p.x);
-                    const auto golden = inverse ? golden_inverse(fractions(p.x)) : golden_forward(fractions(p.x));
-                    const auto d      = deviation_from_golden<cfg>(r.out, golden, r.exponent);
-                    worst.note(d.max_lsb, inverse ? "inverse" : "forward", p.name, n, r.exponent, d.argmax);
-                    for (std::size_t i = 0; i < n; ++i) {
-                        if (r.out[i] == cfg::k_max || r.out[i] == cfg::k_min) {
-                            const double g = std::fabs(golden[i]) * pow2(-r.exponent) / cfg::k_lsb;
-                            rail.note(static_cast<double>(cfg::k_max) - g, inverse ? "inverse" : "forward", p.name, n,
-                                      r.exponent, i);
-                        }
-                    }
-                }
-            }
+            saturation_sweep<cfg>(n, worst, rail);
         }
         std::printf("[ measured ] %s saturation sweep: max |out - G/2^e| = %.3f LSB (pin %.3f) at %s %s n=%lu e=%d "
                     "index %lu; largest rail shortfall %.3f LSB\n",
@@ -1046,40 +1058,52 @@ namespace {
     // not odd-symmetric: F(-x) is not exactly -F(x). The sum F(x) + F(-x) is
     // the asymmetry, at most one LSB per rounding that lands on a tie and
     // reaches the output; its maximum and its mean (the bias) are pinned.
+    /// The negation sweep at one size: random blocks at 0.999 and 0.1 of
+    /// full scale and their negations, both directions. `worst_max` takes
+    /// the largest |F(x) + F(-x)| of any output sample, `worst_bias` the
+    /// largest |mean| over a block (read at n >= 64 only, where a mean says
+    /// something). RoundingBiasOnNegatedInputIsBounded runs it over
+    /// k_sweep_sizes, RoundingBiasOnNegatedInputIsPinnedPerLargeSize one
+    /// size at a time above them.
+    template <typename Cfg>
+    void negation_sweep(std::size_t n, worst_case& worst_max, worst_case& worst_bias) {
+        using s = typename Cfg::sample;
+        for (const double amplitude : {0.999, 0.1}) {
+            // 0.999 keeps -x representable (-INT_MIN would saturate).
+            const auto x = tap::dsp::test::random_signal<s>(n, 0x9E3779B9u ^ static_cast<std::uint32_t>(n), amplitude);
+            std::vector<s> neg(n);
+            for (std::size_t i = 0; i < n; ++i) {
+                neg[i] = static_cast<s>(-x[i]);
+            }
+            for (const bool inverse : {false, true}) {
+                const auto a = inverse ? run_inverse<Cfg>(x) : run_forward<Cfg>(x);
+                const auto b = inverse ? run_inverse<Cfg>(neg) : run_forward<Cfg>(neg);
+                ASSERT_EQ(a.exponent, b.exponent) << "negation changed the exponent, n=" << n;
+                double mean = 0.0;
+                for (std::size_t i = 0; i < n; ++i) {
+                    const double sum = static_cast<double>(a.out[i]) + static_cast<double>(b.out[i]);
+                    worst_max.note(std::fabs(sum), inverse ? "inverse" : "forward",
+                                   amplitude > 0.5 ? "-0 dBFS" : "-20 dBFS", n, a.exponent, i);
+                    mean += sum;
+                }
+                if (n >= 64) {
+                    worst_bias.note(std::fabs(mean / static_cast<double>(n)), inverse ? "inverse" : "forward",
+                                    amplitude > 0.5 ? "-0 dBFS" : "-20 dBFS", n, a.exponent, 0);
+                }
+            }
+        }
+    }
+
     TYPED_TEST(fft_fixed_point_test, RoundingBiasOnNegatedInputIsBounded) {
         using cfg           = TypeParam;
-        using s             = typename cfg::sample;
         const auto max_pin  = pins<cfg>().negation_sum_max_lsb;
         const auto bias_pin = pins<cfg>().negation_bias_lsb;
         worst_case worst_max;
         worst_case worst_bias;
         for (const std::size_t n : k_sweep_sizes) {
-            for (const double amplitude : {0.999, 0.1}) {
-                // 0.999 keeps -x representable (-INT_MIN would saturate).
-                const auto x =
-                    tap::dsp::test::random_signal<s>(n, 0x9E3779B9u ^ static_cast<std::uint32_t>(n), amplitude);
-                std::vector<s> neg(n);
-                for (std::size_t i = 0; i < n; ++i) {
-                    neg[i] = static_cast<s>(-x[i]);
-                }
-                for (const bool inverse : {false, true}) {
-                    const auto a = inverse ? run_inverse<cfg>(x) : run_forward<cfg>(x);
-                    const auto b = inverse ? run_inverse<cfg>(neg) : run_forward<cfg>(neg);
-                    ASSERT_EQ(a.exponent, b.exponent) << "negation changed the exponent, n=" << n;
-                    double mean = 0.0;
-                    for (std::size_t i = 0; i < n; ++i) {
-                        const double sum = static_cast<double>(a.out[i]) + static_cast<double>(b.out[i]);
-                        worst_max.note(std::fabs(sum), inverse ? "inverse" : "forward",
-                                       amplitude > 0.5 ? "-0 dBFS" : "-20 dBFS", n, a.exponent, i);
-                        mean += sum;
-                    }
-                    // The bias is a mean over the block: read it where the
-                    // block is large enough for a mean to say something.
-                    if (n >= 64) {
-                        worst_bias.note(std::fabs(mean / static_cast<double>(n)), inverse ? "inverse" : "forward",
-                                        amplitude > 0.5 ? "-0 dBFS" : "-20 dBFS", n, a.exponent, 0);
-                    }
-                }
+            negation_sweep<cfg>(n, worst_max, worst_bias);
+            if (::testing::Test::HasFatalFailure()) {
+                return;
             }
         }
         std::printf("[ measured ] %s F(x)+F(-x): max %.2f LSB (pin %.2f) at %s %s n=%lu index %lu; bias %.4f LSB "
@@ -1094,6 +1118,126 @@ namespace {
         EXPECT_LE(worst_bias.value, bias_pin)
             << cfg::name() << " " << worst_bias.what << " " << worst_bias.name << " n=" << worst_bias.n;
     }
+
+    // ========================================================================
+    // The sizes above the sweeps (host only).
+    // ========================================================================
+
+    // The saturation and negation sweeps above run k_sweep_sizes, which stop
+    // at 2048; the profiles take N up to k_max_size = 65536. These two tests
+    // run the same two sweeps (saturation_sweep, negation_sweep) one size at
+    // a time over N = 4096 / 8192 / 16384 / 32768 / 65536 and pin each
+    // size's maxima. They are compiled out where TAP_DSP_TEST_MAX_FFT_N caps
+    // the sweeps below 65536 (the QEMU legs, 4096), the way the other
+    // large-N sweeps are: at 65536 the double golden model is the expensive
+    // part, about 0.25 s per configuration on the host below, far more under
+    // emulation.
+    //
+    // Q31: pinned per size at 2x (rounded up) the values measured 2026-09-26
+    // on x86-64 Linux (Ubuntu 24.04, glibc 2.39), GCC 13.3.0 -O3; the
+    // measured numbers, N = 4096 / 8192 / 16384 / 32768 / 65536:
+    //   Q31/fixed  max |out - G/2^e|  4.704 / 4.250 / 4.250 / 4.741 / 4.724 LSB
+    //              max F(x)+F(-x)     8 / 7 / 8 / 8 / 9 LSB
+    //              |mean F(x)+F(-x)|  0.6729 / 0.4531 / 0.6638 / 0.4461 / 0.6660 LSB
+    //   Q31/bfp    max |out - G/2^e|  31.004 / 31.992 / 59.003 / 75.997 / 80.009 LSB
+    //              max F(x)+F(-x)     121 / 126 / 137 / 141 / 286 LSB
+    //              |mean F(x)+F(-x)|  0.9258 / 0.9971 / 0.9875 / 0.9812 / 0.9771 LSB
+    // The Q31 maxima sit at the DC/Nyquist path, index 0 or 1 (Q31 fixed at
+    // 65536: index 5). The block-floating deviation grows with the gap
+    // between the fixed constant and the returned exponent (inverse of
+    // full-scale binary noise, e = 9 ... 12 against 13 ... 17) with no closed
+    // form behind it, which is why it is pinned per size and not by a law.
+    // No output sits on a rail anywhere (largest rail shortfall 0.000 LSB).
+    //
+    // Q15: every size stays inside the N <= 2048 pins (the pins table), so
+    // those pins are read unchanged: measured max |out - G/2^e| 0.500 (fixed)
+    // / 0.501 (bfp) LSB, max F(x)+F(-x) 1 LSB (0 at fixed 4096), mean at most
+    // 0.0002 / 0.0005 LSB.
+#if TAP_DSP_TEST_MAX_FFT_N >= 65536
+    struct large_size_pin {
+        std::size_t n;
+        double      saturation_max_lsb;
+        double      negation_sum_max_lsb;
+        double      negation_bias_lsb;
+    };
+    constexpr std::array<large_size_pin, 5> k_large_pins_q31_fixed{{
+        {4096, 9.41, 16.0, 1.35},
+        {8192, 8.50, 14.0, 0.91},
+        {16384, 8.50, 16.0, 1.33},
+        {32768, 9.49, 16.0, 0.90},
+        {65536, 9.45, 18.0, 1.34},
+    }};
+    constexpr std::array<large_size_pin, 5> k_large_pins_q31_bfp{{
+        {4096, 62.01, 242.0, 1.86},
+        {8192, 63.99, 252.0, 2.00},
+        {16384, 118.01, 274.0, 1.98},
+        {32768, 152.00, 282.0, 1.97},
+        {65536, 160.02, 572.0, 1.96},
+    }};
+
+    template <typename Cfg>
+    large_size_pin large_size_pins(std::size_t n) {
+        if constexpr (Cfg::k_is_q15) {
+            const pin_table& p = pins<Cfg>();
+            return {n, p.saturation_max_lsb, p.negation_sum_max_lsb, p.negation_bias_lsb};
+        }
+        else {
+            const auto& table = Cfg::k_is_bfp ? k_large_pins_q31_bfp : k_large_pins_q31_fixed;
+            for (const auto& row : table) {
+                if (row.n == n) {
+                    return row;
+                }
+            }
+            return {n, 0.0, 0.0, 0.0}; // unmeasured: fails on purpose
+        }
+    }
+
+    constexpr std::array<std::size_t, 5> k_large_sizes{4096, 8192, 16384, 32768, 65536};
+
+    TYPED_TEST(fft_fixed_point_test, SaturationFreeWorstCaseIsPinnedPerLargeSize) {
+        using cfg = TypeParam;
+        for (const std::size_t n : k_large_sizes) {
+            const auto pin = large_size_pins<cfg>(n).saturation_max_lsb;
+            worst_case worst;
+            worst_case rail;
+            saturation_sweep<cfg>(n, worst, rail);
+            std::printf("[ measured ] %s saturation sweep n=%lu: max |out - G/2^e| = %.3f LSB (pin %.3f) at %s %s "
+                        "e=%d index %lu; largest rail shortfall %.3f LSB\n",
+                        cfg::name(), ul(n), worst.value, pin, worst.what, worst.name, worst.e, ul(worst.index),
+                        rail.value);
+            EXPECT_GT(pin, 0.0) << "unmeasured pin, n=" << n;
+            EXPECT_LE(worst.value, pin) << cfg::name() << " " << worst.what << " " << worst.name << " n=" << n
+                                        << " e=" << worst.e << " index " << worst.index;
+            EXPECT_LE(rail.value, pin) << cfg::name() << " " << rail.what << " " << rail.name << " n=" << n
+                                       << ": sample " << rail.index
+                                       << " sits on a rail the golden model does not reach";
+        }
+    }
+
+    TYPED_TEST(fft_fixed_point_test, RoundingBiasOnNegatedInputIsPinnedPerLargeSize) {
+        using cfg = TypeParam;
+        for (const std::size_t n : k_large_sizes) {
+            const auto pin = large_size_pins<cfg>(n);
+            worst_case worst_max;
+            worst_case worst_bias;
+            negation_sweep<cfg>(n, worst_max, worst_bias);
+            if (::testing::Test::HasFatalFailure()) {
+                return;
+            }
+            std::printf("[ measured ] %s F(x)+F(-x) n=%lu: max %.2f LSB (pin %.2f) at %s %s index %lu; bias %.4f LSB "
+                        "(pin %.4f) at %s %s\n",
+                        cfg::name(), ul(n), worst_max.value, pin.negation_sum_max_lsb, worst_max.what, worst_max.name,
+                        ul(worst_max.index), worst_bias.value, pin.negation_bias_lsb, worst_bias.what, worst_bias.name);
+            EXPECT_GT(pin.negation_sum_max_lsb, 0.0) << "unmeasured pin, n=" << n;
+            EXPECT_GT(pin.negation_bias_lsb, 0.0) << "unmeasured pin, n=" << n;
+            EXPECT_LE(worst_max.value, pin.negation_sum_max_lsb)
+                << cfg::name() << " " << worst_max.what << " " << worst_max.name << " n=" << n << " index "
+                << worst_max.index;
+            EXPECT_LE(worst_bias.value, pin.negation_bias_lsb)
+                << cfg::name() << " " << worst_bias.what << " " << worst_bias.name << " n=" << n;
+        }
+    }
+#endif
 
     // ========================================================================
     // Q15 against Q31: the one sibling-profile comparison (Part 9, Rules).

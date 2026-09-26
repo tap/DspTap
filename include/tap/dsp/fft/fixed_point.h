@@ -196,9 +196,11 @@ namespace tap::dsp {
         ///     output is held at a larger scale; the SNR is the comparable
         ///     number); largest deviation 15.99 LSB (inverse of full-scale
         ///     binary noise, N = 1024, index 0; pinned 32 over the battery's
-        ///     N = 4 ... 2048 only: the same sweep measures 31.0 / 32.0 / 59.0
-        ///     / 76.0 / 80.0 LSB at N = 4096 / 8192 / 16384 / 32768 / 65536,
-        ///     the DC-path bias below growing with the exponent gap).
+        ///     N = 4 / 8 / 16 / 64 / 512 / 1024 / 2048; above them the same
+        ///     sweep measures 31.0 / 32.0 / 59.0 / 76.0 / 80.0 LSB at N =
+        ///     4096 / 8192 / 16384 / 32768 / 65536, the DC-path bias below
+        ///     growing with the exponent gap, pinned per size at 2x on the
+        ///     host, `SaturationFreeWorstCaseIsPinnedPerLargeSize`).
         ///   - Honest limit: the round-half-up bias accumulates coherently
         ///     along the unrotated (DC) path, and under block floating point,
         ///     where a stage typically shifts one bit against a magnitude
@@ -207,11 +209,13 @@ namespace tap::dsp {
         ///     at index 0 or 1, and as the mean of F(x) + F(-x)
         ///     (`RoundingBiasOnNegatedInputIsBounded`: 0.81 LSB Q31 fixed,
         ///     1.05 LSB Q31 block floating, pinned 1.63 / 2.1; the sum's
-        ///     maximum 6 / 62 LSB, pinned 12 / 124, at index 0 / 1). Beyond
-        ///     the battery's N <= 2048 it is unmeasured by any committed test
-        ///     (the Stage 3c notebook re-measures it up to N = 65536; the
-        ///     block-floating maxima there are quoted above and in
-        ///     docs/fft-design.md §3, outside the pins). Q15
+        ///     maximum 6 / 62 LSB, pinned 12 / 124, at index 0 / 1). Above
+        ///     the sweep sizes the host-only
+        ///     `RoundingBiasOnNegatedInputIsPinnedPerLargeSize` pins it per
+        ///     size for N = 4096 ... 65536 at 2x the measured values (Q31
+        ///     block floating: sum maximum 121 / 126 / 137 / 141 / 286 LSB,
+        ///     mean 0.93 - 1.00 LSB; Q31 fixed 7 - 9 / 0.45 - 0.67 LSB;
+        ///     docs/fft-design.md §3). Q15
         ///     never sees it (below the narrow's quantum). Convergent rounding
         ///     would remove it; that is a different trait contract
         ///     (fft_arith.h), not this kernel's choice.

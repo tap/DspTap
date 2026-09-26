@@ -129,9 +129,11 @@ are pinned per profile (`OutputFingerprintIsPinned`, N = 64 / 512 / 1024 /
 around it are the half-length method of Cooley, Lewis and Welch (1970) and
 Sorensen et al. (1987), one Q1.30 product per bin pair and exact DC /
 Nyquist (design note §1). The deviation maxima the battery pins are
-measured over N = 4 … 2048; beyond that the Q31 block-floating maximum grows
-with the gap between its exponent and the fixed constant (31 – 80 LSB at
-N = 4096 … 65536, unpinned; design note §3).
+measured at N = 4 / 8 / 16 / 64 / 512 / 1024 / 2048; above that the Q31
+block-floating maximum grows with the gap between its exponent and the fixed
+constant (31 – 80 LSB at N = 4096 … 65536), so a host-only test pins it, the
+F(x) + F(−x) asymmetry and the Q31 fixed maximum per size at 2× the measured
+values (design note §3).
 
 ```cpp
 #include "tap/dsp/fft.h"

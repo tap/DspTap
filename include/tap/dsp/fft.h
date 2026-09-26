@@ -606,11 +606,18 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///    shortfall. Largest deviation from the golden model over the
     ///    adversarial full-scale sweep, both directions: Q15 0.50 / 0.75 LSB
     ///    (fixed / block floating), Q31 4.25 / 15.99 LSB, at index 0 for
-    ///    Q31; pinned at 1.0 / 1.5 / 8.5 / 32 over the battery's N = 4 ...
-    ///    2048. Beyond it the Q31 block-floating maximum grows with the
-    ///    exponent gap (31.0 / 32.0 / 59.0 / 76.0 / 80.0 LSB at N = 4096 ...
-    ///    65536, index 0, unpinned; Q31 fixed stays <= 4.74 LSB there).
-    ///    `SaturationFreeWorstCaseDoesNotWrap`.
+    ///    Q31; pinned at 1.0 / 1.5 / 8.5 / 32 over the battery's N = 4 / 8
+    ///    / 16 / 64 / 512 / 1024 / 2048. Above it the Q31 block-floating
+    ///    maximum grows with the exponent gap, with no closed form, and is
+    ///    pinned per size at 2x the measured 31.0 / 32.0 / 59.0 / 76.0 / 80.0
+    ///    LSB (index 0) at N = 4096 / 8192 / 16384 / 32768 / 65536: bounds
+    ///    62.01 / 63.99 / 118.01 / 152.0 / 160.02 LSB; Q31 fixed per size
+    ///    at 2x its 4.70 / 4.25 / 4.25 / 4.74 / 4.72 LSB; Q15 inside its
+    ///    N <= 2048 pins at every size. The F(x) + F(-x) rounding-asymmetry
+    ///    maxima likewise (Q31 block floating 121 / 126 / 137 / 141 / 286
+    ///    LSB, pinned at 2x). `SaturationFreeWorstCaseDoesNotWrap`, and
+    ///    host-only above 2048 `SaturationFreeWorstCaseIsPinnedPerLargeSize`,
+    ///    `RoundingBiasOnNegatedInputIsPinnedPerLargeSize`.
     ///  - Host identity. The fixed-point output is integer arithmetic over a
     ///    checksum-pinned table: for a fixed input it is one bit pattern on
     ///    every host, pinned per profile, policy, direction and N = 64 / 512

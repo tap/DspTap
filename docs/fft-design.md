@@ -366,7 +366,8 @@ then not bit-identical to the fixed one. A Q15 block always enters with
 h ≥ 2 (the widen's guard bits), so every Q15 case that reaches the constant
 is such a catch-up; its int32 history differs by the same few LSB32, which is
 2^-14 of a Q15 LSB and survives the narrow only where the exact value sits on
-a rounding tie. Measured over the battery's sweep (sizes 4 … 2048, levels 0
+a rounding tie. Measured over the battery's sweep (sizes 4 / 8 / 16 / 64 / 512 /
+1024 / 2048, levels 0
 to −8 dBFS in 0.2 dB steps, constant / tone / square exponentials at M/8 and
 M/16 / noise, both directions, plus two Q15 tie cases found by a dense
 amplitude sweep): Q31 differs on 140 of the 1162 inputs that reach the
@@ -429,11 +430,16 @@ across the kernel, and the bound is set by the input alone.
   v = −u to within an LSB) makes u − v = 2u, |u − v| = 2^30.5 exactly, at
   every k including k = 1 where |C_k| is largest; the battery drives it in
   both sign orders (`antisymmetric pairs` in `SaturationFreeWorstCaseDoesNotWrap`).
-- **Block floating point**: the rule keeps h ≥ growth + 1 before each stage,
-  so input components are < 2^(30 − growth), complex magnitudes
-  < 2^(30.5 − growth), outputs ≤ 2^30.5; the same half bit. For the post-pass
-  and the pre-pass (growth 1) that is h ≥ 2 after the shift: components in
-  [−2^29, 2^29), |a| < 2^29.5 = A, and the bullets above apply unchanged,
+- **Block floating point**: the rule shifts by s = growth + 1 − h (h the
+  block's headroom before the shift) whenever that is positive, so before
+  the shift every component lies in [−2^(31 − h), 2^(31 − h) − 1] and after
+  the round-half-up shift in [−2^(30 − growth), 2^(30 − growth)]: closed at
+  the top, because rounding can carry 2^(31 − h) − 1 up to the power of two
+  itself, which then reads one bit less headroom (2^30 − 1 has h = 1, shifts
+  by 1, and becomes 2^29, again h = 1). Complex magnitudes are
+  ≤ 2^(30.5 − growth), outputs ≤ 2^30.5; the same half bit. For the
+  post-pass and the pre-pass (growth 1) that is components in
+  [−2^29, 2^29], |a| ≤ 2^29.5 = A, and the bullets above apply unchanged,
   for both Q formats (the Q15 block is int32 Q2.29 by then, the same
   arithmetic). The one exception is the upper clamp (§2): when the block
   has caught up with the fixed schedule (e = cum_fixed before the pass) and
@@ -447,7 +453,8 @@ The worst case the battery drives is therefore the packed pair at full scale
 (x[2j] = x[2j+1] = ±full scale, so every complex input has both components
 at the rail), including the patterns whose sequence sits on the 45° twiddle
 bins, full-scale binary noise, in both directions and under both policies
-(`SaturationFreeWorstCaseDoesNotWrap`, sizes 4 … 2048). Measured, as the
+(`SaturationFreeWorstCaseDoesNotWrap`, sizes 4 / 8 / 16 / 64 / 512 / 1024 /
+2048). Measured, as the
 test prints it: the int32 kernel performs no saturating operation for any of
 them (a clamp or a wrap would show as an output sitting on a rail the golden
 model does not reach, and none does); the largest deviation from the golden
@@ -456,17 +463,35 @@ block floating), 4.250 LSB (Q31 fixed: the inverse of a full-scale constant,
 N = 2048, index 0) and 15.988 LSB (Q31 block floating: the inverse of
 full-scale binary noise, N = 1024, index 0), pinned at 1.0 / 1.5 / 8.5 / 32
 (unchanged, to the printed digit, by the post-pass re-derivation of
-2026-09-26 and by the antisymmetric-pairs pattern it added). The pins cover
-the battery's N = 4 … 2048. The same sweep run one size at a time beyond it
-(2026-09-26, x86-64 GCC 13.3.0, not committed as a test) keeps Q31 fixed
-inside its pin — 4.70 / 4.25 / 4.25 / 4.74 / 4.72 LSB at N = 4096 / 8192 /
-16384 / 32768 / 65536 — while the Q31 block-floating maximum grows with the
-gap between the constant and the returned exponent: 31.0 / 32.0 / 59.0 /
-76.0 / 80.0 LSB, always the inverse of full-scale binary noise at index 0
-(the DC-path bias of §5), so "15.99 LSB, pinned 32" is a statement about
-N ≤ 2048 only; F(x) + F(−x) likewise reaches 121 / 126 / 137 / 141 / 286
-LSB there against the 124 pin. No output sat on a rail the golden model
-does not reach at any of those sizes.
+2026-09-26 and by the antisymmetric-pairs pattern it added). Those pins
+cover the battery's sweep sizes, N = 4 / 8 / 16 / 64 / 512 / 1024 / 2048.
+Above them the same sweep runs one size at a time in two host-only tests
+(`SaturationFreeWorstCaseIsPinnedPerLargeSize`,
+`RoundingBiasOnNegatedInputIsPinnedPerLargeSize`; compiled out where
+`TAP_DSP_TEST_MAX_FFT_N` < 65536, i.e. on the QEMU legs; about 1 s for all
+four configurations on the x86-64 host), each size pinned at 2× its own
+measured maxima (2026-09-26, x86-64 Linux, GCC 13.3.0 -O3, glibc 2.39):
+
+| N | 4096 | 8192 | 16384 | 32768 | 65536 |
+|---|---|---|---|---|---|
+| Q31 fixed, max \|out − G/2^e\| (LSB) | 4.704 | 4.250 | 4.250 | 4.741 | 4.724 |
+| Q31 fixed, max F(x) + F(−x) (LSB) | 8 | 7 | 8 | 8 | 9 |
+| Q31 block floating, max \|out − G/2^e\| (LSB) | 31.004 | 31.992 | 59.003 | 75.997 | 80.009 |
+| Q31 block floating, max F(x) + F(−x) (LSB) | 121 | 126 | 137 | 141 | 286 |
+| Q31 block floating, pinned deviation bound (LSB) | 62.01 | 63.99 | 118.01 | 152.0 | 160.02 |
+
+The Q31 block-floating maximum grows with the gap between the constant and
+the returned exponent (e = 9 … 12 against 13 … 17), always the inverse of
+full-scale binary noise at index 0 (the DC-path bias of §5), and follows no
+closed form (8192 sits 0.008 LSB under the 32 pin, 16384 nearly doubles it,
+and F(x) + F(−x) doubles between 32768 and 65536), which is why it is a
+per-size pin and not a law; "15.99 LSB, pinned 32" is a statement about the
+sweep sizes only. The mean of F(x) + F(−x) stays at 0.45 – 0.67 LSB (Q31
+fixed) and 0.93 – 1.00 LSB (Q31 block floating), inside the N ≤ 2048 bias
+pins, and is pinned per size too. Both Q15 profiles stay inside their
+N ≤ 2048 pins at every size (0.500 / 0.501 LSB, F(x) + F(−x) ≤ 1 LSB) and
+are checked against them. No output sat on a rail the golden model does
+not reach at any of those sizes.
 The two Q31 maxima sit on the DC path, where the round-half-up biases add
 coherently (§5); they are larger than the noise-floor maxima, not "the same
 as on noise". The one place a saturating operation does fire is the Q15
@@ -496,21 +521,38 @@ it is ≤ 6 · 10^-9 relative, which on a full-scale Q31 output (2^31) is under
 measured Q31 error is 0.07–0.19 LSB rms (N = 2048 … 256), i.e. the twiddle
 term is below the rounding floor at every N in the battery.
 
-Two things can move a coefficient by one Q1.30 LSB between hosts: a libm
+Two things could move a coefficient by one Q1.30 LSB between hosts: a libm
 last-bit difference (glibc, newlib, UCRT, Apple), and fp-contraction of a
 generator expression (Decision D9: a compiler that fuses `a - b*c` into one
 rounding, which is the default on the macOS arm64 leg and on the Cortex-M55
-leg, whose FP64 lets g++ contract). Either can carry a double that lies
-within 2^-31 of a rounding boundary onto the other side. The generators
-therefore contain no contractible expression. The post-pass generator
-(`make_real_post_pass_table`) meets it by construction: its only doubles are
-the angle (2π/n, a power-of-two scaling of the double π, times the integer
-k) and half a libm `sin` or `cos` (a multiplication by the exact 0.5), and
-nothing is ever added to a product in double; the real part
-(1 − sin θ)/2 is formed on the integers as 2^29 − `make_coeff`(sin θ / 2),
-never as the double 0.5 − 0.5·sin θ, which is exactly the `a - b*c` shape
-an FMA-contracting compiler fuses. Like the kernel twiddles it evaluates
-libm only on the first octant (k ≤ N/8, sine set equal to cosine at N/8) and
+leg, whose FP64 lets g++ contract). Either matters only for a double that
+lies within its own error of a rounding boundary, and none lies that close.
+Measured in quad precision (`__float128` `sinq` / `cosq` of the double angle
+each generator forms, which is the same on every IEEE host; 2026-09-26,
+x86-64, GCC 13.3.0 with libquadmath), the libm-evaluated entry nearest a
+Q1.30 rounding boundary is 2.79e-5 LSB (2^-15.1) from it in the post-pass
+table over every n ≤ 65536 (n = 65536, k = 2915, the sine), and 4.68e-5 LSB
+(2^-14.4) in the kernel twiddles over every M ≤ 32768 (M = 32768, k = 767,
+the cosine); up to N = 2048 the minima are 2.6e-3 / 2.9e-3 LSB. Counted in
+each double's own ulp, the nearest entry is 812 ulp (post-pass) / 393 ulp
+(kernel) from its boundary. So every table is the same on any host whose
+`sin` and `cos` are within 2^8 ulp, and a fused `a - b*c`, which moves a
+result by under one ulp (at most 2^-24 LSB here), could not move an entry
+either; glibc's double path gives the rounding of the quad value at all
+49,121 evaluated entries. Host identity of the tables is therefore
+guaranteed for every size the profiles take (N ≤ 65536), and the pinned
+checksums confirm it rather than being what establishes it.
+
+The generators still contain no contractible expression, as D9 asks of all
+code here. The post-pass generator (`make_real_post_pass_table`) has no
+such expression by construction: its only doubles are the angle (2π/n, a
+power-of-two scaling of the double π, times the integer k) and half a libm
+`sin` or `cos` (a multiplication by the exact 0.5), and nothing is added to
+a product in double. The real part (1 − sin θ)/2 is formed on the integers
+as 2^29 − `make_coeff`(sin θ / 2), not as the double 0.5 − 0.5·sin θ (the
+`a - b*c` shape D9 names), which also makes the complement C_k real +
+C_(N/4−k) imaginary = 2^29 exact by construction. Like the kernel
+twiddles it evaluates libm only on the first octant (k ≤ N/8, sine set equal to cosine at N/8) and
 reaches k in (N/8, N/4) by swapping the quantized sine and cosine of
 N/4 − k. Verified three ways: the reference in `TwiddleTableIsWithinHalfLsb`
 (each entry within half an LSB of the double value, and the complement
@@ -552,8 +594,12 @@ bins of every pair: on the measured interior bins 1 … M − 1 all but N/4
 The coefficient's own quantization acts on u − v, whose variance is twice
 u's, so its signal-dependent term is twice the kernel rotation's: 8P
 relative to the product's rounding term, P the per-component signal
-variance at the pass in fractions of full scale (about 10^-3 on full-scale
-white noise under fixed scaling). Summed:
+variance at the pass in fractions of full scale: about 10^-4 on full-scale
+white noise under fixed scaling, which is the battery's `signal` column at
+0 dBFS (−37.92 / −40.60 / −46.93 dBFS per component for Q31 at N = 256 /
+512 / 2048, i.e. 1.6e-4 / 8.7e-5 / 2.0e-5; Q15 −31.90 / −34.58 / −40.91,
+6.5e-4 / 3.5e-4 / 8.1e-5), so 8P is at most 0.005 of the product's term
+and the variance-only sum leaves it out. Summed:
 
 | N | stages | variance-only prediction, LSB32 rms (the battery's `model` column) |
 |---|---|---|
@@ -667,9 +713,11 @@ Reading it against the model:
   and 15.99 LSB (block floating, N = 1024) in the saturation sweep, 6 / 62
   LSB in F(x) + F(−x), 41.5 reconstructed LSB in the BFP round trip (pinned
   83), with bins 1 – 3 and their mirrors carrying part of it through the
-  slowly rotating early twiddles. Beyond N = 2048 no committed test measures
-  it; the Stage 3c notebook (tap/DspTap#30) does, to N = 65536, and the
-  reading depends on the unit. Counted in the LSB of the constant exponent,
+  slowly rotating early twiddles. Above the sweep sizes the host-only
+  per-size tests of §3 pin its maxima at N = 4096 … 65536 (Q31 block
+  floating: 31.0 – 80.0 LSB deviation, 121 – 286 LSB F(x) + F(−x)); the
+  Stage 3c notebook (tap/DspTap#30) measures it from N = 256 to 65536, and
+  the reading depends on the unit. Counted in the LSB of the constant exponent,
   the coherent sum at index 0 / 1 of F(x) + F(−x) on the battery's −0 dBFS
   noise is about 4 LSB under both policies and flat in N: fixed scaling 4,
   4, 6, 5, 6, 6, 8, 7, 9 LSB and block floating point 3.5, 3.3, 3.1, 4.0,
@@ -1356,12 +1404,40 @@ toolchain and QEMU as the sizes above, the counting plugin built as
 
 The float scenarios read −0.01 … +0.00 % (the Stage 4 figures). Every
 fixed-point scenario is inside the ±3 % band, so nothing is re-recorded
-(D11: a re-record is for a move beyond the band). The +0.5 … +1.2 % is the
-post-pass loop's code generation — its roundings sit where the previous
-one's did, as the identical outputs show —
-about 1,200 instructions per 512-point transform on `m33`, some 10 per bin
-pair, most of it the int64 saturation sequences of the eight `add` / `sub`
-per pair and the register pressure around them. A variant that loads the
+(D11: a re-record is for a move beyond the band). On `m33` the increase is
++1,661 instructions per 512-point transform for Q15 (6,804,517 over the
+scenario's 4,096 transforms, 2,048 per direction) and +1,206 for Q31
+(4,940,790 over 4,096); `rfft_q31_2048` +4,173 (4,272,748 over 1,024). The
+old and new loops execute the same operations per bin pair (eight
+saturating `add` / `sub`, four `mul_coeff`, as the identical outputs
+require), so the operations are not the difference; the code GCC generates
+around them is. Attributed on `m33` from per-instruction execution counts
+(a per-PC counting QEMU plugin on the icount binaries built from `main` at
+`0eb09fa` and from this tree with the bench's `-O3` flags; local,
+2026-09-26, totals within 0.001 % of the ratchet's):
+
+- the post-pass and pre-pass loop bodies (the instructions `main()`
+  executes 260,096 = 2,048 × 127 times, the two loops together) grow from
+  351 to 375 instructions for Q31 and from 353 to 378 for Q15, +12 per bin
+  pair per transform, +6,242,304 / +6,502,400 over the scenario;
+- the disassembly diff of those bodies: the int64 clamps are the same
+  compare-and-subtract pairs, but the old loops branched on most of them
+  to an out-of-line clamp block that never runs (three instructions
+  executed), where the new loops if-convert eight more into an IT block of
+  two predicated moves (five executed): IT-predicated clamps 16 → 24,
+  branching clamps 27 → 20 (Q31; Q15 25 → 20), plus the register copies the
+  predicated form needs (plain `mov` 17 → 28);
+- the rest nets against it: one other loop in `main()` (where the bench
+  harness and the inlined transform sit together) is one instruction
+  shorter for Q31 (executed 1,048,576 times) and one longer for Q15
+  (524,288 times), and outside `main()` the table build at construction is
+  236,562 (Q31) / 236,528 (Q15) instructions cheaper (libm and the
+  soft-double helpers run on the first octant only); the kernel's radix-4
+  stages execute the same count to the instruction.
+
+`rotate` inlines at `-O3`; its out-of-line call at `-Os` (the test legs'
+MinSizeRel) is not in what the ratchet counts. A
+variant that loads the
 four inputs into locals first measured worse on `m33` (+1.24 % /
 +1.32 % / +0.94 %) and was not kept.
 
@@ -2046,5 +2122,5 @@ byte-identical.
 | tap/DspTap#31 (`bbfa48d` on `main`) | 2b | `double`, `float` | **no output bit**: `basic_real_fft` routes to `detail::split_radix_rdft` instead of the vendored C (bit-identical, both precisions); tables built in the constructor (no first-call cost); `forward(const float*, float*)` / `inverse(const float*, float*)` on the double engine `[[deprecated]]` (D5); fp-contraction policy stated (D9: no export) | MuTap fingerprint harness: 14 rows byte-identical, float rows included; `test_float32`, `test_g168`, `test_nn_suppressor` unchanged; DspTap icount baselines re-recorded to the port's counts (`bench/README.md`) |
 | tap/DspTap#32 (`8350f13` on `main`) | 2c | none numerically | **no output bit and no contract point**: the vendored C leaves the shipping tree (`fftsg.c` and `fftsg_float.c` to `tests/reference/ooura/`, D6); `tap::dsp` is a pure INTERFACE target and `tap_dsp_fft` exists only under `TAP_DSP_FFT_CMSIS`; the `extern "C"` `rdft`/`cdft`/`rdft_f`/`cdft_f` declarations leave `fft.h` (a consumer that took them from there no longer links — none did: MuTap and MuTap-Max were grepped); the capi's `dsptap_fft_backend()` returns `"split_radix"` where it returned `"ooura"`; the Q15/Q31 ratchet scenarios are seeded and the `.text` ceilings set | MuTap fingerprint harness (scratch build of MuTap `0f6a7f0` with this tree as the submodule, `-DMUTAP_WERROR=ON`): 14 rows byte-identical to the current pin `b08f6c6`; DspTap icount at +0.00 % on every float key |
 | tap/DspTap#35 | 4 | none numerically | **no output bit** (the Ooura gate and the class-vs-engine memcmp are green on every leg; fixed-point icount checksums identical): `basic_real_fft`'s second template argument is the engine for the floating profiles (default `default_real_fft_engine_t<Sample>`); `k_min_size` / `k_max_size` / `supports_size` / `k_is_shareable` added; construction requires `supports_size(size)` (`TAP_EXPECTS`, debug) — the one narrowing is the CMSIS engine's 32 … 4096, which was already the library's behaviour (undefined outside it); `basic_real_fft`, `basic_pvoc`, `basic_log_mel` and the aliases move into `inline namespace fft_split_radix | fft_cmsis | fft_vdsp` (mangled names change: every consumer image is rebuilt on its bump, and two images with different defaults no longer share symbols); backends move to `fft/backends/`; the Q31 engine's transforms are `const`. Fingerprint A/B of this tree vs `main` (`tools/fingerprint`, 12 lines, review 35b): identical at g++ default flags, at `-O3 -DNDEBUG`, at `-O3 -DNDEBUG -march=x86-64-v3`, and on the Cortex-M33 leg | none yet (MuTap's bump: fingerprints must be byte-identical; its own embedders adopt the tag in `tap::mu` — checklist above) |
-| tap/DspTap#39 | post-program | Q15, Q31 | **no output bit**: the real post-pass / pre-pass, its table and the DC/Nyquist handling re-derived from the literature under a clean-room procedure ("The fixed-point post-pass, re-derived", including what the hand-off left in the tree), bit-identical to the transcription it replaces (every pinned fingerprint and checksum unchanged, as any single-product two-rounding arrangement predicts); fingerprints added at N = 64 and 1024 (the radix-2 stage); the inverse's antisymmetric-pair worst case added to the saturation sweep; the Q31 block-floating maximum scoped to N ≤ 2048 (31–80 LSB measured at 4096 … 65536, stated, not pinned); Welch-model ratio pins re-derived; Q15/Q31 icount +0.49 … +1.15 %, inside the band | none numerically (no consumer on fixed point); provenance: MuTap's `THIRD_PARTY_NOTICES.md` ("what remains of the package is the derived port") is incomplete for any pin in #27 … #38 and exact again once it pins past #39 (Consumer follow-ups) |
+| tap/DspTap#39 | post-program | Q15, Q31 | **no output bit**: the real post-pass / pre-pass, its table and the DC/Nyquist handling re-derived from the literature under a clean-room procedure ("The fixed-point post-pass, re-derived", including what the hand-off left in the tree), bit-identical to the transcription it replaces (every pinned fingerprint and checksum unchanged, as any single-product two-rounding arrangement predicts); fingerprints added at N = 64 and 1024 (the radix-2 stage); the inverse's antisymmetric-pair worst case added to the saturation sweep; the Q31 deviation and F(x) + F(−x) maxima pinned per size at N = 4096 … 65536 by two host-only tests (Q31 block floating 31–80 / 121–286 LSB measured, pinned at 2×); Welch-model ratio pins re-derived; Q15/Q31 icount +0.49 … +1.15 %, inside the band | none numerically (no consumer on fixed point); provenance: MuTap's `THIRD_PARTY_NOTICES.md` ("what remains of the package is the derived port") is incomplete for any pin in #27 … #38 and exact again once it pins past #39 (Consumer follow-ups) |
 | tap/DspTap#36 | D6 | none numerically | **no output bit and no contract point**: the reference C (`tests/reference/ooura/`), its declaration header and the parity gate with its informational twin are deleted; `tests/test_fft_split_radix_fingerprint.cpp` pins the engine's output bits at every power of two from 4 to 65536 (one float row; double per C library build, glibc as an FMA/SSE2 dispatch pair), measured equal to the C's on every leg ("The bit-identity record after D6"); nothing under `include/` changes but comments; the test-only cache variable `TAP_DSP_PARITY_MAX_N` is renamed `TAP_DSP_TEST_MAX_FFT_N` | none needed (no shipping code changed; icount ratchet expected +0.00 % on every key) |
