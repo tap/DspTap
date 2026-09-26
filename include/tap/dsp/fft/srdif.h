@@ -275,13 +275,14 @@ namespace tap::dsp::detail {
             }
             const int e = v.e + 64 - p;
             // 2^e as a Sample, built from its bit pattern (normal range here).
-            Sample scale;
-            if constexpr (std::is_same_v<Sample, float>) {
-                scale = std::bit_cast<float>(static_cast<std::uint32_t>(127 + e) << 23);
-            }
-            else {
-                scale = std::bit_cast<double>(static_cast<std::uint64_t>(1023 + e) << 52);
-            }
+            const Sample scale = [e] {
+                if constexpr (std::is_same_v<Sample, float>) {
+                    return std::bit_cast<float>(static_cast<std::uint32_t>(127 + e) << 23);
+                }
+                else {
+                    return std::bit_cast<double>(static_cast<std::uint64_t>(1023 + e) << 52);
+                }
+            }();
             return static_cast<Sample>(keep) * scale;
         }
 
@@ -637,10 +638,14 @@ namespace tap::dsp::detail {
                 vi = t1i - t2r;
             }
             if constexpr (Kind == tw::one) {
+                (void)w1; // read by the general kind only
+                (void)w3;
                 x2 = {ur, ui};
                 x3 = {vr, vi};
             }
             else if constexpr (Kind == tw::eighth) {
+                (void)w1;
+                (void)w3;
                 const Sample h = k_sqrt_half;
                 if constexpr (Inverse) { // u (1 - i) h, v (-1 - i) h
                     x2 = {h * (ur + ui), h * (ui - ur)};
@@ -772,6 +777,7 @@ namespace tap::dsp::detail {
                 block<Inverse, L / 4>(a + L + L / 2, small);
             }
             else {
+                (void)small; // the leaves need no table
                 leaf<Inverse, L>(a);
             }
         }
@@ -780,7 +786,10 @@ namespace tap::dsp::detail {
         /// 2 ... 16 complex values), block by block.
         template <bool Inverse, std::size_t L>
         static void leaf_blocks(cv* v) noexcept {
-            if constexpr (L == 2) {
+            if constexpr (L == 1) {
+                (void)v; // a block of one value is its own transform
+            }
+            else if constexpr (L == 2) {
                 const cv x0 = v[0];
                 const cv x1 = v[1];
                 v[0]        = {x0.r + x1.r, x0.i + x1.i};
