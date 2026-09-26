@@ -340,7 +340,8 @@ Deviations from the text above, each recorded there:
   `fft.h`), the Scaling policy for the fixed-point ones, so no spelling in MuTap or the capi
   changes; `basic_real_fft<float | double, scaling::fixed>` (the pre-Stage-4 spelling; no
   in-tree code writes it since the #35 fix pass) resolves to the selected engine and is a
-  distinct type from the one-argument form, tolerated for one consumer cycle (D4).
+  distinct type from the one-argument form, tolerated for one consumer cycle (D4); expired at
+  tap/DspTap#__PR__ (Part 13, "D4 expiry and D5 executed").
 - **The fixed-point profiles carry the tag** (a partial specialization lives beside its
   primary) although their layout does not depend on the selection; cost stated in the design
   note (a harmless coalescing prevented; a link error instead of a silent merge).
@@ -1212,6 +1213,22 @@ opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
   fixed-point and engine tests, is renamed `TAP_DSP_TEST_MAX_FFT_N` (test-only; no consumer sets
   it). The CI job names `linux-ooura` / `windows-ooura` and the bench key `m55-ooura` keep their
   names (check names and baseline keys); comments say why.
+- **D4 expiry and D5 executed (tap/DspTap#__PR__, after the final audit of 2026-09-26, its
+  finding F2).** Both conditions were met: MuTap pins DspTap `0c5bf59` and MuTap-Max pins MuTap
+  `edf160e`, which pins DspTap `0db95b6`; both trees contain `bbfa48d` (the D5 deprecation,
+  #31) and `6f6f77f` (#35), checked with `git merge-base --is-ancestor`. Removed: the two
+  `[[deprecated]]` overloads `basic_real_fft<double>::forward/inverse(const float*, float*)`
+  with their `RealFftFloatIO` tests, and `detail::floating_engine_of`; the pre-Stage-4 spelling
+  `basic_real_fft<float | double, scaling::fixed>` is a `static_assert` naming the one-argument
+  form. Both are API breaks with no consumer affected: `git grep` of MuTap `origin/main`, of
+  MuTap `edf160e` (MuTap-Max's pin) and of MuTap-Max `origin/main` finds no `scaling::`,
+  `floating_engine_of` or float-buffer call on a double FFT, and MuTap at both SHAs builds
+  against this tree with `-DMUTAP_WERROR=ON`. `test_fft_rt.cpp` now asserts that the double
+  profile takes no float buffers, so its `noexcept` list is again the whole transform API. The
+  repo has no negative-compile harness; the `static_assert` was verified with a scratch
+  translation unit (the PR records the diagnostics). fft.h's self-contradiction about the capi
+  writing the legacy spelling (final audit F5) went with the paragraph: the capi never did
+  after the #35 fix pass.
 
 ---
 
@@ -1242,10 +1259,12 @@ wrappers when both are instantiated); no in-tree writer remains after the #35 fi
 capi's seam uses `detail::default_real_fft_policy_t`), and the resolution is tolerated for one
 consumer cycle — until MuTap and MuTap-Max pin a tree containing #35 — then
 `detail::floating_engine_of<Sample, scaling::fixed>` goes and the spelling becomes a
-`static_assert`. Alternative kept on record: no default, consumers name the engine.
+`static_assert`. **Expiry executed** (tap/DspTap#__PR__; Part 13, "D4 expiry and D5
+executed"). Alternative kept on record: no default, consumers name the engine.
 
 **D5. Float-I/O-on-double overloads: `[[deprecated]]` for one consumer cycle, then deleted.**
-Not gated on AmbiTap, which is not on disk and keeps its own wrapper per README.
+Not gated on AmbiTap, which is not on disk and keeps its own wrapper per README. **Executed**
+(tap/DspTap#__PR__; Part 13, "D4 expiry and D5 executed").
 
 **D6. `fftsg.c` moves to `tests/reference/ooura/` at 2c and is deleted after both MuTap and
 MuTap-Max pin a tree containing 2c. `readme.txt` stays at `third_party/ooura/readme.txt`

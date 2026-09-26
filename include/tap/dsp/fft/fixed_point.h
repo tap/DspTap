@@ -64,7 +64,9 @@ namespace tap::dsp {
 
     /// Scaling policies of the fixed-point real FFT profiles (Decision D3).
     /// A template parameter of basic_real_fft for std::int16_t / std::int32_t
-    /// samples; the floating profiles accept only scaling::fixed.
+    /// samples. The floating profiles take an engine in that position and no
+    /// scaling policy: basic_real_fft<float | double, scaling::fixed>, the
+    /// pre-Stage-4 spelling, is a static_assert since the D4 expiry (fft.h).
     namespace scaling {
         /// Shift-before-butterfly by the stage's growth every time: 2 bits per
         /// radix-4 stage, 1 per radix-2, 1 before the real post-pass, plus the

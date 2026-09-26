@@ -40,12 +40,13 @@
 // constructor (Part 4; routed at Stage 2b); this test is indifferent to where
 // it happens, only to what it allocates, so it keeps covering the first call.
 //
-// NOT covered, deliberately: the float-I/O convenience overloads on the
-// double engine (forward(const float*, float*) / inverse(const float*,
-// float*)). fft.h documents them as a setup-time path that allocates a
-// staging buffer per call (Part 1, item F7) and Decision D5 deprecates them
-// for one consumer cycle; guarding them would pin a behaviour the plan is
-// removing. They are also not noexcept, consistently with that.
+// The class has no public entry point outside this guard: the float-I/O
+// overloads on the double engine (forward(const float*, float*) /
+// inverse(const float*, float*)), which allocated a staging buffer per call
+// and were not noexcept (Part 1, item F7), were deprecated at Stage 2b and
+// removed at the Decision D5 expiry. That they are gone is asserted below
+// (`k_double_profile_takes_only_double_buffers`), so the noexcept list is the
+// whole transform API again.
 //
 // Copy and copy-assignment are pinned to produce bit-identical output to the
 // source in both directions and all six instantiations (for the fixed-point
@@ -253,6 +254,18 @@ namespace {
     static_assert(transforms_are_noexcept<tap::dsp::real_fft_q31>());
     static_assert(transforms_are_noexcept<tap::dsp::real_fft_q15_bfp>());
     static_assert(transforms_are_noexcept<tap::dsp::real_fft_q31_bfp>());
+    // Decision D5, executed: the double profile takes double buffers only. A
+    // float-buffer call no longer resolves (the removed overloads allocated
+    // per call and were not noexcept), so nothing on the class escapes the
+    // noexcept list above.
+    template <typename Fft, typename Buffer>
+    concept takes_buffers_of = requires(Fft& f, const Buffer* in, Buffer* out) {
+        f.forward(in, out);
+        f.inverse(in, out);
+    };
+    constexpr bool k_double_profile_takes_only_double_buffers =
+        takes_buffers_of<tap::dsp::real_fft, double> && !takes_buffers_of<tap::dsp::real_fft, float>;
+    static_assert(k_double_profile_takes_only_double_buffers);
     // The fixed-point profiles' constant exponent is a noexcept constexpr too.
     static_assert(noexcept(tap::dsp::real_fft_q15::fixed_scaling_exponent(4)));
     static_assert(noexcept(tap::dsp::real_fft_q31_bfp::fixed_scaling_exponent(4)));
