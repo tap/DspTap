@@ -29,10 +29,9 @@
 //     60(8), 1972 — rounding-noise accumulation across stages.
 //   A. V. Oppenheim and R. W. Schafer, Discrete-Time Signal Processing, 3rd
 //     ed., Sec. 9.7 — block floating point.
-//   The real post-pass formulas and the DC/Nyquist glue are transcribed from
-//   Ooura's rdft/rftfsub/rftbsub (fftsg.c; the same statements as the
-//   split-radix engine's in fft/split_radix.h) into the trait's arithmetic;
-//   the complex kernel is not Ooura's (Decision D2).
+//   <<CLEAN-ROOM: the literature the real post-pass / pre-pass and the
+//   DC/Nyquist handling are derived from>>; the complex kernel is DspTap's
+//   own (Decision D2).
 
 #pragma once
 
@@ -85,9 +84,8 @@ namespace tap::dsp {
         /// decimation-in-frequency kernel of length M = N/2 (radix-2 final
         /// stage when log2 M is odd) with outputs placed so the result is
         /// bit-reversed, the permutation from make_bit_reversal_table, then
-        /// Ooura's real post-pass (rftfsub) and DC/Nyquist glue transcribed
-        /// into the trait's operations. The inverse mirrors rdft's isgn < 0
-        /// path: the DC/Nyquist pre-glue, rftbsub, the conjugate kernel.
+        /// <<CLEAN-ROOM: the real post-pass and DC/Nyquist handling; the
+        /// inverse's pre-pass and the conjugate kernel>>.
         /// Every multiply is fft_arith<>::work::mul_coeff by a Q1.30 twiddle
         /// (one rounding per real product, two per complex product), every
         /// sum is the saturating add/sub, every scale is shr_round; the kernel
@@ -100,7 +98,7 @@ namespace tap::dsp {
         /// inverse_inplace result == data * 2^e and returns e. No 2/N is ever
         /// applied: the exponent carries the scale, and a round trip gives
         /// x == out * 2^(e_fwd + e_inv + 1 - log2 N) under both policies
-        /// (Ooura's unnormalized round trip has gain N/2).
+        /// (the golden model's unnormalized round trip has gain N/2).
         ///   - scaling::fixed: e == fixed_scaling_exponent(N)
         ///     == log2 N + fft_arith<Sample>::k_fixed_scaling_input_pre_shift
         ///     in both directions (Q15: log2 N, the forward output is exactly
@@ -519,63 +517,17 @@ namespace tap::dsp {
                 }
             }
 
-            /// Ooura's real post-pass and DC/Nyquist glue in the trait's
-            /// arithmetic (rdft / rftfsub forward, rdft isgn < 0 / rftbsub
-            /// inverse; fft/split_radix.h carries the same statements). The
-            /// block has already been shifted by this stage's shift. For each
-            /// bin k in [1, N/4) paired with N/2 - k (a[j..j+1] and
-            /// a[l..l+1], j = 2k, l = N - j), with (wkr, wki) from m_post:
-            ///   xr = a[j] - a[l];  xi = a[j+1] + a[l+1]
-            ///   forward: yr = wkr xr - wki xi;  yi = wkr xi + wki xr
-            ///   inverse: yr = wkr xr + wki xi;  yi = wkr xi - wki xr
-            ///   a[j] -= yr;  a[j+1] -= yi;  a[l] += yr;  a[l+1] -= yi
-            /// Bin N/4 (a[N/2], a[N/2+1]) is its own mirror and is untouched.
-            /// Glue: forward  a[0], a[1] = a[0] + a[1], a[0] - a[1]
-            ///       inverse  a[0], a[1] = (a[0] + a[1]) / 2, (a[0] - a[1]) / 2
-            /// (Ooura's a[1] = 0.5 (a[0] - a[1]); a[0] -= a[1], written with
-            /// one shr_round on each output instead of the second subtraction).
+            /// <<CLEAN-ROOM: the real post-pass (forward, after the kernel and the
+            /// permutation) and pre-pass (inverse, before the conjugate kernel),
+            /// including DC and Nyquist, derived from the literature (brief).>>
             template <bool Inverse>
-            void real_post_pass(wide* a) const noexcept {
-                const std::size_t m = m_n / 2;
-                const coeff*      c = m_post.data();
-                for (std::size_t j = 2; j < m; j += 2) {
-                    const std::size_t l   = m_n - j;
-                    const coeff       wkr = c[j];
-                    const coeff       wki = c[j + 1];
-                    const wide        xr  = work::sub(a[j], a[l]);
-                    const wide        xi  = work::add(a[j + 1], a[l + 1]);
-                    wide              yr;
-                    wide              yi;
-                    if constexpr (Inverse) {
-                        yr = work::add(work::mul_coeff(xr, wkr), work::mul_coeff(xi, wki));
-                        yi = work::sub(work::mul_coeff(xi, wkr), work::mul_coeff(xr, wki));
-                    }
-                    else {
-                        yr = work::sub(work::mul_coeff(xr, wkr), work::mul_coeff(xi, wki));
-                        yi = work::add(work::mul_coeff(xi, wkr), work::mul_coeff(xr, wki));
-                    }
-                    a[j]     = work::sub(a[j], yr);
-                    a[j + 1] = work::sub(a[j + 1], yi);
-                    a[l]     = work::add(a[l], yr);
-                    a[l + 1] = work::sub(a[l + 1], yi);
-                }
-                const wide a0 = a[0];
-                const wide a1 = a[1];
-                if constexpr (Inverse) {
-                    a[0] = work::shr_round(work::add(a0, a1), 1);
-                    a[1] = work::shr_round(work::sub(a0, a1), 1);
-                }
-                else {
-                    a[0] = work::add(a0, a1);
-                    a[1] = work::sub(a0, a1);
-                }
-            }
+            void real_post_pass(wide* a) const noexcept;
 
             static constexpr int log2_of(std::size_t n) noexcept { return std::bit_width(n) - 1; }
 
             std::size_t                m_n;
             std::vector<coeff>         m_twiddles; ///< W_M^k, M = N/2, interleaved (tables.h)
-            std::vector<coeff>         m_post;     ///< real post-pass (wkr, wki) per bin
+            std::vector<coeff>         m_post;     ///< <<CLEAN-ROOM: the post-pass coefficient table>>
             std::vector<std::uint32_t> m_bitrev;   ///< permutation of the M complex outputs
             std::vector<wide>          m_work;     ///< Q15 only: the widened block
         };

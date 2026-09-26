@@ -26,7 +26,7 @@
 //   - scaling::block_floating: 0 <= e <= that constant, data-dependent; the
 //     kernel shifts only when growth requires it.
 //   - round trip, both policies: x == out * 2^(e_fwd + e_inv + 1 - log2 n)
-//     up to rounding noise (Ooura's unnormalised inverse has gain N/2).
+//     up to rounding noise (the golden unnormalised inverse has gain N/2).
 //   - the int32 kernel performs no saturating operation for any input under
 //     either policy; the Q15 output narrowing clamps at the rail exactly when
 //     the true value is the rail (a full-scale Nyquist alternation lands on
@@ -1121,9 +1121,8 @@ namespace {
     //     (1 - 4^-s) q^2/12 (3/4 of q^2/12 for one bit, 15/16 for two).
     //   - Structure: a radix-4 DIF complex FFT of length M = N/2 (one stage
     //     per factor of 4, spans M, M/4, ..., down to 4; a radix-2 stage when
-    //     log2 M is odd), then Ooura's real post-pass pairing bins k and
-    //     M - k with one complex product per pair (bins 1 .. N/4 - 1 and
-    //     their mirrors: every interior bin but N/4). Under fixed scaling the
+    //     log2 M is odd), then <<CLEAN-ROOM: the real post-pass's structure
+    //     as the model sees it>>. Under fixed scaling the
     //     Q31 profile folds its one-bit input pre-shift into the first
     //     stage's shift (a single 3-bit rounding).
     //   - Per stage, per output component. Shift-before-butterfly: each of
@@ -1140,10 +1139,8 @@ namespace {
     //     LSB of Q1.30), uniform, adds 2 * P * 2^-62 / 3 on the rotated
     //     outputs, P being the signal variance per component entering the
     //     rotation.
-    //   - Post-pass: its one-bit shift injects v(1) (the two paired values'
-    //     roundings reach the output with weights |1 - w|^2 + |w|^2 = 1),
-    //     its rotation 2 q^2/12; it carries earlier noise and the signal with
-    //     gain 1 * 4^-shift.
+    //   - Post-pass: <<CLEAN-ROOM: what its shift and its products inject,
+    //     and the gain it carries earlier noise and the signal with>>.
     //   - Propagation: noise present after a stage reaches the output through
     //     each later stage u with power gain sum_gain_u * 4^-shift_u (a sum of
     //     sum_gain_u uncorrelated terms through unit-magnitude twiddles, then
@@ -1363,8 +1360,8 @@ namespace {
     }
 
     // |w_q - w| <= 0.5 LSB of Q1.30 on every host, for the kernel twiddles
-    // (W_M^k, M = N/2, interleaved cos/sin) and the real post-pass pairs
-    // (0.5 - 0.5 sin, 0.5 cos over N): each is cos/sin from libm rounded
+    // (W_M^k, M = N/2, interleaved cos/sin) and <<CLEAN-ROOM: the post-pass
+    // table>>: each is cos/sin from libm rounded
     // once by make_coeff (half away from zero), never a recurrence. The
     // reference is libm too, on the exact turn fraction; two double
     // evaluations of the same angle differ by ~1e-16, far inside the 2^-20
@@ -1401,20 +1398,7 @@ namespace {
                 ASSERT_EQ(table[2 * k + 1], -table[2 * (m - k) + 1]) << "sin symmetry m=" << m << " k=" << k;
             }
 
-            const auto post = tap::dsp::detail::make_real_post_pass_table(n);
-            ASSERT_EQ(post.size(), 2 * (n / 4)) << "n=" << n;
-            EXPECT_EQ(post[0], std::int32_t{1} << 29) << "n=" << n; // 0.5 - 0.5 sin 0
-            EXPECT_EQ(post[1], std::int32_t{1} << 29) << "n=" << n; // 0.5 cos 0
-            for (std::size_t k = 0; k < n / 4; ++k) {
-                const double turns = static_cast<double>(k) / static_cast<double>(n);
-                const double wkr   = (0.5 - 0.5 * std::sin(2.0 * std::numbers::pi * turns)) * one;
-                const double wki   = 0.5 * std::cos(2.0 * std::numbers::pi * turns) * one;
-                const double er    = std::fabs(static_cast<double>(post[2 * k]) - wkr);
-                const double ei    = std::fabs(static_cast<double>(post[2 * k + 1]) - wki);
-                worst              = std::max({worst, er, ei});
-                ASSERT_LE(er, slack) << "wkr n=" << n << " k=" << k;
-                ASSERT_LE(ei, slack) << "wki n=" << n << " k=" << k;
-            }
+            // <<CLEAN-ROOM: the post-pass table's accuracy and exact-entry checks>>
             if (n <= 2048) {
                 std::printf("[ measured ] tables n=%lu: max |w_q - w| = %.6f LSB\n", ul(n), worst);
             }

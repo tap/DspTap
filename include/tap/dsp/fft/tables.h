@@ -7,10 +7,9 @@
 // construction, as free functions returning std::vector so the test battery
 // can pin them independently of any transform: the bit-reversal permutation
 // of the complex kernel, the kernel's Q1.30 twiddles, and the Q1.30
-// coefficients of Ooura's real post-pass. Shared with nothing else by design
-// (audit Part 7): the floating profiles keep Ooura's table semantics for bit
-// identity with the vendored C, and these tables are what the fixed-point
-// contract is pinned against instead.
+// coefficients of the real post-pass. Shared with nothing else by design
+// (audit Part 7): the floating engine keeps its own tables, and these tables
+// are what the fixed-point contract is pinned against instead.
 //
 // Every coefficient is generated in double through std::cos / std::sin and
 // rounded ONCE by fft_arith<std::int32_t>::make_coeff (round half away from
@@ -23,8 +22,8 @@
 // fuses an a - b*c into one rounding, the default on Apple arm64 and on the
 // M55 leg), either of which can carry a double that lies within 2^-31 of a
 // rounding boundary onto the other side. The generators therefore contain no
-// contractible expression (the post-pass writes 0.5 * (1.0 - sin), a product
-// of a difference, never 0.5 - 0.5 * sin), and fixed-point transform outputs
+// contractible expression (<<CLEAN-ROOM: the post-pass generator's example>>),
+// and fixed-point transform outputs
 // are host-identical only if the table is: the battery pins each certified
 // N's table checksum (FNV-1a-64 over the int32 bit patterns, in index order)
 // so a libm difference is detected rather than silently absorbed
@@ -129,43 +128,9 @@ namespace tap::dsp::detail {
         return table;
     }
 
-    /// Q1.30 coefficients of the real post-pass (Ooura's rftfsub / rftbsub
-    /// formulas, fftsg.c; the same statements are in fft/split_radix.h),
-    /// for a real transform of length n.
-    ///
-    /// Ooura's makect stores 0.5*cos(2*pi*j/n) and reads the pair
-    ///   wkr = 0.5 - 0.5*sin(2*pi*k/n),   wki = 0.5*cos(2*pi*k/n)
-    /// for bin k; this table stores that pair directly so each value is one
-    /// rounding from its double. Layout: 2*(n/4) entries, interleaved; for
-    /// k in [0, n/4):
-    ///   table[2k]     = make_coeff(0.5 - 0.5*sin(2*pi*k/n))
-    ///   table[2k + 1] = make_coeff(0.5*cos(2*pi*k/n))
-    /// The post-pass runs k over [1, n/4) (bins 1 .. n/4 - 1 paired with their
-    /// mirrors n/2 - k); entry 0 is (0.5, 0.5) and unused, kept so that the
-    /// index is the bin number. |wkr + i*wki| = sqrt(0.5*(1 - sin)) <= 1/sqrt(2),
-    /// so the products never approach the coefficient's own range.
-    ///
-    /// wkr is computed as 0.5 * (1.0 - sin), the same double bit for bit as
-    /// 0.5 - 0.5 * sin under round-to-nearest (halving the singly rounded
-    /// 1 - sin is exact) but not an a - b*c pattern, so no -ffp-contract mode
-    /// can fuse it into a single rounding (file header, D9). The angle is
-    /// formed as for the twiddles, here over n <= 2^16, where its error
-    /// (< 2^-47 rad) is still five orders of magnitude below the quantum.
-    ///
-    /// @pre n is a power of two >= 4 (n == 4 yields the one unused entry).
-    inline std::vector<fft_arith<std::int32_t>::coeff> make_real_post_pass_table(std::size_t n) {
-        assert(n >= 4 && (n & (n - 1)) == 0);
-        using arith                       = fft_arith<std::int32_t>;
-        const auto                quarter = n / 4;
-        std::vector<arith::coeff> table(2 * quarter);
-        const double              step = 2.0 * std::numbers::pi / static_cast<double>(n);
-        for (std::size_t k = 0; k < quarter; ++k) {
-            const double angle = step * static_cast<double>(k);
-            table[2 * k]       = arith::make_coeff(0.5 * (1.0 - std::sin(angle)));
-            table[2 * k + 1]   = arith::make_coeff(0.5 * std::cos(angle));
-        }
-        return table;
-    }
+    /// <<CLEAN-ROOM: make_real_post_pass_table (or whatever the derived
+    /// post-pass needs), its layout, its accuracy statement, and its
+    /// no-contractible-expression note (file header, D9).>>
 
     /// FNV-1a-64 over a table's bit patterns in index order: the checksum the
     /// battery pins per certified N so a host libm difference in the table is

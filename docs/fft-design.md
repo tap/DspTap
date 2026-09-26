@@ -84,8 +84,8 @@ graph with a different operation order, and that Ooura's first stage
 (`cftf1st`) derives half its twiddles at run time as sums of two cosines up to
 2.0, which no fixed-point twiddle format holds. The fixed-point profiles are
 therefore their own radix-4 decimation-in-frequency complex kernel of length
-N/2 (radix-2 final stage for odd `log2 N`) plus Ooura's real post-pass
-formulas, so the packing, the `exp(+i)` convention and the DC / Nyquist slots
+N/2 (radix-2 final stage for odd `log2 N`) plus <<CLEAN-ROOM: the real
+post-pass>>, so the packing, the `exp(+i)` convention and the DC / Nyquist slots
 are identical. The design, summarized from audit Part 7:
 
 - **One kernel, int32 data, two I/O widths.** Q31 is native; Q15 widens on
@@ -160,10 +160,8 @@ behaviour was measured or reproduced):
   957–976, 1972.
 - A. V. Oppenheim and R. W. Schafer, *Discrete-Time Signal Processing*, 3rd
   ed., Sec. 9.7 (round-off in the FFT; block floating point).
-- The real post-pass formulas and the DC/Nyquist glue are transcribed from
-  Ooura's `rdft` / `rftfsub` / `rftbsub` (`fftsg.c`; the split-radix engine
-  in `fft/split_radix.h` carries the same statements); the complex kernel is
-  not Ooura's (D2).
+- <<CLEAN-ROOM: the literature the real post-pass / pre-pass is derived
+  from>>; the complex kernel is DspTap's own (D2).
 
 ### 1. Kernel structure
 
@@ -175,13 +173,10 @@ z[j] = x[2j] + i x[2j+1]. The forward transform is
    odd (N = 4, 16, 64, ...);
 2. the bit-reversal permutation of the M complex outputs
    (`make_bit_reversal_table`);
-3. Ooura's real post-pass (`rftfsub`) over bins 1 … N/4 − 1 paired with
-   their mirrors N/2 − k, bin N/4 untouched, and the DC/Nyquist glue
-   a[0], a[1] = a[0] + a[1], a[0] − a[1].
+3. <<CLEAN-ROOM: the real post-pass and the DC/Nyquist handling>>.
 
-The inverse mirrors `rdft`'s `isgn < 0` path: glue
-a[0], a[1] = (a[0] + a[1])/2, (a[0] − a[1])/2, `rftbsub`, then the conjugate
-kernel (same twiddle table, sine term subtracted), then the permutation.
+The inverse: <<CLEAN-ROOM: the pre-pass>>, then the conjugate kernel (same
+twiddle table, sine term subtracted), then the permutation.
 
 **Radix-4 DIF butterfly**, for inputs a0..a3 at q, q + L/4, q + L/2,
 q + 3L/4 of a sub-transform of length L, t0 = a0 + a2, t1 = a0 − a2,
@@ -211,10 +206,9 @@ kernel defines no arithmetic of its own, so the trait's battery
 **Tables** (`fft/tables.h`, all generated in double and rounded once by
 `make_coeff`): the kernel twiddles W_M^k for k in [0, M), interleaved
 (cos, sin) Q1.30 — the stage with span L reads index k·(M/L) for r = 1, 2, 3,
-which stays below 3M/4; the post-pass pairs (0.5 − 0.5 sin 2πk/N,
-0.5 cos 2πk/N) for k in [0, N/4) as Ooura's `makect` defines them (|w| ≤ 1/√2);
+which stays below 3M/4; <<CLEAN-ROOM: the post-pass table>>;
 the bit-reversal table over M. Memory per transform of size N: 4N bytes of
-twiddles, 2N bytes of post-pass coefficients, 2N bytes of permutation, and
+twiddles, <<CLEAN-ROOM: n>> bytes of post-pass coefficients, 2N bytes of permutation, and
 for Q15 a 4N-byte int32 work buffer.
 
 **Thread rule (a recorded deviation from the plan).** Audit Part 7 lists
@@ -251,7 +245,7 @@ so the forward exponent is
 
 and the forward output is exactly X / N (Q15) or X / 2N (Q31) in the
 sample's Q format. The inverse pre-pass takes the pre-shift and its own bit
-before the glue and `rftbsub`; the kernel then halves per stage as in the
+before the pre-pass; the kernel then halves per stage as in the
 forward; the inverse exponent is the same constant. With G the double golden
 model on the same input read as fractions, `G.forward == data · 2^e` and
 `G.inverse_inplace (unnormalized) == data · 2^e`. Since Ooura's unnormalized
@@ -314,12 +308,8 @@ across the kernel, and the bound is set by the input alone.
   scale F, |z| ≤ √2 F. Q15: F = 2^29 (Q2.29 after `widen`), B = 2^29.5, 1.5
   bits below the int32 rail. Q31: F = 2^31 would give B = 2^31.5; the 1-bit
   pre-shift makes F = 2^30 and B = 2^30.5, half a bit below the rail.
-- **Post-pass**: after its 1-bit shift the values are ≤ B/2; with
-  w = 0.5(1 − sin θ) + 0.5 i cos θ, |1 − w|² + |w|² = 1 and
-  |1 − w| + |w| = √(0.5(1+sin θ)) + √(0.5(1−sin θ)) ≤ √2, so
-  X = (1 − w) Z[k] + w conj Z[M−k] is ≤ √2 · B/2 ≤ B; the intermediate
-  x = Z[k] − conj Z[M−k] is ≤ B and |y| = |w||x| ≤ B/√2. The glue's sums
-  a[0] ± a[1] are ≤ 2 · B/2 = B per component.
+- **Post-pass**: <<CLEAN-ROOM: the bound on every intermediate and output of
+  the derived post-pass and its DC/Nyquist handling>>.
 - **Inverse**: the pre-pass takes pre-shift + 1 bits. Q31: input components
   ≤ 2^31 → ≤ 2^29 after two bits, |X| ≤ 2^29.5, |Z'| ≤ √2 · 2^29.5 = 2^30 =
   the kernel's B. Q15: one bit, |Z'| ≤ 2^29.
@@ -374,13 +364,8 @@ generator expression (Decision D9: a compiler that fuses `a - b*c` into one
 rounding, which is the default on the macOS arm64 leg and on the Cortex-M55
 leg, whose FP64 lets g++ contract). Either can carry a double that lies
 within 2^-31 of a rounding boundary onto the other side. The generators
-therefore contain no contractible expression: the post-pass coefficient is
-written `0.5 * (1.0 - sin)`, the same double as `0.5 - 0.5 * sin` under
-round-to-nearest (halving the singly rounded `1 - sin` is exact) but a
-product of a difference, which no `-ffp-contract` mode fuses; verified by
-inspecting the `-O2 -mfma` object code of both generators under g++ 13.3 and
-clang 18.1 (no fused multiply-add remains, where the original expression
-produced one under each). The battery pins each certified N's table checksum
+therefore contain no contractible expression (<<CLEAN-ROOM: how the
+post-pass generator meets this, and how it was verified>>). The battery pins each certified N's table checksum
 (`table_checksum`, FNV-1a-64 over the bit patterns; `TwiddleTableChecksumIsPinned`)
 so a remaining difference is detected, not absorbed, and on top of it the
 transforms' own output fingerprints (`OutputFingerprintIsPinned`: FNV-1a-64
@@ -401,9 +386,8 @@ component; a rotation injects 2/12 on each output component (two
 skips), on none of the last radix-4 stage (L = 4) or the radix-2 stage;
 noise injected before a stage propagates through each later radix-4 stage
 with power gain 1/4 (four inputs each shifted 2 bits: 4 · (1/4)²), through a
-radix-2 stage with 1/2, and through the post-pass with 1/4
-((|1 − w|² + |w|²)/4 after its 1-bit shift); the post-pass adds its own
-1-bit shift (3/48) and two rotations (2/12). Summed:
+radix-2 stage with 1/2, and through the post-pass with <<CLEAN-ROOM>>;
+the post-pass adds <<CLEAN-ROOM: its own injections>>. Summed:
 
 | N | stages | variance-only prediction, LSB32 rms (the battery's `model` column) |
 |---|---|---|
