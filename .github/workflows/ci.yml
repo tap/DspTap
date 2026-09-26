@@ -12,10 +12,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux/Windows: the split-radix engine for both precisions (double
-          # golden model and float32). The "-ooura" in the two job names
-          # predates the Stage 2b port and is kept so the check names stay
-          # stable; the C itself was retired at Decision D6.
+          # Linux/Windows: the srdif engine (fft/srdif.h) for both precisions
+          # (double golden model and float32). The "-ooura" in the two job
+          # names is historical (the vendored C the library started from) and
+          # is kept so the check names stay stable.
           - { os: ubuntu-latest,  name: linux-ooura }
           - { os: windows-latest, name: windows-ooura }
           # macOS: float32 defaults to the Apple vDSP backend, so this leg runs
@@ -35,37 +35,39 @@ jobs:
       - name: Test
         run: >
           ctest --test-dir build --build-config Release --output-on-failure
-          -E split_radix_fingerprint
+          -E srdif_fingerprint
 
-      # The split-radix fingerprints print every value before asserting; a
-      # passing ctest swallows that output, so they run verbosely as their own
-      # step, excluded from the battery step above (Part 13), and the log
-      # carries each host's values. The step runs even when the battery
-      # failed, so a mismatch still leaves every value in the log. On linux
-      # the run must match glibc's FMA/AVX2 row.
-      - name: Split-radix fingerprints (verbose)
+      # The srdif fingerprints print every value before asserting; a passing
+      # ctest swallows that output, so they run verbosely as their own step,
+      # excluded from the battery step above (Part 13), and the log carries
+      # each host's values. The step runs even when the battery failed, so a
+      # mismatch still leaves every value in the log. The engine's tables
+      # are integer arithmetic (no libm) and the target is built without
+      # fp-contraction, so every host must match the one pinned row, for
+      # both profiles.
+      - name: srdif fingerprints (verbose)
         if: ${{ !cancelled() }}
         shell: bash
         run: |
           set -o pipefail
-          ctest --test-dir build --build-config Release -R split_radix_fingerprint -V | tee fingerprints.log
-          if [ "$RUNNER_OS" = Linux ]; then
-            grep -q "matched row: x86-64 glibc (2.39), FMA/AVX2 dispatch" fingerprints.log
-          fi
+          ctest --test-dir build --build-config Release -R srdif_fingerprint -V | tee fingerprints.log
+          test "$(grep -c "matched row: every host" fingerprints.log)" = 2
 
-      # x86-64 glibc picks sin / cos / atan by CPU at run time and the two
-      # builds differ in the last bit (double N >= 8192): the tunable masks
-      # AVX2 and FMA so the SSE2 implementations run and the second glibc row
-      # is exercised every run, on the same binary.
-      - name: Split-radix fingerprints under glibc's SSE2 dispatch (linux)
+      # x86-64 glibc picks sin / cos by CPU at run time and its two builds
+      # differ in the last bit; the engine that preceded srdif took its
+      # tables from them and needed a row per dispatch. The tunable masks
+      # AVX2 and FMA so the SSE2 implementations run: the same binary must
+      # still match the one row, which is the evidence that no libm reaches
+      # the engine's output.
+      - name: srdif fingerprints under glibc's SSE2 dispatch (linux)
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         shell: bash
         env:
           GLIBC_TUNABLES: glibc.cpu.hwcaps=-AVX2,-FMA
         run: |
           set -o pipefail
-          ctest --test-dir build --build-config Release -R split_radix_fingerprint -V | tee fingerprints-sse2.log
-          grep -q "matched row: x86-64 glibc (2.39), SSE2 dispatch" fingerprints-sse2.log
+          ctest --test-dir build --build-config Release -R srdif_fingerprint -V | tee fingerprints-sse2.log
+          test "$(grep -c "matched row: every host" fingerprints-sse2.log)" = 2
 
   # Bare-metal Cortex-M legs (newlib + semihosting) run under qemu-system-arm:
   # the emulation-sized selection in tests/bare_metal_main.cpp, judged on the
@@ -74,7 +76,7 @@ jobs:
   # op a library call, the fixed-point profiles' home) and M4F (fpv4-sp-d16) —
   # the M33 (single-precision FPU, no MVE; Pico 2 / RP2350 class) and the M55
   # (MVE), the one leg where the CMSIS-DSP Helium FFT backend is ON and its
-  # parity suite runs against the split-radix engine. Ubuntu 24.04's
+  # parity suite runs against the srdif engine. Ubuntu 24.04's
   # qemu-system-arm (8.2) has mps2-an386, mps2-an505 and mps3-an547; the image
   # is pinned (not ubuntu-latest) so the toolchain under the recorded sizes
   # and the bench baselines does not move without a diff here — the
@@ -96,7 +98,7 @@ jobs:
           # cmsis: what the root CMakeLists.txt's MVE-F check must select with
           # no -DTAP_DSP_FFT_CMSIS on the command line (asserted after
           # configure, so a broken detection cannot quietly turn the M55 leg
-          # into a second split-radix leg, or an M4/M33 leg into a CMSIS one).
+          # into a second srdif leg, or an M4/M33 leg into a CMSIS one).
           - name: cortex-m4-softfp
             toolchain: cmake/arm-cortex-m4-mps2.cmake
             extra: -DTAP_DSP_M4_FPU=OFF

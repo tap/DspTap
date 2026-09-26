@@ -4,7 +4,7 @@
 // The typed analysis instruments (Stage 3c of docs/audit-fft-and-code-smells.md):
 // sine_analysis.h and multitone_analysis.h over any contiguous range of float /
 // double / Q15 / Q31 samples. Its own translation unit and CMake target, like
-// the split-radix fingerprints (the Ooura parity gate of Stage 2a before D6),
+// the srdif engine's output fingerprints (and the C parity gate of Stage 2a before D6),
 // so that it can carry -ffp-contract=off:
 // the pins below are same-binary bit-identity comparisons, and GCC's default
 // cross-statement contraction (-ffp-contract=fast) fuses multiply-adds by

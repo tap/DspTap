@@ -395,15 +395,14 @@ namespace {
         EXPECT_TRUE(fe::supports_geometry(log_mel_geometry{}));
 
         // The M55 rows: valid() geometries at 16 and 8192, which only the
-        // CMSIS float engine rejects; double is split-radix on every build.
+        // CMSIS float engine rejects; double is srdif on every build.
         // The double half is pinned at compile time, independent of
         // TypeParam: the QEMU legs' MAIN_FILTER skips log_mel_test/1.* (the
         // double instantiation) at run time, and the hosts never define
         // TAP_DSP_FFT_CMSIS, so without these the header's "double does not
         // reject" would run nowhere.
-        static_assert(
-            std::is_same_v<basic_log_mel<double>::fft_type::engine, tap::dsp::detail::split_radix_rdft<double>>,
-            "double log_mel runs the split-radix engine on every build, CMSIS included");
+        static_assert(std::is_same_v<basic_log_mel<double>::fft_type::engine, tap::dsp::detail::srdif_rdft<double>>,
+                      "double log_mel runs the srdif engine on every build, CMSIS included");
         static_assert(basic_log_mel<double>::fft_type::k_min_size == 4
                           && basic_log_mel<double>::fft_type::k_max_size == (size_t{1} << 30),
                       "so its size range is 4 … 2^30 and 16 and 8192 are accepted");

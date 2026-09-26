@@ -28,7 +28,7 @@
 
 #include "support/signals.h"
 #include "tap/dsp/fft.h"
-#include "tap/dsp/fft/split_radix.h"
+#include "tap/dsp/fft/srdif.h"
 
 namespace {
 
@@ -487,25 +487,23 @@ namespace {
     }
 
     // The float profile's noise floor as a MEASURED number (docs/fft-design.md,
-    // contract table, "Noise floor"): the same metric at N = 512 on the
-    // split-radix engine itself, which is basic_real_fft<float> wherever no
-    // backend define is active and is bit-identical to the vendored C's float
-    // build on every leg, so the same ENGINE is measured on every host,
-    // including the M55 / macOS backend legs where the class itself is CMSIS /
-    // vDSP. The same engine, not the same last bits: libm's cos/sin and the
-    // leg's fp-contraction (fft.h, D9) move them. Measured 2026-09-23 (x86-64
-    // Linux, GCC 13.3.0 and Clang 18.1.3 -O3, glibc 2.39, the engine as routed
-    // at Stage 2b; both compilers print the same value): 1.1236e-7, against
-    // the audit's Part 6 N2 probe value of 1.105e-7 (different material; the
-    // probe was never a committed test). The QEMU legs of tap/DspTap#31's CI
-    // (run 35847675386, newlib): 1.1236e-7 on the soft-float cortex-m4,
-    // 1.1650e-7 on the VFMA cortex-m4f / m33 / m55.
-    // Pinned at 2x: the float rounding sequence is fixed by the statements,
-    // and the VFMA legs and libm differences move the last bits, not the rms.
+    // contract table, "Noise floor"): the same metric at N = 512 on the srdif
+    // engine itself, which is basic_real_fft<float> wherever no backend
+    // define is active, so the same ENGINE is measured on every host,
+    // including the M55 / macOS backend legs where the class itself is CMSIS
+    // / vDSP. The same engine, not the same last bits: the leg's
+    // fp-contraction (fft.h, D9) moves them (the engine's tables are the same
+    // on every host). Measured 2026-09-26: 9.7312e-8 on x86-64 Linux (g++
+    // 13.3.0 -O3, no FMA) and on the soft-float cortex-m4 QEMU leg, 1.0459e-7
+    // on the VFMA legs cortex-m4f / m33 / m55 (arm-none-eabi-gcc 13.2.1,
+    // MinSizeRel). The pin was set on the engine srdif replaced, which
+    // measured 1.1236e-7 / 1.1650e-7 on the same hosts and legs, at 2x of
+    // that; it is kept: the float rounding sequence is fixed by the
+    // statements, and contraction moves the last bits, not the rms.
     constexpr double k_float_engine_tracks_double_512 = 2.25e-7;
 
     TEST(RealFftCrossPrecision, FloatEngineTracksDoubleAtN512) {
-        const double err = float_engine_error_vs_double<tap::dsp::detail::split_radix_rdft<float>>(512, 99);
+        const double err = float_engine_error_vs_double<tap::dsp::detail::srdif_rdft<float>>(512, 99);
         std::printf("[ measured ] FloatEngineTracksDoubleAtN512: relative 2-norm error %.4e (pin %.3e)\n", err,
                     k_float_engine_tracks_double_512);
         EXPECT_GT(k_float_engine_tracks_double_512, 0.0) << "unmeasured pin";

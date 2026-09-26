@@ -4,11 +4,10 @@
 // THE INDEPENDENT ORACLE for tap::dsp::basic_real_fft (Stage 2a of
 // docs/audit-fft-and-code-smells.md; Part 9 names this file).
 //
-// The Stage 2a parity gate proved the port IS Ooura, bit for bit, and since
-// D6 deleted the reference C, test_fft_split_radix_fingerprint.cpp pins the
-// C's output bits. Neither can prove Ooura is a Fourier transform: if the
-// reference C and the port shared a defect, both would be green. This file
-// answers that with two references that share nothing with fftsg.c:
+// test_fft_srdif_fingerprint.cpp pins the floating engine's output bits;
+// a pin cannot prove the pinned output is a Fourier transform (a defect
+// present when the pins were taken would be green). This file answers that
+// with two references that share nothing with any engine:
 //
 //   1. Closed-form vectors whose transforms are known exactly — an impulse
 //      (flat spectrum), DC (N in slot 0), the Nyquist alternation (N in slot
@@ -35,8 +34,9 @@
 // reference; the test names are distinct so the ctest listing carries each
 // promise once.
 //
-// The suite is typed over all four profiles: float and double (the Ooura
-// engines) and, since Stage 3b (Part 7), int16_t and int32_t, the Q15 and
+// The suite is typed over all four profiles: float and double (the srdif
+// engine, or the float backend the build selected) and, since Stage 3b
+// (Part 7), int16_t and int32_t, the Q15 and
 // Q31 fixed-point profiles under scaling::fixed, through `profile<Sample>`
 // below (scale as a function of N from the fixed exponent, the profile's own
 // tolerance derived from the arithmetic's rounding count, a full-scale
@@ -76,23 +76,30 @@ namespace {
     //     || y_hat - y ||_2  <=  t * eta / (1 - t * eta) * || y ||_2,
     //     eta = mu + gamma_4 (1 + mu),  gamma_4 ~ 4u,
     //
-    // where u is the unit roundoff (epsilon / 2). mu is NOT one rounding here:
-    // <<CLEAN-ROOM: how the engine forms its twiddles, and therefore what mu
-    // is (a small multiple of u)>>. With mu ~ 2-3u,
-    // eta ~ 6-7u and, for t * eta << 1, the 2-norm error is below about
-    // 7 * u * log2(N) * ||y||_2. The largest single-element error cannot exceed
+    // where u is the unit roundoff (epsilon / 2). mu is one rounding here, or
+    // a hair over: the srdif engine's twiddles (and its post-pass
+    // coefficients) are computed in 64-bit fixed point from the Taylor series
+    // and rounded once to the profile (fft/srdif.h, srdif_trig) — every float
+    // table entry is the correctly rounded value and every double entry is
+    // within 0.5 + 2^-7.3 ulp of the exact one, per component, and the
+    // eighth-turn and pi/8 constants are correctly rounded literals — so
+    // |w_hat - w| <= 1.02 u |w| and mu <= 1.02 u. With mu ~ u, eta ~ 5u and,
+    // for t * eta << 1, the 2-norm error is below about
+    // 5 * u * log2(N) * ||y||_2. The largest single-element error cannot exceed
     // the 2-norm, and ||y||_2 comes free with the exact answer. Casting the
     // closed-form input to Sample adds at most u * ||y||_2 (Parseval), and
-    // Ooura is split-radix rather than the theorem's radix-2, which changes the
-    // constant by a factor of order one. The bound is taken as
+    // the engine is split-radix rather than the theorem's radix-2, which
+    // changes the constant by a factor of order one. The bound is taken as
     //
     //     k_higham_constant * epsilon * log2(N) * ||y||_2,  k_higham_constant = 4
     //
-    // (epsilon = 2u, so 8u: the ~7u above plus the input cast), i.e. derived
-    // with slack, not fitted. Measured against it on x86-64 Linux (GCC 13, -O3,
-    // glibc, Ooura as the engine): the largest |error| / (epsilon * log2(N) *
-    // ||y||_2) over every test in this file is 0.25 for double and 0.17 for
-    // float, 16x and 23x inside the constant.
+    // (epsilon = 2u, so 8u: the ~5u above plus the input cast, with slack; the
+    // constant was set when the engine's twiddles carried 2-3u and is kept),
+    // i.e. derived, not fitted. Measured against it on x86-64 Linux (GCC 13.3,
+    // -O3, the srdif engine, 2026-09-26): the largest |error| / (epsilon *
+    // log2(N) * ||y||_2) over every test in this file is 0.25 for double and
+    // 0.155 for float, 16x and 26x inside the constant (the engine it
+    // replaced measured 0.25 and 0.17).
     //
     // What the bound cannot see. A 2-norm used per element is loose by up to
     // sqrt(N): at float, N = 65536, DC input, the tolerance is ~0.5 on a
@@ -131,7 +138,7 @@ namespace {
 
     // Size range a profile's engine accepts, read from the class: since Stage
     // 4 every engine states k_min_size / k_max_size as contract numbers and
-    // basic_real_fft re-exports them (split-radix 4 … 2^30; CMSIS-DSP 32 …
+    // basic_real_fft re-exports them (srdif 4 … 2^30; CMSIS-DSP 32 …
     // 4096 on the M55 leg, where the constructor now checks
     // arm_rfft_fast_init_f32's status instead of ignoring it; vDSP 4 … 2^20;
     // fixed point 4 … 65536). The sweeps here are capped at 2^20 on top of
@@ -409,7 +416,7 @@ namespace {
     }
 
     // ------------------------------------------------------------------------
-    // The compensated DFT, in Ooura's packing and sign convention (fft.h):
+    // The compensated DFT, in the library's packing and sign convention (fft.h):
     //   forward: a[0] = Re X[0], a[1] = Re X[N/2], a[2k] = Re X[k], a[2k+1] = Im X[k],
     //            X[k] = sum_j x[j] * exp(+2*pi*i*j*k/N)
     //   inverse (unnormalized, gain N/2 on a round trip):
@@ -812,16 +819,19 @@ namespace {
     // uniform noise at N = 256, the largest size the oracle covers. The
     // Higham bound above is a correctness envelope (4 eps log2 N, i.e. 7.1e-15
     // here); this is the number the engine actually lands at. Measured
-    // 2026-09-23 (x86-64 Linux, GCC 13.3.0 and Clang 18.1.3 -O3, glibc 2.39,
-    // the split-radix engine as routed at Stage 2b; both compilers print the
-    // same value): 1.8455e-16; the QEMU legs of tap/DspTap#31's CI (run
-    // 35847675386, newlib) print 1.8928e-16 on cortex-m4-softfp / m4f / m33
-    // and 1.6643e-16 on cortex-m55. Pinned at 4x,
-    // not the battery's usual 2x: the last bits of a double transform depend
-    // on libm's cos/sin (glibc, newlib, UCRT, Apple differ) and on the leg's
-    // fp-contraction (fft.h, D9), and an rms over 256 values is the wrong
-    // place to make that spread a failure; a wrong operation order would land
-    // orders of magnitude away, not 2x.
+    // 2026-09-26 on the srdif engine: 1.6043e-16 on x86-64 Linux (g++ 13.3.0
+    // -O3); 1.6972e-16 on the QEMU legs cortex-m4-softfp / m4f / m33 and
+    // 1.4856e-16 on cortex-m55 (arm-none-eabi-gcc 13.2.1, MinSizeRel; double
+    // is soft-float on the M4 and M33 legs and hardware with fused
+    // multiply-add on the M55). The engine it replaced measured 1.8455e-16
+    // on x86-64 and 1.6643 – 1.8928e-16 on the legs, and set the pin at 4x
+    // of that rather than the battery's usual 2x: its tables came from libm,
+    // whose last bits differ between glibc, newlib, UCRT and Apple, on top of
+    // the leg's fp-contraction (fft.h, D9). The srdif engine's tables are
+    // host-independent, but contraction still moves last bits, an rms over
+    // 256 values is the wrong place to make that spread a failure, and a
+    // wrong operation order would land orders of magnitude away, not 2x; so
+    // the pin is kept.
     // ------------------------------------------------------------------------
     constexpr double k_double_floor_vs_dft_256 = 7.4e-16;
 

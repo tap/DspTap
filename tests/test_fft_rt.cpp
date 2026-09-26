@@ -22,10 +22,10 @@
 // WHAT THE GUARD SEES AND WHAT IT DOES NOT. It counts C++ allocation
 // functions only. An engine that allocates through malloc/calloc directly, or
 // inside a vendor library (Apple's vDSP on the macOS leg, CMSIS on the M55),
-// is invisible to it. For the split-radix engine (the double profile, and
-// float without a backend, since Stage 2b) the claim is complete: the
-// engine's tables are two std::vectors sized in the constructor, and nothing
-// in a transform touches an allocator. For the backends the guard
+// is invisible to it. For the srdif engine (the double profile, and float
+// without a backend) the claim is complete: the engine's tables are four
+// std::vectors built in the constructor, and nothing in a transform touches
+// an allocator. For the backends the guard
 // covers the wrapper's own code and nothing more; a malloc interposer
 // (glibc's __libc_malloc, or DYLD_INTERPOSE) is the tool for the vendor
 // layer and is out of scope here. The self-test CountsAVectorAllocation
@@ -33,8 +33,8 @@
 // that test fails first.
 //
 // The FIRST call after construction is covered as well as a steady-state one:
-// the vendored C built its trig and bit-reversal tables lazily on the first
-// transform (Part 1, item F6), and that initialization had to be
+// the vendored C of the early stages built its trig and bit-reversal tables
+// lazily on the first transform (Part 1, item F6), and that initialization had to be
 // allocation-free too, because the first transform a consumer runs is very
 // often on the audio thread already. The engine builds its tables in the
 // constructor (Part 4; routed at Stage 2b); this test is indifferent to where
@@ -79,7 +79,7 @@
 
 #include "support/signals.h"
 #include "tap/dsp/fft.h"
-#include "tap/dsp/fft/split_radix.h"
+#include "tap/dsp/fft/srdif.h"
 
 // ----------------------------------------------------------------------------
 // Counting replacements for the replaceable global allocation functions
@@ -272,7 +272,7 @@ namespace {
 
     // ------------------------------------------------------------------------
     // k_is_shareable, per instantiation, as the header states it (Stage 4):
-    // the split-radix engine and Q31 true, the two scratch-carrying
+    // the srdif engine and Q31 true, the two scratch-carrying
     // accelerated engines and Q15 false. The float default's value follows
     // the engine the build selected, so it is derived, not spelled.
     // ------------------------------------------------------------------------
@@ -283,7 +283,7 @@ namespace {
             return true;
         }
         else if constexpr (std::is_same_v<sample, float>) {
-            return std::is_same_v<typename Fft::engine, tap::dsp::detail::split_radix_rdft<float>>;
+            return std::is_same_v<typename Fft::engine, tap::dsp::detail::srdif_rdft<float>>;
         }
         else {
             return std::is_same_v<sample, std::int32_t>; // Q31 true, Q15 false

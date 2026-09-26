@@ -6,27 +6,25 @@
 // caller and its engine — no scale, no copy that could round, no stale table
 // — byte for byte, forward and inverse. Pinned for:
 //
-//   - basic_real_fft<double>, whose engine is detail::split_radix_rdft<double>
-//     on every build;
-//   - basic_real_fft<float, detail::split_radix_rdft<float>>, the split-radix
-//     engine NAMED explicitly (Stage 4), on every build — including the M55
-//     and macOS legs, where the float DEFAULT is CMSIS / vDSP and this
+//   - basic_real_fft<double>, whose engine is detail::srdif_rdft<double> on
+//     every build;
+//   - basic_real_fft<float, detail::srdif_rdft<float>>, the srdif engine
+//     NAMED explicitly (Stage 4), on every build — including the M55 and
+//     macOS legs, where the float DEFAULT is CMSIS / vDSP and this
 //     instantiation sits beside it in the same binary;
 //   - basic_real_fft<float> (real_fft32), against whatever engine the build
-//     selected as the default: where that is the split-radix engine the
-//     check is the same memcmp; where it is an accelerated engine, the
-//     class is pinned to that engine's own output byte for byte (the
-//     engine's fidelity to the split-radix contract is test_fft_backend.cpp's
-//     job, at float epsilon).
+//     selected as the default: where that is the srdif engine the check is
+//     the same memcmp; where it is an accelerated engine, the class is
+//     pinned to that engine's own output byte for byte (the engine's
+//     fidelity to the srdif contract is test_fft_backend.cpp's job, at float
+//     epsilon).
 //
-// Why this is a test and not a reading of fft.h. The bit-identity gate (the
-// Stage 2a parity TU until D6 deleted the C; since then the pinned
-// fingerprints of tests/test_fft_split_radix_fingerprint.cpp) proves the
-// ENGINE is the vendored C; it deliberately does not go through
-// basic_real_fft. This file closes the remaining gap. Together the two files
-// say what the Stage 2b PR claims:
-// every consumer's output through basic_real_fft is the C's, bit for bit,
-// on every profile that routes to the split-radix engine.
+// Why this is a test and not a reading of fft.h. The engine's output bits
+// are pinned by tests/test_fft_srdif_fingerprint.cpp, which deliberately
+// calls the engine directly and does not go through basic_real_fft. This
+// file closes the remaining gap: together the two files say that every
+// consumer's output through basic_real_fft is the pinned engine's, bit for
+// bit, on every profile that routes to the srdif engine.
 //
 // memcmp, not EXPECT_EQ: == calls +0.0 and -0.0 equal and any NaN unequal to
 // itself; the claim is about bits. Both sides receive identical input bits,
@@ -43,17 +41,21 @@
 
 #include "support/signals.h"
 #include "tap/dsp/fft.h"
-#include "tap/dsp/fft/split_radix.h"
+#include "tap/dsp/fft/srdif.h"
 
 namespace {
 
     // Sizes small enough for the QEMU legs (Part 10) and wide enough to cross
-    // every code path the engine dispatches on (<<CLEAN-ROOM: name them for
-    // the new engine>>), the
-    // certified geometries 512 and 2048, and 4096 (the largest the emulated
-    // legs run). An engine whose range excludes a size (CMSIS: 32 … 4096)
-    // is checked at the sizes it supports.
-    constexpr std::size_t k_sizes[] = {4, 8, 64, 512, 2048, 4096};
+    // every code path the engine dispatches on (fft/srdif.h, "Structure"):
+    // the kernel of M = N/2 complex values as the register leaves alone
+    // (M = 2, 4, 8, 16: N = 4, 8, 16, 32), the compile-time blocks (M = 32,
+    // 64: N = 64, 128) and the run-time fused pass above them (M >= 128:
+    // N = 256 ... 4096, each fused pass recursing down to the compile-time
+    // blocks), and the post-pass's single-pair (N = 8) and paired-loop
+    // (N >= 16) forms. The certified geometries 512 and 2048 and 4096 (the
+    // largest the emulated legs run) are among them. An engine whose range
+    // excludes a size (CMSIS: 32 … 4096) is checked at the sizes it supports.
+    constexpr std::size_t k_sizes[] = {4, 8, 16, 32, 64, 128, 256, 512, 2048, 4096};
 
     template <typename Sample>
     std::vector<std::vector<Sample>> materials(std::size_t n) {
@@ -99,30 +101,30 @@ namespace {
         EXPECT_GE(checked, 3u) << "the engine's range must admit the certified geometries at least";
     }
 
-    TEST(fft_routing, DoubleIsTheSplitRadixEngineByteForByte) {
-        static_assert(std::is_same_v<tap::dsp::real_fft::engine, tap::dsp::detail::split_radix_rdft<double>>,
-                      "double routes to the split-radix engine on every build");
-        expect_routed_to_the_engine<double, tap::dsp::detail::split_radix_rdft<double>>();
+    TEST(fft_routing, DoubleIsTheSrdifEngineByteForByte) {
+        static_assert(std::is_same_v<tap::dsp::real_fft::engine, tap::dsp::detail::srdif_rdft<double>>,
+                      "double routes to the srdif engine on every build");
+        expect_routed_to_the_engine<double, tap::dsp::detail::srdif_rdft<double>>();
     }
 
-    // On every build, the M55 and macOS legs included: the split-radix
-    // engine named explicitly is the engine, byte for byte.
-    TEST(fft_routing, FloatNamedSplitRadixIsTheEngineByteForByte) {
-        expect_routed_to_the_engine<float, tap::dsp::detail::split_radix_rdft<float>>();
+    // On every build, the M55 and macOS legs included: the srdif engine
+    // named explicitly is the engine, byte for byte.
+    TEST(fft_routing, FloatNamedSrdifIsTheEngineByteForByte) {
+        expect_routed_to_the_engine<float, tap::dsp::detail::srdif_rdft<float>>();
     }
 
-    // The float default: the split-radix engine where no accelerated engine
-    // was selected (the Stage 2b claim, unchanged), otherwise the selected
-    // engine's own output — and in either case the class adds nothing.
+    // The float default: the srdif engine where no accelerated engine was
+    // selected, otherwise the selected engine's own output — and in either
+    // case the class adds nothing.
     TEST(fft_routing, FloatDefaultIsTheSelectedEngineByteForByte) {
         using selected = tap::dsp::default_real_fft_engine_t<float>;
         static_assert(std::is_same_v<tap::dsp::real_fft32::engine, selected>);
 #if defined(TAP_DSP_FFT_CMSIS) || defined(TAP_DSP_FFT_ACCELERATE)
-        static_assert(!std::is_same_v<selected, tap::dsp::detail::split_radix_rdft<float>>,
-                      "a backend define is active, so the float default must not be the split-radix engine");
+        static_assert(!std::is_same_v<selected, tap::dsp::detail::srdif_rdft<float>>,
+                      "a backend define is active, so the float default must not be the srdif engine");
 #else
-        static_assert(std::is_same_v<selected, tap::dsp::detail::split_radix_rdft<float>>,
-                      "no backend define is active, so the float default is the split-radix engine");
+        static_assert(std::is_same_v<selected, tap::dsp::detail::srdif_rdft<float>>,
+                      "no backend define is active, so the float default is the srdif engine");
 #endif
         expect_routed_to_the_engine<float, selected>();
     }

@@ -5,7 +5,7 @@
 // 35a review, whose experiment this reproduces): two loadable modules built
 // from ONE translation unit (tests/abi/abi_tag_image.cpp) with different
 // float-default engines and therefore different tags — image A the
-// configured build (fft_split_radix on linux, fft_vdsp on macOS), image B a
+// configured build (fft_srdif on linux, fft_vdsp on macOS), image B a
 // stub "CMSIS" engine with a different layout (fft_cmsis) — are dlopen'ed
 // into this one process with RTLD_GLOBAL, the loader-visibility mode in
 // which an ELF image's weak, default-visibility definitions are candidates
@@ -125,7 +125,7 @@ namespace {
                 << i->name;
         }
         // The shipping embedders, run in both images with both loaded. On
-        // linux both images are the split-radix arithmetic underneath (the
+        // linux both images are the srdif arithmetic underneath (the
         // stub wraps it), so the checksums are bit-identical; on the macOS
         // leg image A is vDSP and the two differ by the engines' float
         // rounding, so the comparison there is an order-of-magnitude
