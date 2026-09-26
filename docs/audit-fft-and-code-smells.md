@@ -1212,7 +1212,7 @@ opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
   fixed-point and engine tests, is renamed `TAP_DSP_TEST_MAX_FFT_N` (test-only; no consumer sets
   it). The CI job names `linux-ooura` / `windows-ooura` and the bench key `m55-ooura` keep their
   names (check names and baseline keys); comments say why.
-- **Final audit (2026-09-26), contract safety: SYNTHESIS A1–A4. Landed (#PR_A).** A1: the
+- **Final audit (2026-09-26), contract safety: SYNTHESIS A1–A4. Landed (#41).** A1: the
   CMSIS backend's default is ON only where the compiler targets floating-point Helium (a
   compile check on `__ARM_FEATURE_MVE & 2`), not for every Generic+arm target; the M4/M33
   toolchain pins are gone and CI asserts the detected value per leg. A2: DspTap's own
