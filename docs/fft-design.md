@@ -1541,6 +1541,59 @@ in favour of the numeric definition in the Stage 5 view. The engine is named
 for what it is (`detail::split_radix_rdft`, D7), not for its author;
 attribution is carried by the banner and the notices, not the identifier.
 
+### The fixed-point post-pass, re-derived (tap/DspTap#39)
+
+From Stage 3b (#27) until #39 the fixed-point engine's real post-pass, the
+inverse's pre-pass, their coefficient table and the DC/Nyquist handling
+were Ooura's `rftfsub` / `rftbsub` / `makect` formulas transcribed into
+`fft_arith`'s operations, and `fixed_point.h` said so while its banner read
+`SPDX: MIT` and `NOTICE.md` named only the port as a derivative (final
+audit, 2026-09-26). The maintainer chose to re-derive the pass from the
+literature rather than extend the `LicenseRef-Ooura` marking. The
+procedure, as #39's history records it:
+
+1. **Hand-off.** The PR's first commit removes the transcribed code and
+   every passage in the code, the tests and the fixed-point design record
+   that stated its formulas, leaving 20 `<<CLEAN-ROOM>>` markers (the tree
+   does not build there). It was written by the party that had read the
+   package.
+2. **Brief.** The implementer — a separate agent — received the half-length
+   method as Cooley, Lewis & Welch (1970) and Sorensen et al. (1987) state
+   it, rewritten in DspTap's convention (E/O decomposition, the (k, M − k)
+   pair, DC/Nyquist, bin N/4, the inverse), the numeric contract (packing,
+   exponents, the one-bit growth budget, saturation freedom, the floors to
+   hold), and a list it could not access: `fft/split_radix.h`;
+   `third_party/ooura/**` and any `fftsg*.c` / `fft4g*.c`, in the tree or in
+   history; the hand-off diff and the history of the four affected files;
+   this note's port and provenance sections, the audit doc and `NOTICE.md`;
+   and every other FFT library's source, the vendored CMSIS-DSP included.
+3. **Access statement** (the implementer's report): none of the listed
+   material was viewed. Tree-wide greps for the markers and for pin values
+   searched the listed files' contents and surfaced no content from them,
+   only the audit doc's file name, which it filtered out; one grep of
+   `README.md` printed one line of its Provenance section, about when Stage
+   3b landed; heading lists were read to find the forbidden sections'
+   boundaries. It also noted that, as a model, it may have met widely
+   published real-FFT code in training.
+4. **Result.** The implementer's arrangement: with u = Z[k] and
+   v = conj Z[M − k] after the pass's one-bit shift, G = C_k (u − v) with
+   C_k = (1 + i W_N^k)/2, then Z[k] ← u − G and Z[M − k] ← Z[M − k] + conj G
+   (the inverse the same statements with conj C_k); two `mul_coeff`
+   roundings per output component, against 2.75 units with a +0.25 LSB bias
+   and 4 units for the arrangements it rejected. That is the arithmetic the
+   transcription had, and with the coefficient rounded once from its double
+   the output is **bit-identical**: every output fingerprint and table
+   checksum pinned before #39 reproduced unchanged, on the host and on all
+   four newlib legs. The code, its structure (DC/Nyquist before the loop,
+   the kernel's `rotate<Inverse>`), the table generator (libm on the first
+   octant only, the real part as an exact integer complement) and the
+   derivation in the docstrings were written independently; the arithmetic
+   is the published method's, and the convergence is what one would expect
+   of the fewest-roundings arrangement under a fixed growth budget.
+
+The maintainer's judgement (`NOTICE.md`): the fixed-point engine is DspTap's
+own and MIT. Not legal advice.
+
 ### Consumer follow-ups
 
 Ride the pin bumps; none is DspTap's to make. Line numbers below were read
@@ -1942,4 +1995,5 @@ byte-identical.
 | tap/DspTap#31 (`bbfa48d` on `main`) | 2b | `double`, `float` | **no output bit**: `basic_real_fft` routes to `detail::split_radix_rdft` instead of the vendored C (bit-identical, both precisions); tables built in the constructor (no first-call cost); `forward(const float*, float*)` / `inverse(const float*, float*)` on the double engine `[[deprecated]]` (D5); fp-contraction policy stated (D9: no export) | MuTap fingerprint harness: 14 rows byte-identical, float rows included; `test_float32`, `test_g168`, `test_nn_suppressor` unchanged; DspTap icount baselines re-recorded to the port's counts (`bench/README.md`) |
 | tap/DspTap#32 (`8350f13` on `main`) | 2c | none numerically | **no output bit and no contract point**: the vendored C leaves the shipping tree (`fftsg.c` and `fftsg_float.c` to `tests/reference/ooura/`, D6); `tap::dsp` is a pure INTERFACE target and `tap_dsp_fft` exists only under `TAP_DSP_FFT_CMSIS`; the `extern "C"` `rdft`/`cdft`/`rdft_f`/`cdft_f` declarations leave `fft.h` (a consumer that took them from there no longer links — none did: MuTap and MuTap-Max were grepped); the capi's `dsptap_fft_backend()` returns `"split_radix"` where it returned `"ooura"`; the Q15/Q31 ratchet scenarios are seeded and the `.text` ceilings set | MuTap fingerprint harness (scratch build of MuTap `0f6a7f0` with this tree as the submodule, `-DMUTAP_WERROR=ON`): 14 rows byte-identical to the current pin `b08f6c6`; DspTap icount at +0.00 % on every float key |
 | tap/DspTap#35 | 4 | none numerically | **no output bit** (the Ooura gate and the class-vs-engine memcmp are green on every leg; fixed-point icount checksums identical): `basic_real_fft`'s second template argument is the engine for the floating profiles (default `default_real_fft_engine_t<Sample>`); `k_min_size` / `k_max_size` / `supports_size` / `k_is_shareable` added; construction requires `supports_size(size)` (`TAP_EXPECTS`, debug) — the one narrowing is the CMSIS engine's 32 … 4096, which was already the library's behaviour (undefined outside it); `basic_real_fft`, `basic_pvoc`, `basic_log_mel` and the aliases move into `inline namespace fft_split_radix | fft_cmsis | fft_vdsp` (mangled names change: every consumer image is rebuilt on its bump, and two images with different defaults no longer share symbols); backends move to `fft/backends/`; the Q31 engine's transforms are `const`. Fingerprint A/B of this tree vs `main` (`tools/fingerprint`, 12 lines, review 35b): identical at g++ default flags, at `-O3 -DNDEBUG`, at `-O3 -DNDEBUG -march=x86-64-v3`, and on the Cortex-M33 leg | none yet (MuTap's bump: fingerprints must be byte-identical; its own embedders adopt the tag in `tap::mu` — checklist above) |
+| tap/DspTap#39 | post-program | Q15, Q31 | **no output bit**: the real post-pass / pre-pass, its table and the DC/Nyquist handling re-derived from the literature under a clean-room procedure ("The fixed-point post-pass, re-derived"), bit-identical to the transcription it replaces (every pinned fingerprint and checksum unchanged); fingerprints added at N = 64 and 1024 (the radix-2 stage); the inverse's antisymmetric-pair worst case added to the saturation sweep; the Q31 block-floating maximum scoped to N ≤ 2048 (31–80 LSB measured at 4096 … 65536, stated, not pinned); Welch-model ratio pins re-derived; Q15/Q31 icount +0.49 … +1.15 %, inside the band | none (no consumer on fixed point) |
 | tap/DspTap#36 | D6 | none numerically | **no output bit and no contract point**: the reference C (`tests/reference/ooura/`), its declaration header and the parity gate with its informational twin are deleted; `tests/test_fft_split_radix_fingerprint.cpp` pins the engine's output bits at every power of two from 4 to 65536 (one float row; double per C library build, glibc as an FMA/SSE2 dispatch pair), measured equal to the C's on every leg ("The bit-identity record after D6"); nothing under `include/` changes but comments; the test-only cache variable `TAP_DSP_PARITY_MAX_N` is renamed `TAP_DSP_TEST_MAX_FFT_N` | none needed (no shipping code changed; icount ratchet expected +0.00 % on every key) |

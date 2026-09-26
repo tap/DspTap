@@ -1163,6 +1163,13 @@ opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
   a written commit in the MuTap bump. The gate for a bump is "fingerprints byte-identical on
   every leg"; the ratchet is re-recorded when the engine changes. The Stage 2b paragraph in
   Part 3 keeps its text and carries a one-line pointer here.
+- **Fixed-point post-pass re-derived (tap/DspTap#39, after the final audit of 2026-09-26).**
+  The audit found `fft/fixed_point.h` stating that its real post-pass was transcribed from
+  Ooura's `rftfsub` / `rftbsub` while marked MIT and absent from `NOTICE.md`. The maintainer
+  chose re-derivation over dual marking; #39 did it under a clean-room procedure (hand-off
+  commit, brief from Cooley–Lewis–Welch 1970 and Sorensen et al. 1987, access list and
+  statement) and converged bit-identically on the same arithmetic. Record:
+  `docs/fft-design.md`, "The fixed-point post-pass, re-derived"; `NOTICE.md`.
 - **D6 executed (wave 4, tap/DspTap#36).** Precondition met after Stage 4: MuTap `801204d`
   pins DspTap `8350f13` (2c), MuTap-Max `544e756` pins that MuTap. Deleted:
   `tests/reference/ooura/` (`fftsg.c`, `fftsg_float.c`, the directory-local `.clang-format`),

@@ -42,7 +42,9 @@
 //   The fixed-point arrangement of that method (which products, which
 //   roundings, the coefficient table) is derived here, in real_post_pass's
 //   docstring, from those equations and fft_arith.h; the complex kernel is
-//   DspTap's own (Decision D2).
+//   DspTap's own (Decision D2). How this pass was re-derived, under a
+//   clean-room procedure (tap/DspTap#39): NOTICE.md and docs/fft-design.md,
+//   "The fixed-point post-pass, re-derived".
 
 #pragma once
 

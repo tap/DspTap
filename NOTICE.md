@@ -87,6 +87,32 @@ text:
 - `readme.txt` stays at `third_party/ooura/readme.txt` permanently, as the
   license record for the derived code and the one fixed path the port
   header's banner cites.
+- The fixed-point engine (`include/tap/dsp/fft/fixed_point.h`,
+  `include/tap/dsp/fft/tables.h`) is DspTap's own, MIT, and carries nothing
+  of the package. History, recorded because consumers pinned the trees
+  concerned: from Stage 3b (tap/DspTap#27, `b08f6c6`) until tap/DspTap#39,
+  its real post-pass, the inverse's pre-pass, their coefficient table and
+  the DC/Nyquist handling were a transcription of the package's
+  `rftfsub` / `rftbsub` / `makect` formulas into the fixed-point
+  arithmetic, and those trees fall under the same modification-grant
+  analysis as the port. tap/DspTap#39 removed that code and re-derived the
+  pass from the published literature (Cooley, Lewis & Welch 1970; Sorensen,
+  Jones, Heideman & Burrus 1987) under a recorded clean-room procedure: a
+  hand-off commit removed the transcription and every passage stating its
+  formulas; the implementer worked from a brief holding the published
+  half-length method in DspTap's convention and the numeric contract, was
+  barred from the package, the port, the removed text and its history, and
+  every other FFT library's source, and reported what it accessed. The
+  derivation converged on the same arithmetic: the arrangement of the
+  published method with the fewest roundings within the pass's one-bit
+  growth budget is one complex product per bin pair by (1 + i W_N^k)/2, and
+  with that coefficient rounded once from its double it reproduces the
+  previous output bit for bit. The code, the table generator and the
+  derivation were written independently; the arithmetic is the published
+  method's. `docs/fft-design.md` ("The fixed-point post-pass, re-derived")
+  records the procedure and the access statement. The maintainer's
+  judgement is that the fixed-point engine is not a derivative of the
+  package.
 - This is a maintainer judgement call, not legal advice. This file is the
   canonical statement; `README.md` and `docs/fft-design.md` point here.
 

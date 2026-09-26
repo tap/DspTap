@@ -580,7 +580,9 @@ See [`third_party/ooura/readme.txt`](third_party/ooura/readme.txt) and
 vendored-code provenance and licenses. The floating profiles run the C++20
 port of the same split-radix transform (`include/tap/dsp/fft/split_radix.h`,
 landed bit-identical to the C at Stage 2a, #28, and routed at Stage 2b, #31);
-the Q15 / Q31 profiles landed at Stage 3b (#27). At Stage 2c the vendored C
+the Q15 / Q31 profiles landed at Stage 3b (#27), and their real post-pass was
+re-derived from the literature under a clean-room procedure in #39
+(bit-identical; `NOTICE.md`). At Stage 2c the vendored C
 left the shipping tree, and a reference copy (`fftsg.c` and its float
 instantiation `fftsg_float.c`) under `tests/reference/ooura/` served the
 bit-identity gate alone until both MuTap and MuTap-Max pinned a tree
