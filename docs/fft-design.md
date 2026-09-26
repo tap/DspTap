@@ -1707,6 +1707,323 @@ on the vendored C (tap/MuTap#31), and is not re-measured in this repo until
 someone runs `tap_dsp_bench_fft` twice on a Mac (`-DTAP_DSP_FFT_ACCELERATE`
 ON and OFF) and records the machine.
 
+## The floating engine (srdif)
+
+`include/tap/dsp/fft/srdif.h`, `detail::srdif_rdft<Sample>`: the engine
+`basic_real_fft<double>` runs on every build and `basic_real_fft<float>` runs
+wherever no accelerated backend is selected. It replaced, at the same
+contract, the port of a third-party split-radix engine that the floating
+profiles ran from Stage 2b. It was written under a clean-room procedure:
+from the published literature the header cites and from DspTap's own
+fixed-point engine (`fft/fixed_point.h`, `fft/tables.h`), without reference
+to the engine it replaced, to the package that engine came from, or to any
+other FFT library. The sections of this note written before it (the
+contract table's floating rows, the fp-contraction record, the Stage 4
+record, the size and instruction-count tables) describe its predecessor
+where they say "split-radix engine" or "port"; they are kept as the record.
+
+### Structure, and why
+
+The maintainer's decision was to generalize the fixed-point engine's
+structure to floating point, and the engine does exactly that: the N real
+samples as M = N/2 complex values, a decimation-in-frequency complex kernel
+of length M, the bit-reversal permutation, and the real post-pass /
+inverse pre-pass of Cooley, Lewis and Welch (1970) and Sorensen, Jones,
+Heideman and Burrus (1987) in the arrangement tap/DspTap#39 derived for the
+fixed-point engine (`fixed_point_rdft::real_post_pass`), with the scaling
+removed: per bin pair (k, M − k), `G = C_k (u − v)`, `X[k] = u − G`,
+`X[M − k] = conj(v + G)` with `C_k = (1 + i W_N^k) / 2`; `X[0], X[M] =
+Re Z[0] ± Im Z[0]`; bin N/4 untouched; the inverse the same statements with
+`conj C_k`, and its DC / Nyquist pair halved.
+
+The complex kernel is split-radix rather than the fixed-point engine's
+radix-4, for the operation count. On the soft-float Cortex-M4 every
+floating operation is a library call of 40–60 instructions and the count is
+the cost; split-radix (Duhamel and Hollmann 1984; the decimation-in-frequency
+program and its count in Sorensen, Heideman and Burrus 1986) needs
+4M log₂M − 6M + 8 real operations for the kernel, and the engine attains that
+count exactly (measured through an instrumented sample type): with the
+post-pass's 12 per bin pair, 2N log₂N − 2N − 2 per forward transform
+(8,190 at N = 512, 40,958 at 2048) and two more per inverse.
+
+On the FPU cores the count is loads and stores as much as arithmetic, and
+the kernel is arranged around that:
+
+- **The fused two-level pass.** The split-radix step on a block of length l
+  computes, for j < l/4, the butterfly on x[j], x[j + l/4], x[j + l/2],
+  x[j + 3l/4]; its two sums are the inputs of the half-length block. The
+  half-length block's own butterfly at j (quarter l/8) reads x[j],
+  x[j + l/8], x[j + l/4], x[j + 3l/8] — exactly the half-block outputs of the
+  level-l butterflies at j and j + l/8. So one group of eight values
+  x[j + r·l/8], r = 0 … 7, runs two levels between one load and one store:
+  three butterflies per 16 loads and 16 stores instead of 48 of each. Each
+  block of l ≥ 32 is processed that way and recurses on the five blocks the
+  two levels leave (l/4, l/8, l/8, l/4, l/4). This is the index map of the
+  split-radix decomposition (Duhamel and Vetterli 1990 give the general
+  form), read two levels at a time.
+- **Special butterflies** where the twiddle is trivial: j = 0 (additions
+  only) and j = l/8 (the eighth turn, two multiplications per product
+  instead of four), the two cases Sorensen et al. count; inside a group the
+  level-l/2 butterfly at j = l/16 is its own eighth-turn case and the level-l
+  twiddles there are W₁₆¹, W₁₆³, W₁₆³ and W₁₆⁹, spelled as literals.
+- **Twiddle pairing.** W^(l/4 − j) = i·conj(W^j) and W^(3(l/4 − j)) =
+  −i·conj(W^(3j)): the group l/8 − j uses the six twiddles of the group j
+  with cos and sin exchanged and signs flipped (exact), so the table holds
+  j < l/16 only and the second half of each pass walks it backwards.
+- **Compile-time blocks and register leaves.** Blocks of 32 and 64 run
+  with every offset a constant (one pointer, immediate addressing, fully
+  unrolled groups) from their own small tables; blocks of 16 and fewer are
+  leaves held in registers through every remaining level. The run-time
+  recursion handles l ≥ 128 only, and its groups run two per loop step so
+  the eight row pointers serve both.
+- **The permutation** is a precomputed list of swap pairs (i, bitrev i),
+  i < bitrev i (the table method of Karp's 1996 survey), as offsets.
+- **Out-of-line transforms.** `forward_inplace` / `inverse_inplace` are
+  `noinline` (a performance attribute only): inlined into a caller's loop,
+  the permutation and the post-pass lost their registers to the caller's
+  live values (+1.4 % on the M4F scenario, measured).
+
+### The tables: integer trigonometry, no libm
+
+Every table value comes from `srdif_trig`: cos, sin, 1 − cos and 1 − sin of
+2πk/2^L for the first octant, in unsigned 64-bit fixed point — θ as the
+exact 128-bit product of k and ⌊2π·2⁶¹⌋, Horner's rule over the Maclaurin
+coefficients ⌊2⁶⁴/n!⌋ (cos to 20!, sin to 19!), 1 − cos as θ²·(1 − cos)/θ² so
+small angles keep their relative precision — rounded once to the profile
+(ties to even on the 64-bit mantissa), and taken to the other octants by
+exact symmetry. Measured against libquadmath over every k of every
+2^L ≤ 2^18 and 200,000 random k per L = 19 … 30: the mantissa is within
+12.7 units of 2⁻⁶⁴ relative; **every float entry is the correctly rounded
+value** (no exact value lies within 2.2·10⁴ such units of a float tie);
+every double entry is within 0.5 + 2^−7.3 ulp, and 0.08 % of them are the
+neighbour of the correctly rounded double.
+
+The point is host identity. A table from `std::cos` / `std::sin` is only as
+portable as the last bit of each libm, and the engine this one replaced
+needed its output pins per C library and per glibc CPU dispatch. Here the
+table is a function of (k, L), the arithmetic is IEEE operations in a fixed
+order, and with fp-contraction off the output bits are a function of the
+source alone: `tests/test_fft_srdif_fingerprint.cpp` pins FNV-1a-64 of the
+forward and inverse output at every power of two 4 … 65536, both profiles,
+and **one row** matched x86-64 Linux (g++ 13.3 and clang++ 18.1, glibc 2.39
+under either libm dispatch) and all four QEMU legs (soft-float M4, M4F, M33,
+M55, newlib; N ≤ 4096 there). CI runs the linux check twice, the second
+time under glibc's SSE2 dispatch, as the evidence that no libm reaches the
+output; Windows (MSVC, no contraction by default) and macOS arm64 (the
+srdif engine named explicitly, AppleClang at `-ffp-contract=off`) are
+expected to match the same row and run only in CI — a mismatch there is a
+finding, not a row to add. A side effect on the Cortex-M legs: the float
+profile links no libm `sin` / `cos` at all, and the MinSizeRel float probe's
+`.text` fell by 10–21 kB (below).
+
+Construction evaluates about 3N/16 angles (the kernel table's first
+octant and the post-pass table's), each a few hundred instructions of
+32 × 32 → 64 multiplies on a Cortex-M4; the tables are built once, in the
+constructor.
+
+### Memory
+
+Heap per object: 12·(M/16 − 1) Samples of kernel twiddles (M ≥ 32), 12 + 36
+Samples for the compile-time blocks, N/2 Samples of post-pass coefficients,
+and M − 2^⌈log₂M/2⌉ uint32 swap offsets. Measured (x86-64, libstdc++;
+`sizeof` 104 B, 112 B for `basic_real_fft`):
+
+| N | float heap | double heap | engine it replaced (float / double, total incl. `sizeof`) |
+|---:|---:|---:|---:|
+| 512 | 2,896 B | 4,832 B | 1,172 / 2,196 B |
+| 2048 | 11,280 B | 18,592 B | 4,308 / 8,404 B |
+| 65536 | 359,568 B | 589,088 B | 131,880 / 262,952 B |
+
+2.6 – 2.8 times the predecessor: the price of the sequential swap list, the
+pre-rounded post-pass coefficients and the fused pass's twelve-value
+entries. No temporary heap outlives construction.
+
+### Accuracy against a quad-precision reference
+
+The maintainer's targets sheet's method, with its harness (a program over
+the public `basic_real_fft` API only, kept outside the tree with the sheet):
+`__float128` reference (O(N²) DFT for N ≤ 8192, an independent radix-2
+FFT above), full-scale input rounded once to the profile; *rms* =
+‖y − ref‖₂ / ‖ref‖₂ over the N packed words, *max* = max|y − ref| / max|ref|;
+white noise pooled over eight trials (seeds 0x5EED0001 … 8), max over the
+worst trial; forward, unnormalized inverse of the exact spectrum rounded to
+the profile, and the round trip through `inverse()`. x86-64, g++ 13.3.0
+`-std=gnu++20 -O3 -DNDEBUG`, no `-march` (no FMA), 2026-09-26. The last
+two columns are this engine over its predecessor on the same trials.
+
+White noise, float:
+
+| N | ref | fwd rms | fwd max | inv rms | inv max | rt rms | rt max | rms ratio fwd/inv/rt | max ratio fwd/inv/rt |
+|---:|:---:|---:|---:|---:|---:|---:|---:|---|---|
+| 4 | DFT | 4.16e-08 | 7.71e-08 | 3.11e-08 | 6.11e-08 | 4.79e-08 | 7.47e-08 | 1.00/0.92/0.93 | 1.00/1.00/1.00 |
+| 8 | DFT | 5.47e-08 | 7.63e-08 | 4.57e-08 | 7.32e-08 | 7.59e-08 | 1.39e-07 | 1.00/0.94/1.01 | 1.00/1.00/1.00 |
+| 16 | DFT | 6.82e-08 | 1.09e-07 | 6.98e-08 | 1.10e-07 | 8.81e-08 | 1.57e-07 | 1.00/0.97/1.02 | 1.00/1.00/1.00 |
+| 32 | DFT | 7.05e-08 | 1.10e-07 | 7.61e-08 | 1.62e-07 | 1.04e-07 | 1.96e-07 | 0.97/0.97/1.00 | 1.00/1.14/0.95 |
+| 64 | DFT | 8.75e-08 | 1.36e-07 | 8.00e-08 | 1.36e-07 | 1.20e-07 | 3.01e-07 | 0.94/0.90/1.04 | 0.90/0.68/1.47 |
+| 128 | DFT | 9.08e-08 | 1.44e-07 | 8.87e-08 | 2.01e-07 | 1.20e-07 | 2.99e-07 | 0.93/0.95/0.90 | 1.06/0.83/1.00 |
+| 256 | DFT | 9.71e-08 | 1.44e-07 | 9.71e-08 | 2.17e-07 | 1.34e-07 | 2.98e-07 | 0.91/0.89/0.86 | 0.78/0.93/0.70 |
+| 512 | DFT | 1.06e-07 | 1.74e-07 | 1.02e-07 | 2.04e-07 | 1.44e-07 | 3.58e-07 | 0.92/0.89/0.90 | 1.17/0.81/1.00 |
+| 1024 | DFT | 1.12e-07 | 1.52e-07 | 1.10e-07 | 2.59e-07 | 1.54e-07 | 3.58e-07 | 0.93/0.94/0.94 | 1.03/0.86/1.00 |
+| 2048 | DFT | 1.17e-07 | 1.87e-07 | 1.16e-07 | 2.75e-07 | 1.62e-07 | 4.17e-07 | 0.91/0.91/0.91 | 1.06/0.80/0.87 |
+| 4096 | DFT | 1.23e-07 | 1.58e-07 | 1.22e-07 | 2.96e-07 | 1.71e-07 | 4.17e-07 | 0.90/0.90/0.88 | 0.62/0.79/0.82 |
+| 8192 | DFT | 1.29e-07 | 2.02e-07 | 1.28e-07 | 3.29e-07 | 1.80e-07 | 4.77e-07 | 0.94/0.93/0.95 | 1.17/0.90/1.00 |
+| 16384 | FFT | 1.33e-07 | 1.77e-07 | 1.33e-07 | 3.55e-07 | 1.86e-07 | 5.36e-07 | 0.91/0.91/0.90 | 0.85/0.92/0.90 |
+| 32768 | FFT | 1.38e-07 | 1.78e-07 | 1.38e-07 | 3.87e-07 | 1.94e-07 | 5.36e-07 | 0.92/0.92/0.93 | 0.87/0.91/0.82 |
+| 65536 | FFT | 1.43e-07 | 1.81e-07 | 1.42e-07 | 4.28e-07 | 2.00e-07 | 6.56e-07 | 0.92/0.92/0.92 | 0.90/0.88/1.10 |
+| 2^20 | FFT | 1.61e-07 | 1.99e-07 | 1.60e-07 | 5.09e-07 | 2.25e-07 | 7.15e-07 | 0.93/0.93/0.94 | 0.93/0.95/0.92 |
+
+White noise, double:
+
+| N | ref | fwd rms | fwd max | inv rms | inv max | rt rms | rt max | rms ratio fwd/inv/rt | max ratio fwd/inv/rt |
+|---:|:---:|---:|---:|---:|---:|---:|---:|---|---|
+| 4 | DFT | 5.54e-17 | 8.41e-17 | 5.32e-17 | 9.73e-17 | 8.50e-17 | 1.30e-16 | 1.00/1.00/1.00 | 1.00/1.00/1.00 |
+| 8 | DFT | 1.02e-16 | 1.49e-16 | 1.01e-16 | 1.65e-16 | 9.99e-17 | 1.52e-16 | 0.98/0.95/0.71 | 1.00/1.00/0.67 |
+| 16 | DFT | 1.30e-16 | 2.09e-16 | 1.28e-16 | 2.74e-16 | 1.59e-16 | 3.04e-16 | 0.94/0.97/0.96 | 0.81/0.83/0.90 |
+| 32 | DFT | 1.36e-16 | 1.89e-16 | 1.20e-16 | 2.19e-16 | 1.84e-16 | 3.34e-16 | 1.00/0.89/0.99 | 1.00/0.76/0.86 |
+| 64 | DFT | 1.52e-16 | 2.28e-16 | 1.39e-16 | 3.72e-16 | 2.03e-16 | 3.41e-16 | 0.93/0.88/0.83 | 1.00/1.17/0.61 |
+| 128 | DFT | 1.68e-16 | 2.65e-16 | 1.68e-16 | 3.53e-16 | 2.19e-16 | 5.62e-16 | 0.93/0.96/0.92 | 1.00/0.99/1.26 |
+| 256 | DFT | 1.81e-16 | 2.47e-16 | 1.82e-16 | 4.50e-16 | 2.41e-16 | 5.64e-16 | 0.92/0.93/0.89 | 0.94/1.06/1.01 |
+| 512 | DFT | 1.89e-16 | 2.26e-16 | 1.89e-16 | 4.46e-16 | 2.61e-16 | 5.70e-16 | 0.91/0.92/0.90 | 0.95/0.78/0.85 |
+| 1024 | DFT | 2.06e-16 | 3.16e-16 | 2.04e-16 | 5.08e-16 | 2.81e-16 | 6.67e-16 | 0.93/0.92/0.93 | 1.00/1.09/0.92 |
+| 2048 | DFT | 2.18e-16 | 2.84e-16 | 2.17e-16 | 5.46e-16 | 3.00e-16 | 7.77e-16 | 0.91/0.92/0.90 | 0.83/0.95/0.78 |
+| 4096 | DFT | 2.28e-16 | 3.04e-16 | 2.25e-16 | 5.49e-16 | 3.17e-16 | 7.78e-16 | 0.92/0.91/0.93 | 0.97/0.83/0.88 |
+| 8192 | DFT | 2.39e-16 | 3.17e-16 | 2.35e-16 | 6.63e-16 | 3.30e-16 | 8.88e-16 | 0.92/0.92/0.93 | 0.91/0.86/1.00 |
+| 16384 | FFT | 2.47e-16 | 3.12e-16 | 2.47e-16 | 6.60e-16 | 3.43e-16 | 9.99e-16 | 0.91/0.91/0.92 | 0.86/0.88/1.00 |
+| 32768 | FFT | 2.57e-16 | 3.04e-16 | 2.54e-16 | 7.83e-16 | 3.56e-16 | 1.11e-15 | 0.91/0.90/0.91 | 0.88/0.98/0.91 |
+| 65536 | FFT | 2.66e-16 | 3.04e-16 | 2.65e-16 | 7.72e-16 | 3.69e-16 | 9.99e-16 | 0.90/0.91/0.91 | 0.77/0.91/0.90 |
+| 2^20 | FFT | 2.99e-16 | 3.59e-16 | 2.98e-16 | 9.00e-16 | 4.17e-16 | 1.33e-15 | 0.91/0.91/0.92 | 0.97/0.80/0.92 |
+
+The rms targets (no worse than the predecessor within 5 % measurement
+noise) are met at every N in both profiles and every direction: 4–14 %
+lower from N = 128 up, and at most 4 % higher below that (float round trip
+at N = 64). The max targets (1.25× the predecessor) are met in every noise
+cell but two: the float round trip at N = 64 (3.01e-7 vs 2.04e-7, 1.47×)
+and the double round trip at N = 128 (5.62e-16 vs 4.46e-16, 1.26×). Both
+are the maximum over one draw of eight trials, a statistic with a wide
+spread: over 100 draws of eight trials (800 seeds) the srdif engine's
+N = 64 float round-trip maximum has p10 1.88e-7, median 2.41e-7, p90
+2.75e-7, and its N = 128 double one p10 4.46e-16, median 4.51e-16, p90
+5.57e-16. The predecessor's single values sit at the low end of those
+distributions and the srdif engine's fixed-seed values at the high end; the
+predecessor's distribution cannot be measured any more.
+
+Deterministic signals (on-bin tone, off-bin tone, impulse at x[1],
+constant; one realization each): the constant is bit-exact against the
+reference (all errors 0) in both profiles at every N, as it was. Of the
+other three, 516 cells (N = 4 … 65536 × two profiles × three directions ×
+rms / max) with a nonzero predecessor value: the srdif engine is lower in
+310 of them and above the targets' bars (1.05 × rms, 1.25 × max) in 54:
+21 for the on-bin tone (the double forward at N = 128 … 512 is the largest
+rms excess, 1.85e-16 vs 1.10–1.18e-16, where the predecessor happened to
+cancel; at N ≥ 1024 the srdif engine is the lower one, 1.84–2.39e-16 vs
+1.96–2.52e-16), 13 for the off-bin tone, and 20 for the impulse (the
+round-trip maximum on the zero-valued samples, 4e-9 vs 1.1e-9 in float and
+7.8e-18 vs 2.1e-18 in double at N = 65536, while the impulse round-trip rms
+is 6–8 % lower from N = 16384 up). A single realization's error is a draw from the same
+rounding statistics the noise rows average, which is why the targets'
+headline is the pooled noise.
+
+### Instruction counts and `.text`
+
+`scripts/icount.py` as `bench.yml` runs it (fresh Release build per key,
+arm-none-eabi-gcc 13.2.1, qemu-system-arm 8.2.2, the pinned plugin
+header), 2026-09-26. The gate was "every float scenario on every key that
+runs this engine at or below its baseline":
+
+| key | `rfft_f32_512`: baseline → srdif | Δ | `rfft_f32_2048`: baseline → srdif | Δ |
+|---|---:|---:|---:|---:|
+| `m4-softfp` | 1,864,929,141 → 1,815,063,718 | −2.67 % | 2,294,360,259 → 2,244,317,934 | −2.18 % |
+| `m4f` | 97,138,544 → 94,003,130 | −3.23 % | 111,278,416 → 108,030,219 | −2.92 % |
+| `m33` | 100,945,841 → 94,382,323 | −6.50 % | 115,465,626 → 108,470,414 | −6.06 % |
+| `m55-ooura` | 89,276,321 → 86,188,216 | −3.46 % | 102,784,096 → 100,091,803 | −2.62 % |
+| `m55` (CMSIS, unchanged) | 52,382,331 → 52,382,329 | −0.00 % | 54,858,120 → 54,858,158 | +0.00 % |
+
+The float baselines are re-recorded to these counts (`bench/README.md`);
+the fixed-point scenarios measure +0.49 … +1.15 % against theirs with no
+change to that code, inside the band, and are not. Against CMSIS-DSP on the
+M55 the srdif engine now executes 1.65× (N = 512) / 1.82× (N = 2048) the
+instructions (the predecessor 1.70× / 1.87×).
+
+How the engine got there (development measurements on the `m4f` key, N =
+512 / 2048, each a change to the one before; the counts include the
+harness's ~14.6 k instructions per forward + inverse pair):
+
+| step | `m4f` 512 | `m4f` 2048 |
+|---|---:|---:|
+| first version: split-radix recursion to length 2, the post-pass, a swap-list permutation | +29.5 % | +27.4 % |
+| register leaves for blocks ≤ 16 (≈ 300 calls per transform at N = 512 gone) | +13.7 % | +13.8 % |
+| permutation through FP registers (a `memcpy` of the complex pair through stack temporaries had cost 29 instructions per swap) | +7.0 % | +7.8 % |
+| transforms out of line | +5.4 % | +6.4 % |
+| post-pass reads each pair once (the compiler re-loaded the partner after the stores, for aliasing) | +4.4 % | +5.5 % |
+| the fused two-level pass | +1.6 % | +1.7 % |
+| post-pass two bin pairs per step | +0.5 % | +0.8 % |
+| compile-time blocks of 32 and 64 | −2.9 % | −2.1 % |
+| run-time fused pass two groups per step | −2.9 % | −2.7 % |
+
+Tried and not kept: 64-bit integer moves in the permutation (GCC splits
+them into the same four accesses; no change). The soft-float key was below
+its baseline from the leaves step on, because the operation count is the
+split-radix minimum from the first version.
+
+`.text` of the MinSizeRel float probe (`tap_dsp_size_probe_rfft_f32_512`,
+`size -A`): `m4-softfp` 32,201 B (53,289 before), `m4f` 30,033 (44,601),
+`m33` 29,417 (44,001), `m55-ooura` 29,297 (39,281); the libm double
+`sin` / `cos` the predecessor's tables linked are gone. The four float
+ceilings are re-recorded to measured + 3 % (33,216 / 30,976 / 30,336 /
+30,208); the Q15 / Q31 probes and the `m55` CMSIS probe are unchanged.
+
+### Host timings (informational)
+
+`bench/bench_fft.cpp`'s workload over five sizes (the targets sheet's
+`hostbench.cpp`), median of six processes' median reps / fastest rep, ns per
+transform; x86-64 Xeon 2.1 GHz, g++ 13.3.0 `-O3`, no `-march`, load
+average ≈ 1 (the predecessor's figures in parentheses were measured at load
+10–15, so the comparison flatters it):
+
+| N | float forward | float inverse | double forward | double inverse |
+|---:|---:|---:|---:|---:|
+| 256 | 624 / 601 (582 / 493) | 666 / 633 (608 / 526) | 593 / 576 (540 / 448) | 650 / 624 (612 / 532) |
+| 512 | 1,354 / 1,323 (1,297 / 1,137) | 1,405 / 1,367 (1,344 / 1,178) | 1,423 / 1,385 (1,252 / 1,087) | 1,505 / 1,452 (1,418 / 1,232) |
+| 1024 | 3,010 / 2,932 (2,907 / 2,451) | 3,113 / 3,043 (3,026 / 2,457) | 3,066 / 3,002 (2,626 / 2,368) | 3,102 / 3,024 (2,899 / 2,609) |
+| 2048 | 6,512 / 6,400 (6,042 / 5,450) | 6,676 / 6,521 (6,328 / 5,664) | 7,028 / 6,720 (5,847 / 5,410) | 7,008 / 6,823 (6,459 / 5,990) |
+| 4096 | 14,131 / 13,698 (13,453 / 12,078) | 14,458 / 14,023 (13,930 / 12,062) | 15,096 / 14,103 (12,617 / 11,462) | 15,505 / 14,281 (13,789 / 12,575) |
+
+On x86-64 the srdif engine is 3–10 % slower than its predecessor in float
+(medians) and 6–20 % slower in double, the double gap growing with N. The
+engine was tuned for the Cortex-M instruction count, which is the gate;
+x86-64 without `-march` has sixteen vector registers against the M4F's
+thirty-two single-precision ones, and the 16-point register leaves were
+sized for the latter (not investigated further). Not a gate; recorded so
+no host speed claim is made.
+
+### Tests changed for the engine
+
+- `tests/test_fft_srdif_fingerprint.cpp` + `tests/support/srdif_fingerprints.h`
+  (new): the output fingerprints above, their own target at
+  `-ffp-contract=off`; `ci.yml` runs them verbosely and requires the one row
+  under both glibc dispatches.
+- `tests/test_fft_srdif.cpp` (new): the integer trigonometry against libm to
+  the last bits (1 / 2 / 4 / 6 ulp pins on 0 / 1 / 2 / 3 measured on glibc;
+  1 − cos 4 on newlib), exact octant endpoints, the leaf literals equal to
+  the generator's values, round-half-to-even in `to_sample`.
+- `tests/test_fft_routing.cpp`: the sizes now cross the engine's code paths
+  (register leaves only at N = 4 … 32, the compile-time blocks at 64 and 128,
+  the run-time pass from 256 up, and the post-pass's single-pair and paired
+  forms).
+- `tests/test_fft_oracle.cpp`: μ is one rounding (≤ 1.02 u) for these tables;
+  the Higham constant (4, i.e. 8u) is kept; worst measured ratio 0.155
+  float / 0.25 double (0.17 / 0.25 before).
+- Renames only (the engine type, the ABI tag `fft_srdif`, the backend string
+  `srdif`) in `test_fft_engine.cpp`, `test_fft_backend.cpp`
+  (`ForwardMatchesOoura` is `ForwardMatchesTheReferenceEngine`),
+  `test_fft_rt.cpp`, `test_fft.cpp`, `test_log_mel.cpp`, the ABI stub and
+  image, and the measured values in comments. **No tolerance and no pin
+  was loosened**; every pin that the predecessor's error set is kept where
+  the srdif engine measures lower (the round-trip pin of
+  `ConstructsAtTheRangeBounds`, 2.86e-6 against 3.28e-7 at 2^20;
+  `FloatEngineTracksDoubleAtN512`, 2.25e-7 against 9.73e-8 / 1.05e-7;
+  `DoubleForwardTracksCompensatedDft`, 7.4e-16 against 1.49–1.70e-16).
+
 ## Provenance and licensing
 
 ### Where the code came from

@@ -39,22 +39,23 @@ asset's contract summary.
   profiles as `basic_real_fft<int16_t|int32_t, Scaling>` returning an exponent, with a
   fixed-scaling and a block-floating policy (`fft.h`, `fft/fixed_point.h`,
   `docs/fft-design.md`), each floor a measured number against the double profile. The floating
-  profiles run the C++20 split-radix engine (`fft/split_radix.h`), bit-identical to the vendored
-  Ooura C it replaced; since Stage 4 the engine is a template parameter
+  profiles run the srdif engine (`fft/srdif.h`): the N real samples as N/2 complex values, a
+  split-radix decimation-in-frequency kernel of length N/2 (fused two-level passes, compile-time
+  blocks of 32 and 64, register leaves of 16 and fewer), the bit-reversal permutation and the real
+  post-pass derived for the fixed-point engine (#39), written from the literature the header cites
+  (it replaced a port of a third-party split-radix engine at the same contract). Since Stage 4 the
+  engine is a template parameter
   (`basic_real_fft<Sample, Policy = detail::default_real_fft_policy_t<Sample>>`: the engine for
   `float`/`double`, defaulting to `default_real_fft_engine_t<Sample>`, the scaling policy for
   Q15/Q31; the accelerated engines under `fft/backends/`, each stating its size range and
   shareability as contract numbers), and the build's selection opens an inline-namespace ABI
-  tag on `tap::dsp` (`fft_split_radix` / `fft_cmsis` / `fft_vdsp`) that every class embedding
-  the FFT by value lives in; since Stage 2c the C is not part of what ships, and Decision D6
-  deleted the test-only reference copy the bit-identity gate compiled. The identity is pinned
-  since as FNV-1a-64 output fingerprints at every power of two from 4 to 65536
-  (`tests/test_fft_split_radix_fingerprint.cpp`, pins in
-  `tests/support/split_radix_fingerprints.h`), measured equal to the C's. The float row is the kernel invariant (one value on every
-  configuration; a float pin that moves is an engine change); the double rows are per C library
-  build, CPU dispatch included, because the tables come from libm. A change that moves a pin is a
-  numeric change to the engine, and `docs/fft-design.md` says how to re-verify against upstream
-  `fftsg.c`.
+  tag on `tap::dsp` (`fft_srdif` / `fft_cmsis` / `fft_vdsp`) that every class embedding
+  the FFT by value lives in. The srdif engine's tables come from integer arithmetic
+  (`srdif_trig`: no libm), so its output bits are a function of the source once fp-contraction is
+  off, and they are pinned as FNV-1a-64 output fingerprints at every power of two from 4 to 65536
+  (`tests/test_fft_srdif_fingerprint.cpp`, pins in `tests/support/srdif_fingerprints.h`): one row
+  for every host and every QEMU leg, float and double alike. A change that moves a pin is a numeric
+  change to the engine; a host that needs a second row is a finding, not a row to add.
   `third_party/ooura/readme.txt` stays as the license record.
 - **Real-time safe by construction.** Geometry fixed at construction, every buffer allocated
   there; processing is `noexcept` and allocation-free. Numerically fragile recursions (e.g. the
@@ -98,7 +99,7 @@ Cortex-M legs under `qemu-system-arm` (`ci.yml`, `embedded`): M4 soft-float and 
 M55 (`cmake/arm-cortex-m55-mps3.cmake`), the one leg where the CMSIS-Helium backend is ON and its
 parity suite runs for real. Each leg builds `tap_dsp_tests` one-shot (`tests/bare_metal_main.cpp`)
 with the `MAIN_FILTER` in `tests/CMakeLists.txt` naming what the emulation budget excludes, plus
-the split-radix fingerprints, with every FFT sweep capped at `TAP_DSP_TEST_MAX_FFT_N=4096`. The
+the srdif fingerprints, with every FFT sweep capped at `TAP_DSP_TEST_MAX_FFT_N=4096`. The
 instruction-count ratchet (`bench.yml`, `bench/README.md`) runs the same four cores under five
 baseline keys at ±3 %, with `.text` ceilings per profile; a red ratchet is a failing check. The
 hosted build and battery need no Arm toolchain; where `gcc-arm-none-eabi` and `qemu-system-arm`
