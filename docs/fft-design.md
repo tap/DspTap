@@ -61,7 +61,7 @@ profiles" below.
 | Shareability across threads (`k_is_shareable`, an engine trait re-exported by the class; Stage 4) | **true**: tables built in the constructor, transforms `const noexcept` | **true** on the split-radix engine, **false** on vDSP and CMSIS (per-object scratch); the class's transforms stay non-const on every profile (audit N11) and the trait is the statement; a shareable engine's transforms are `const` and the class `static_assert`s it (`ShareabilityIsTheHeadersNumber` in `test_fft_rt.cpp` and `test_fft_engine.cpp`) | **false**: the in-place int16 API needs the per-object int32 work buffer (a recorded deviation from audit Part 7, which listed both fixed profiles as shareable) | **true**: no mutable state during a transform; the engine's transforms are `const` behind `requires`-constrained overloads since Stage 4 |
 | Real-time safety | transforms `noexcept`, allocation-free (`test_fft_rt.cpp`; the float-I/O-on-double overloads are the exception, `[[deprecated]]` since 2b and removed after one consumer cycle, D5) | same | same (`TransformsAreNoexcept`, `*AllocatesNothing`, `CopyProducesBitIdenticalOutput`) | same |
 | NaN / denormals | NaN propagates to every bin; denormal input is slow on x86 without FTZ, and FTZ differs between the split-radix, vDSP and CMSIS builds | same | not applicable / none | not applicable / none |
-| Host identity | not across hosts: libm's `cos` / `sin` last bit differs between glibc, newlib, UCRT and Apple (below) | same | one bit pattern on every host, pinned per profile, policy, direction and N = 512 / 2048 (`OutputFingerprintIsPinned`, `TwiddleTableChecksumIsPinned`) | same |
+| Host identity | not across hosts: libm's `cos` / `sin` last bit differs between glibc, newlib, UCRT and Apple (below) | same | one bit pattern on every host, pinned per profile, policy, direction and N = 64 / 512 / 1024 / 2048 (`OutputFingerprintIsPinned`, `TwiddleTableChecksumIsPinned`) | same |
 
 ## Why split-radix for floating point and a radix-4 int32 kernel for fixed point
 
@@ -84,9 +84,10 @@ graph with a different operation order, and that Ooura's first stage
 (`cftf1st`) derives half its twiddles at run time as sums of two cosines up to
 2.0, which no fixed-point twiddle format holds. The fixed-point profiles are
 therefore their own radix-4 decimation-in-frequency complex kernel of length
-N/2 (radix-2 final stage for odd `log2 N`) plus <<CLEAN-ROOM: the real
-post-pass>>, so the packing, the `exp(+i)` convention and the DC / Nyquist slots
-are identical. The design, summarized from audit Part 7:
+N/2 (radix-2 final stage for odd `log2 M`) plus the real post-pass of the
+half-length method (Cooley, Lewis and Welch 1970; Sorensen et al. 1987),
+arranged for the int32 arithmetic (§1), so the packing, the `exp(+i)`
+convention and the DC / Nyquist slots are identical. The design, summarized from audit Part 7:
 
 - **One kernel, int32 data, two I/O widths.** Q31 is native; Q15 widens on
   input and narrows on output with the substrate's single round-half-up,
@@ -131,6 +132,15 @@ sources only; no shipping product's behaviour is reverse-engineered):
 - A. V. Oppenheim and R. W. Schafer, *Discrete-Time Signal Processing*, 3rd
   ed., Prentice Hall, 2010, Section 9.7, "Effects of Finite Register Length"
   (the FFT round-off analysis and block floating point).
+- J. W. Cooley, P. A. W. Lewis and P. D. Welch, "The fast Fourier transform
+  algorithm: Programming considerations in the calculation of sine, cosine
+  and Laplace transforms," *Journal of Sound and Vibration*, vol. 12, no. 3,
+  pp. 315–337, 1970 (the transform of 2M real samples through one M-point
+  complex transform: the fixed-point real post-pass and pre-pass).
+- H. V. Sorensen, D. L. Jones, M. T. Heideman and C. S. Burrus, "Real-valued
+  fast Fourier transform algorithms," *IEEE Transactions on Acoustics,
+  Speech, and Signal Processing*, vol. ASSP-35, no. 6, pp. 849–863, June 1987
+  (the same half-length method and its inverse).
 - Ooura's own references for the split-radix algorithm are listed in
   `third_party/ooura/readme.txt` (Nussbaumer 1982; Burrus, *Notes on the FFT*).
 
@@ -160,8 +170,16 @@ behaviour was measured or reproduced):
   957–976, 1972.
 - A. V. Oppenheim and R. W. Schafer, *Discrete-Time Signal Processing*, 3rd
   ed., Sec. 9.7 (round-off in the FFT; block floating point).
-- <<CLEAN-ROOM: the literature the real post-pass / pre-pass is derived
-  from>>; the complex kernel is DspTap's own (D2).
+- J. W. Cooley, P. A. W. Lewis and P. D. Welch, "The fast Fourier transform
+  algorithm: Programming considerations in the calculation of sine, cosine
+  and Laplace transforms," *J. Sound Vib.* 12(3), 315–337, 1970, and H. V.
+  Sorensen, D. L. Jones, M. T. Heideman and C. S. Burrus, "Real-valued fast
+  Fourier transform algorithms," *IEEE Trans. Acoust., Speech, Signal
+  Process.* ASSP-35(6), 849–863, 1987 — the half-length method the real
+  post-pass and pre-pass implement, including the DC / Nyquist pair. The
+  fixed-point arrangement of it (§1: one product per bin pair, the
+  coefficient table, the roundings) is derived here from their equations;
+  the complex kernel is DspTap's own (D2).
 
 ### 1. Kernel structure
 
@@ -173,10 +191,73 @@ z[j] = x[2j] + i x[2j+1]. The forward transform is
    odd (N = 4, 16, 64, ...);
 2. the bit-reversal permutation of the M complex outputs
    (`make_bit_reversal_table`);
-3. <<CLEAN-ROOM: the real post-pass and the DC/Nyquist handling>>.
+3. a one-bit shift (§2) and the real post-pass, derived below.
 
-The inverse: <<CLEAN-ROOM: the pre-pass>>, then the conjugate kernel (same
-twiddle table, sine term subtracted), then the permutation.
+The inverse: the one-bit shift (with the input pre-shift, §2) and the real
+pre-pass, then the conjugate kernel (same twiddle table, sine term
+subtracted), then the permutation.
+
+**Real post-pass: from the equations to the statements.** Library
+convention X[k] = Σ x[n] W_N^(nk), W_N = exp(+2πi/N), M = N/2. The kernel
+computes Z[k] = Σ_(n<M) z[n] W_M^(nk) of z[n] = x[2n] + i x[2n+1]. Write
+E[k] and O[k] for the length-M transforms of the even and odd samples; both
+sequences are real, so both transforms are conjugate-symmetric, and
+Z = E + iO gives (Cooley, Lewis and Welch 1970; Sorensen et al. 1987)
+
+    E[k] = (Z[k] + conj Z[M−k]) / 2,   O[k] = (Z[k] − conj Z[M−k]) / (2i),
+    X[k] = E[k] + W_N^k O[k],   X[M−k] = conj(E[k] − W_N^k O[k])
+
+(the second from E[M−k] = conj E[k], O[M−k] = conj O[k], W_N^(M−k) =
+−conj W_N^k). The block entering the pass, after the kernel's shifts s and
+the pass's own bit, is a[k] = Z[k] · 2^-(s+1), and the pass must leave
+Y[k] = X[k] · 2^-(s+1). With u = a[k] and v = conj a[M−k],
+
+    Y[k] = (u + v)/2 + (−i W_N^k)(u − v)/2 = u − C_k (u − v),   C_k = (1 + i W_N^k) / 2,
+    conj Y[M−k] = (u + v)/2 − (−i W_N^k)(u − v)/2 = v + C_k (u − v),
+
+so one complex product G = C_k (u − v) serves the pair (k, M − k):
+Y[k] = u − G and Y[M−k] = a[M−k] + conj G. With θ_k = 2πk/N,
+C_k = ((1 − sin θ_k)/2, cos θ_k / 2), both parts in [0, 1/2] for
+1 ≤ k < M/2, and |C_k| = √((1 − sin θ_k)/2) ≤ 1/√2. The statements, per pair:
+`gr = sub(u_r, a[M−k]_r)`, `gi = add(u_i, a[M−k]_i)` (u − v, exact), `rotate`
+by C_k (two `mul_coeff` roundings per component, the trait's two-rounding
+form), then `a[k] = (sub(u_r, gr), sub(u_i, gi))`, `a[M−k] = (add(a[M−k]_r,
+gr), sub(a[M−k]_i, gi))` (exact). Each output component therefore carries
+**two roundings** (the product's) on top of the one-bit shift before the
+pass; the 1/2 of E and O never becomes a `shr_round`, because writing
+(u + v)/2 as u − (u − v)/2 moves it into C_k. The alternatives weighed:
+forming E and W_N^k O separately and halving costs a third, biased one-bit
+rounding per component (+0.25 LSB mean, 3/4 · 1/12 variance), and
+multiplying u and v by the two coefficients (1 − i W_N^k)/2 and
+(1 + i W_N^k)/2 costs four `mul_coeff` roundings per component. By the
+rounding counts alone (the §5 model's terms; neither alternative was built
+and measured) both inject more noise per output component than the two
+roundings chosen — 2.75 and 4 units of q²/12 against 2 — the first adds a
+coherent +0.25 LSB bias on top, and neither lowers the bound (§3).
+
+- **DC and Nyquist** (k = 0, whose partner is itself): E[0] = Re Z[0],
+  O[0] = Im Z[0], W_N^0 = 1, W_N^M = −1, so X[0] = Re Z[0] + Im Z[0] and
+  X[M] = Re Z[0] − Im Z[0]: `a[0] = add(a[0], a[1])`, `a[1] = sub(a[0], a[1])`
+  (on the entering values), exact, no rounding.
+- **Bin N/4** (k = M/2, its own partner): W_N^(N/4) = i, so C = 0 and
+  Y[M/2] = a[M/2]; the pass leaves it untouched.
+
+**Real pre-pass (the inverse).** Given X, set E[k] = (X[k] + conj X[M−k])/2,
+W_N^k O[k] = (X[k] − conj X[M−k])/2 and Z[k] = E[k] + i O[k]; the
+unnormalized length-M inverse kernel then returns Σ_k Z[k] W_M^(−nk) =
+M z[n] = (N/2)(x[2n] + i x[2n+1]), which is exactly the golden model's
+unnormalized inverse (round-trip gain N/2), so the pre-pass carries no
+extra factor. With u = a[k], v = conj a[M−k]: Z[k] = u − conj(C_k)(u − v)
+and conj Z[M−k] = v + conj(C_k)(u − v) — the forward's statements with the
+conjugate coefficient (`rotate<true>`), the same table. At k = 0,
+Z[0] = ((X[0] + X[M])/2, (X[0] − X[M])/2): `shr_round(add(a[0], a[1]), 1)` and
+`shr_round(sub(a[0], a[1]), 1)`, one one-bit rounding per component — the
+inverse's DC / Nyquist pair has a 1/2 no coefficient can absorb. k = M/2 is
+again untouched (conj C = 0).
+
+The derivation is written out in `fixed_point_rdft::real_post_pass`'s
+docstring; the arrangement reproduces the output fingerprints and table
+checksums the battery pinned before the re-derivation bit for bit (§4, §5).
 
 **Radix-4 DIF butterfly**, for inputs a0..a3 at q, q + L/4, q + L/2,
 q + 3L/4 of a sub-transform of length L, t0 = a0 + a2, t1 = a0 − a2,
@@ -206,10 +287,13 @@ kernel defines no arithmetic of its own, so the trait's battery
 **Tables** (`fft/tables.h`, all generated in double and rounded once by
 `make_coeff`): the kernel twiddles W_M^k for k in [0, M), interleaved
 (cos, sin) Q1.30 — the stage with span L reads index k·(M/L) for r = 1, 2, 3,
-which stays below 3M/4; <<CLEAN-ROOM: the post-pass table>>;
-the bit-reversal table over M. Memory per transform of size N: 4N bytes of
-twiddles, <<CLEAN-ROOM: n>> bytes of post-pass coefficients, 2N bytes of permutation, and
-for Q15 a 4N-byte int32 work buffer.
+which stays below 3M/4; the post-pass coefficients C_k = (1 + i W_N^k)/2
+for k in [0, N/4), interleaved ((1 − sin θ_k)/2, cos θ_k/2) Q1.30
+(`make_real_post_pass_table`: the real part is the integer 2^29 minus the
+rounded sin θ_k/2, §4; k = 0 is exactly (1/2, 1/2) and unread, the pass
+reads k in [1, N/4)); the bit-reversal table over M. Memory per transform
+of size N: 4N bytes of twiddles, 2N bytes of post-pass coefficients, 2N
+bytes of permutation, and for Q15 a 4N-byte int32 work buffer.
 
 **Thread rule (a recorded deviation from the plan).** Audit Part 7 lists
 `is_shareable` true for both fixed profiles, and the contract table above
@@ -235,7 +319,7 @@ twiddle).
 |---|---|---|
 | radix-4 | 4 | 2 |
 | radix-2 | 2 | 1 |
-| real post-pass / pre-pass | ≤ 2 (see §3) | 1 |
+| real post-pass / pre-pass | ≤ 2 per component, ≤ √2 in complex magnitude (see §3) | 1 |
 | input pre-shift, first stage only | — | `k_fixed_scaling_input_pre_shift` (Q15: 0, Q31: 1) |
 
 The kernel's stages total log2 M = log2 N − 1 bits; the post-pass adds one;
@@ -308,14 +392,56 @@ across the kernel, and the bound is set by the input alone.
   scale F, |z| ≤ √2 F. Q15: F = 2^29 (Q2.29 after `widen`), B = 2^29.5, 1.5
   bits below the int32 rail. Q31: F = 2^31 would give B = 2^31.5; the 1-bit
   pre-shift makes F = 2^30 and B = 2^30.5, half a bit below the rail.
-- **Post-pass**: <<CLEAN-ROOM: the bound on every intermediate and output of
-  the derived post-pass and its DC/Nyquist handling>>.
-- **Inverse**: the pre-pass takes pre-shift + 1 bits. Q31: input components
-  ≤ 2^31 → ≤ 2^29 after two bits, |X| ≤ 2^29.5, |Z'| ≤ √2 · 2^29.5 = 2^30 =
-  the kernel's B. Q15: one bit, |Z'| ≤ 2^29.
+- **Post-pass (forward).** Entering, after the one-bit shift, every value
+  has |a| ≤ A with A = 2^29.5 (Q31 fixed: the kernel's B = 2^30.5 halved;
+  Q15 fixed: 2^28.5; block floating point: below). Then, per pair
+  (u = a[k], v = conj a[M−k], both ≤ A):
+  - u − v: each component |u_r − v_r| ≤ 2A = 2^30.5 < 2^31 (the `sub` /
+    `add` forming it cannot saturate), |u − v| ≤ 2A;
+  - G = C_k (u − v): each partial product |(u − v)_r · C_r| ≤ 2A · 1/2 =
+    2^29.5 (C's parts lie in [0, 1/2]), and |G| ≤ |C_k| · 2A ≤ 2A/√2 = 2^30,
+    so G's components are ≤ 2^30 plus their two roundings;
+  - Y[k] = u − G and Y[M−k] = a[M−k] + conj G: the pair is
+    energy-preserving, |Y[k]|² + |Y[M−k]|² = (|u + v|² + |u − v|²)/2 =
+    |u|² + |v|² ≤ 2A², so each output is ≤ √2 A = 2^30 in magnitude (plus
+    the product's rounding, one LSB per component) — a growth of at most √2
+    in magnitude, 2 per component, which the one bit pays for;
+  - DC / Nyquist: |a_r ± a_i| ≤ √2 |a| ≤ 2^30, exact.
+
+  Every intermediate and output is ≤ 2^30.5 + 1, half a bit below the rail
+  (Q15: 2^29.5 + 1, 1.5 bits below). The bound on the outputs is attained by
+  the golden model itself (a full-scale constant's DC, a full-scale Nyquist
+  alternation's X[M], both exactly 2^30 in the Q31 frame); the bound on u − v
+  is not reachable from real input: u − v = 2i O[k] · 2^-(s+1) is the odd
+  samples' transform alone, |O[k]| ≤ M F, so |u − v| ≤ F = 2^30 (Q31), half a
+  bit under the 2A the bullets allow — the forward post-pass is never the
+  tight stage, and its worst cases are the constant and alternation
+  patterns the battery already drives.
+- **Pre-pass (inverse).** The spectrum is arbitrary, so the pre-pass's
+  bounds are tight. It takes pre-shift + 1 bits: Q31 input components
+  ≤ 2^31 → ≤ 2^29 after two bits (the rails shr_round to ±2^29), |a| ≤ 2^29.5
+  = A; Q15 one bit, components ≤ 2^28, A = 2^28.5. The same four bullets
+  hold with the conjugate coefficient: u − v ≤ 2^30 per component, partial
+  products ≤ 2^29, |G| ≤ 2^30, |Z'[k]| ≤ √2 A = 2^30, and the k = 0 pair
+  (a[0] ± a[1]) ≤ 2^30 before its halving, ≤ 2^29 after; the kernel then
+  receives |Z'| ≤ 2^30, inside its B. A spectrum whose bin pairs are
+  conjugate-antisymmetric at the rails (a[k] = (hi, hi), a[M−k] = (lo, hi):
+  v = −u to within an LSB) makes u − v = 2u, |u − v| = 2^30.5 exactly, at
+  every k including k = 1 where |C_k| is largest; the battery drives it in
+  both sign orders (`antisymmetric pairs` in `SaturationFreeWorstCaseDoesNotWrap`).
 - **Block floating point**: the rule keeps h ≥ growth + 1 before each stage,
   so input components are < 2^(30 − growth), complex magnitudes
-  < 2^(30.5 − growth), outputs ≤ 2^30.5; the same half bit.
+  < 2^(30.5 − growth), outputs ≤ 2^30.5; the same half bit. For the post-pass
+  and the pre-pass (growth 1) that is h ≥ 2 after the shift: components in
+  [−2^29, 2^29), |a| < 2^29.5 = A, and the bullets above apply unchanged,
+  for both Q formats (the Q15 block is int32 Q2.29 by then, the same
+  arithmetic). The one exception is the upper clamp (§2): when the block
+  has caught up with the fixed schedule (e = cum_fixed before the pass) and
+  reads h = 0, the pass shifts one bit where the rule wanted two; the block
+  is then the fixed schedule's data up to accumulated rounding, whose
+  magnitude is the fixed bound, B / 2 = 2^29.5 = A again. So the post-pass
+  and the pre-pass are saturation-free under both policies, in both
+  directions, for both formats.
 
 The worst case the battery drives is therefore the packed pair at full scale
 (x[2j] = x[2j+1] = ±full scale, so every complex input has both components
@@ -328,7 +454,19 @@ model does not reach, and none does); the largest deviation from the golden
 model at the returned exponent is 0.500 LSB (Q15 fixed), 0.750 LSB (Q15
 block floating), 4.250 LSB (Q31 fixed: the inverse of a full-scale constant,
 N = 2048, index 0) and 15.988 LSB (Q31 block floating: the inverse of
-full-scale binary noise, N = 1024, index 0), pinned at 1.0 / 1.5 / 8.5 / 32.
+full-scale binary noise, N = 1024, index 0), pinned at 1.0 / 1.5 / 8.5 / 32
+(unchanged, to the printed digit, by the post-pass re-derivation of
+2026-09-26 and by the antisymmetric-pairs pattern it added). The pins cover
+the battery's N = 4 … 2048. The same sweep run one size at a time beyond it
+(2026-09-26, x86-64 GCC 13.3.0, not committed as a test) keeps Q31 fixed
+inside its pin — 4.70 / 4.25 / 4.25 / 4.74 / 4.72 LSB at N = 4096 / 8192 /
+16384 / 32768 / 65536 — while the Q31 block-floating maximum grows with the
+gap between the constant and the returned exponent: 31.0 / 32.0 / 59.0 /
+76.0 / 80.0 LSB, always the inverse of full-scale binary noise at index 0
+(the DC-path bias of §5), so "15.99 LSB, pinned 32" is a statement about
+N ≤ 2048 only; F(x) + F(−x) likewise reaches 121 / 126 / 137 / 141 / 286
+LSB there against the 124 pin. No output sat on a rail the golden model
+does not reach at any of those sizes.
 The two Q31 maxima sit on the DC path, where the round-half-up biases add
 coherently (§5); they are larger than the noise-floor maxima, not "the same
 as on noise". The one place a saturating operation does fire is the Q15
@@ -364,15 +502,32 @@ generator expression (Decision D9: a compiler that fuses `a - b*c` into one
 rounding, which is the default on the macOS arm64 leg and on the Cortex-M55
 leg, whose FP64 lets g++ contract). Either can carry a double that lies
 within 2^-31 of a rounding boundary onto the other side. The generators
-therefore contain no contractible expression (<<CLEAN-ROOM: how the
-post-pass generator meets this, and how it was verified>>). The battery pins each certified N's table checksum
+therefore contain no contractible expression. The post-pass generator
+(`make_real_post_pass_table`) meets it by construction: its only doubles are
+the angle (2π/n, a power-of-two scaling of the double π, times the integer
+k) and half a libm `sin` or `cos` (a multiplication by the exact 0.5), and
+nothing is ever added to a product in double; the real part
+(1 − sin θ)/2 is formed on the integers as 2^29 − `make_coeff`(sin θ / 2),
+never as the double 0.5 − 0.5·sin θ, which is exactly the `a - b*c` shape
+an FMA-contracting compiler fuses. Like the kernel twiddles it evaluates
+libm only on the first octant (k ≤ N/8, sine set equal to cosine at N/8) and
+reaches k in (N/8, N/4) by swapping the quantized sine and cosine of
+N/4 − k. Verified three ways: the reference in `TwiddleTableIsWithinHalfLsb`
+(each entry within half an LSB of the double value, and the complement
+C_k real + C_(N/4−k) imaginary = 2^29 bit for bit); the re-derived table
+reproduces the post-pass checksums pinned on 2026-09-18 at N = 256 / 512 /
+2048 on x86-64 (glibc, GCC 13.3.0); and the same checksums on the four QEMU
+legs under newlib, including the Cortex-M55 leg whose FP64 lets g++
+contract (the post-pass re-derivation's local reproduction of the legs,
+2026-09-26). The battery pins each certified N's table checksum
 (`table_checksum`, FNV-1a-64 over the bit patterns; `TwiddleTableChecksumIsPinned`)
 so a remaining difference is detected, not absorbed, and on top of it the
 transforms' own output fingerprints (`OutputFingerprintIsPinned`: FNV-1a-64
 over the output block and the exponent, four profile × policy configurations,
-both directions, N = 512 and 2048, sixteen values), which also fix the
-rounding form of the complex multiply, the shift schedule, the sign
-convention and the packing as one bit pattern per host. The octant-symmetric
+both directions, N = 512 and 2048 and, since 2026-09-26, N = 64 and 1024
+so the radix-2 final stage is fingerprinted too: thirty-two values), which
+also fix the rounding form of the complex multiply, the shift schedule, the
+sign convention and the packing as one bit pattern per host. The octant-symmetric
 generator reproduces the checksums pinned on 2026-09-18 unchanged. The
 kernel's outputs are otherwise integer arithmetic and host-identical.
 
@@ -386,20 +541,35 @@ component; a rotation injects 2/12 on each output component (two
 skips), on none of the last radix-4 stage (L = 4) or the radix-2 stage;
 noise injected before a stage propagates through each later radix-4 stage
 with power gain 1/4 (four inputs each shifted 2 bits: 4 · (1/4)²), through a
-radix-2 stage with 1/2, and through the post-pass with <<CLEAN-ROOM>>;
-the post-pass adds <<CLEAN-ROOM: its own injections>>. Summed:
+radix-2 stage with 1/2, and through the post-pass with 1/4: its outputs are
+the linear map (u, v) ↦ u(1 − C_k) + v C_k (and the mirror), and
+|1 − C_k|² + |C_k|² = (|1 − i W_N^k|² + |1 + i W_N^k|²)/4 = 1, so a noise
+(and a white signal) entering it reaches each output component with gain 1
+after the shift's 1/4. The post-pass adds its shift's (1 − 1/4)/12 on every
+component, and the product G's two `mul_coeff` roundings, 2/12, on both
+bins of every pair: on the measured interior bins 1 … M − 1 all but N/4
+(C = 0 there), a fraction (M − 2)/(M − 1); DC and Nyquist take no product.
+The coefficient's own quantization acts on u − v, whose variance is twice
+u's, so its signal-dependent term is twice the kernel rotation's: 8P
+relative to the product's rounding term, P the per-component signal
+variance at the pass in fractions of full scale (about 10^-3 on full-scale
+white noise under fixed scaling). Summed:
 
 | N | stages | variance-only prediction, LSB32 rms (the battery's `model` column) |
 |---|---|---|
-| 256 | 4-4-4-2 + post | 0.569 (−191.53 dBFS/component) |
+| 256 | 4-4-4-2 + post | 0.568 (−191.55 dBFS/component) |
 | 512 | 4-4-4-4 + post | 0.584 (−191.31) |
-| 2048 | 4-4-4-4-4 + post | 0.585 (−191.30) |
+| 2048 | 4-4-4-4-4 + post | 0.584 (−191.31) |
 
 (The battery's `NoiseFloorTracksWelchModel` derives this model independently
 from the two headers and prints it beside every measurement; the numbers
 here are its printout. Summing the rules above by hand gives the same
-0.584 at N = 512: 0.229 from the post-pass, 0.078 from the last radix-4
-stage through the post shift, 0.025 / 0.007 / 0.002 from the earlier ones.)
+0.584 at N = 512: 0.229 from the post-pass (0.0625 from its shift, 0.166
+from its product on 254 of 255 interior bins), 0.078 from the last radix-4
+stage through the post shift, 0.025 / 0.007 / 0.002 from the earlier ones.
+Before the re-derivation of 2026-09-26 the model charged the post-pass's
+product to every bin with the kernel rotation's twiddle term: 0.569 /
+0.584 / 0.585, −191.53 / −191.31 / −191.30; the measurement did not move.)
 The last radix-4 stage and the post-pass dominate; the input pre-shift and
 the first stages are attenuated by 4^-(stages) and contribute nothing
 measurable, which is why the Q31 floor is the same at every N and the
@@ -407,8 +577,10 @@ prediction converges at 0.58 LSB.
 
 What the variance model does not carry is the **round-half-up bias**: an
 s-bit `shr_round` has mean error +2^-(s+1) LSB (+0.25 for one bit, +0.125
-for two). The final 1-bit shift's +0.25 lands on every output component
-unrotated; the last kernel stage's 4 · 0.125 = 0.5 per component is halved
+for two). The 1-bit shift before the post-pass puts +0.25 on every
+component entering it, which the pass carries to between 0 and +0.5 per
+output component, bin by bin through C_k (+0.5 on DC, 0 on Nyquist:
+a_r + a_i and a_r − a_i); the last kernel stage's 4 · 0.125 = 0.5 per component is halved
 by the post shift and mixed with bin-dependent phases; earlier stages' biases
 arrive rotated and count as variance across bins. Along the unrotated path
 (q = 0, r = 0 at every stage) the biases add coherently into the DC bin.
@@ -425,23 +597,38 @@ tone rows print beside them and are pinned by the same test):
 | Q15 fixed | 256 | 8 | 0.29 | 1.02 | 69.1 dB | 29.7 dB |
 | Q15 fixed | 512 | 9 | 0.29 | 1.01 | 66.5 dB | 26.6 dB |
 | Q15 fixed | 2048 | 11 | 0.29 | 1.00 | 60.2 dB | 20.3 dB |
-| Q31 fixed | 256 | 9 | 0.69 | 1.46 | 152.0 dB | 111.2 dB |
+| Q31 fixed | 256 | 9 | 0.69 | 1.47 | 152.0 dB | 111.2 dB |
 | Q31 fixed | 512 | 10 | 0.68 | 1.35 | 149.4 dB | 109.4 dB |
 | Q31 fixed | 2048 | 12 | 0.70 | 1.44 | 142.8 dB | 103.2 dB |
 | Q15 block floating | 256 | 5 | 0.29 | 1.01 | 87.2 dB | 77.5 dB (0) |
 | Q15 block floating | 512 | 5 | 0.29 | 1.01 | 90.6 dB | 80.6 dB (0) |
 | Q15 block floating | 2048 | 7 | 0.29 | 1.03 | 84.2 dB | 86.4 dB (0) |
 | Q31 block floating | 256 | 7 | 0.99 | 1.79 | 160.8 dB | 155.7 dB (0) |
-| Q31 block floating | 512 | 7 | 1.50 | 2.32 | 160.6 dB | 155.7 dB (1) |
+| Q31 block floating | 512 | 7 | 1.50 | 2.31 | 160.6 dB | 155.7 dB (1) |
 | Q31 block floating | 2048 | 9 | 1.12 | 1.28 | 156.8 dB | 153.8 dB (2) |
 
 Across all levels the Q15 fixed rms is 0.26 – 0.30 LSB and the Q31 fixed rms
-0.67 – 0.75 LSB (ratio 1.31 – 1.74); Q31 block floating holds 135 – 136 dB
+0.67 – 0.75 LSB (ratio 1.31 – 1.75); Q31 block floating holds 135 – 136 dB
 at −60 dBFS with e = 0, its rms in LSB rising to 2.3 / 3.2 / 6.6 (N = 256 /
 512 / 2048) as the output is held at a larger scale. The pinned ratios
 (largest measured / model over the sizes, levels and both materials, at 2×):
-noise 2.11 / 3.49 / 2.09 / 4.65, tone 0.044 / 0.77 / 1.07 / 1.29 for Q15
+noise 2.11 / 3.51 / 2.09 / 4.63, tone 0.044 / 0.77 / 1.07 / 1.29 for Q15
 fixed / Q31 fixed / Q15 BFP / Q31 BFP.
+
+**Before and after the post-pass re-derivation (2026-09-26).** The
+post-pass and pre-pass of the Stage 3b kernel were replaced by the
+arrangement §1 derives from Cooley, Lewis and Welch (1970) and Sorensen et
+al. (1987). Measured on the same host (x86-64, glibc 2.39, GCC 13.3.0 -O3)
+with the same battery, the new code's outputs are the pinned bit patterns
+(all sixteen `OutputFingerprintIsPinned` values of N = 512 / 2048 and the
+three post-pass table checksums reproduce), so every floor is unchanged to
+the printed digit: Q15 fixed 0.26 – 0.30 LSB rms before and after, Q31
+fixed 0.67 – 0.75 LSB, Q15 block floating 0.28 – 0.30, Q31 block floating
+0.99 / 1.50 / 1.12 LSB at 0 dBFS (N = 256 / 512 / 2048) before and after;
+per-bin SNRs as in the table. What moved is the model (above), and with
+it the measured / model ratios: Q31 fixed white noise 1.744 → 1.751 (pin
+3.49 → 3.51), tone 0.383 → 0.384; Q31 block floating 2.321 → 2.315 (pin
+4.65 → 4.63); the Q15 ratios did not move.
 
 Reading it against the model:
 
@@ -449,10 +636,11 @@ Reading it against the model:
   and nothing else: the int32 kernel's 0.58 LSB32 is 2^-14 of a Q15 LSB.
   The per-bin SNR of −40 dBFS white noise at N = 512 is 26.6 dB; Part 7
   quoted "about 25 dB" for exactly this case.
-- **Q31 fixed** measures 0.67 – 0.75 LSB rms against the 0.57 – 0.59 LSB
-  variance-only prediction, a power ratio of 1.31 – 1.74. The excess is the
-  round-half-up bias: the final one-bit shift alone puts +0.25 LSB on every
-  component, the last kernel stage's biases arrive half-shifted with
+- **Q31 fixed** measures 0.67 – 0.75 LSB rms against the 0.57 – 0.58 LSB
+  variance-only prediction, a power ratio of 1.31 – 1.75. The excess is the
+  round-half-up bias: the one-bit shift before the post-pass alone puts
+  between 0 and +0.5 LSB on every output component (+0.25 on its inputs,
+  carried through C_k), the last kernel stage's biases arrive half-shifted with
   bin-dependent phases, and the earlier stages' arrive rotated and count as
   variance across bins. The battery pins the bias directly as the mean of
   F(x) + F(−x) (`RoundingBiasOnNegatedInputIsBounded`): 0.81 LSB (Q31
@@ -1059,6 +1247,24 @@ SHA, toolchain and QEMU versions; the gate itself lives in
 
 ### `.text` per profile at N = 512
 
+**Post-pass re-derivation (2026-09-26; local, not a CI run).** The
+fixed-point post-pass / pre-pass re-derived from the literature (§1),
+measured locally with the CI toolchain (arm-none-eabi-gcc 13.2.1
+(15:13.2.rel1-2), QEMU 8.2.2 (1:8.2.2+ds-0ubuntu1.18)), MinSizeRel, `size -A`
+`.text`, the float probe unchanged. Against the Stage 2c record (and the
+Stage 4 local figures where they differ):
+
+| Target | Q15 | Q31 | ceilings q15 / q31 |
+|---|---|---|---|
+| `m4-softfp` | 31,473 (unchanged) | 31,001 → 30,937 | 32,448 / 31,936 |
+| `m4f` | 31,681 (2c; 31,745 at Stage 4) → 31,681 | 31,209 → 31,145 | 32,640 / 32,192 |
+| `m33` | 31,105 (2c; 31,113 at Stage 4) → 31,113 | 30,633 (2c; 30,593 at Stage 4) → 30,585 | 32,064 / 31,552 |
+| `m55` | 27,097 (2c; 27,105 at Stage 4) → 27,097 | 26,593 (2c; 26,553 at Stage 4) → 26,553 | 27,968 / 27,392 |
+| `m55-ooura` | 27,097 (2c; 27,105 at Stage 4) → 27,097 | 26,593 (2c; 26,553 at Stage 4) → 26,553 | 27,968 / 27,392 |
+
+Every probe is under its ceiling; the float probes read 53,289 / 44,601 /
+44,009 / 106,725 / 39,281, the Stage 4 figures. No ceiling is re-recorded.
+
 **Stage 2c (this PR): the fixed-point columns, and the ceilings.** Measured
 on the recording run of the 2c branch (`21b3488`, bench run 35861317022,
 2026-09-23, arm-none-eabi-gcc 13.2.1 (15:13.2.rel1-2), QEMU 8.2.2 (1:8.2.2+ds-0ubuntu1.18), ubuntu-24.04), MinSizeRel,
@@ -1136,6 +1342,28 @@ rdft-reachable text, `--gc-sections`): float 15.7 KB at `-Os`, 19.9 KB at
 `-O2`; double (soft-float) 39.9 KB at `-O2`.
 
 ### Instructions per scenario
+
+**Post-pass re-derivation (2026-09-26; local, not a CI run).** Same
+toolchain and QEMU as the sizes above, the counting plugin built as
+`bench.yml` builds it, `scripts/icount.py` in compare mode against
+`bench/baselines.json` (the Stage 2c recording of the previous post-pass):
+
+| Scenario | `m4-softfp` | `m4f` | `m33` | `m55` | `m55-ooura` |
+|---|---|---|---|---|---|
+| `rfft_q15_512` | 746,311,273 → 752,864,296 (+0.88 %) | 753,215,637 → 760,026,298 (+0.90 %) | 752,189,619 → 758,994,136 (+0.90 %) | 684,157,511 → 688,580,080 (+0.65 %) | 684,157,511 → 688,580,080 (+0.65 %) |
+| `rfft_q31_512` | 709,161,574 → 714,608,662 (+0.77 %) | 715,019,447 → 720,988,333 (+0.83 %) | 714,626,257 → 719,567,047 (+0.69 %) | 657,595,969 → 665,145,823 (+1.15 %) | 657,595,969 → 665,145,823 (+1.15 %) |
+| `rfft_q31_2048` | 869,187,566 → 873,980,755 (+0.55 %) | 876,486,909 → 881,802,089 (+0.61 %) | 875,801,377 → 880,074,125 (+0.49 %) | 806,142,635 → 813,689,587 (+0.94 %) | 806,142,635 → 813,689,587 (+0.94 %) |
+
+The float scenarios read −0.01 … +0.00 % (the Stage 4 figures). Every
+fixed-point scenario is inside the ±3 % band, so nothing is re-recorded
+(D11: a re-record is for a move beyond the band). The +0.5 … +1.2 % is the
+post-pass loop's code generation — its roundings sit where the previous
+one's did, as the identical outputs show —
+about 1,200 instructions per 512-point transform on `m33`, some 10 per bin
+pair, most of it the int64 saturation sequences of the eight `add` / `sub`
+per pair and the register pressure around them. A variant that loads the
+four inputs into locals first measured worse on `m33` (+1.24 % /
++1.32 % / +0.94 %) and was not kept.
 
 **Stage 2c (this PR): the fixed-point scenarios seeded.** Same run as the
 sizes above (35861317022 at `21b3488`), compare mode on every key: the float

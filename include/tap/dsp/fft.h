@@ -606,11 +606,16 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///    shortfall. Largest deviation from the golden model over the
     ///    adversarial full-scale sweep, both directions: Q15 0.50 / 0.75 LSB
     ///    (fixed / block floating), Q31 4.25 / 15.99 LSB, at index 0 for
-    ///    Q31; pinned at 1.0 / 1.5 / 8.5 / 32. `SaturationFreeWorstCaseDoesNotWrap`.
+    ///    Q31; pinned at 1.0 / 1.5 / 8.5 / 32 over the battery's N = 4 ...
+    ///    2048. Beyond it the Q31 block-floating maximum grows with the
+    ///    exponent gap (31.0 / 32.0 / 59.0 / 76.0 / 80.0 LSB at N = 4096 ...
+    ///    65536, index 0, unpinned; Q31 fixed stays <= 4.74 LSB there).
+    ///    `SaturationFreeWorstCaseDoesNotWrap`.
     ///  - Host identity. The fixed-point output is integer arithmetic over a
     ///    checksum-pinned table: for a fixed input it is one bit pattern on
-    ///    every host, pinned per profile, policy, direction and N = 512 /
-    ///    2048. `OutputFingerprintIsPinned`, `TwiddleTableChecksumIsPinned`.
+    ///    every host, pinned per profile, policy, direction and N = 64 / 512
+    ///    / 1024 / 2048 (the odd-log2-M sizes run the radix-2 stage).
+    ///    `OutputFingerprintIsPinned`, `TwiddleTableChecksumIsPinned`.
     ///  - Noise floor (output-referred, against the double golden model on
     ///    the same quantized input; N = 256 / 512 / 2048, 0 to -60 dBFS; the
     ///    numbers are the `[ floor ]` rows `NoiseFloorTracksWelchModel`
@@ -621,8 +626,8 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///    20 dB of level; block floating point keeps 84 - 91 dB (Q15) and
     ///    157 - 161 dB (Q31) at 0 dBFS and does not lose the low-level
     ///    signal (78 - 86 dB Q15, 154 - 156 dB Q31 at -40 dBFS). Welch's
-    ///    variance model predicts 0.57 - 0.59 LSB32 for the kernel; the
-    ///    measured/model ratio of 1.31 - 1.74 (Q31 fixed) is the
+    ///    variance model predicts 0.57 - 0.58 LSB32 for the kernel; the
+    ///    measured/model ratio of 1.31 - 1.75 (Q31 fixed) is the
     ///    round-half-up bias, largest at index 0 under block floating point
     ///    (fft/fixed_point.h, "Honest limit"). `NoiseFloorTracksWelchModel`,
     ///    `RoundingBiasOnNegatedInputIsBounded`, `Q15TracksDouble`, `Q31TracksDouble`,
