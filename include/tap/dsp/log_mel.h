@@ -30,7 +30,10 @@
 //   - Window: periodic Hann w[n] = 0.5 - 0.5 cos(2 pi n / frame), n in
 //     [0, frame), or its square root (mel_window::sqrt_hann). Stated by the
 //     geometry, never implied.
-//   - FFT: fft_size >= frame, a power of two; the windowed frame occupies
+//   - FFT: fft_size >= frame, a power of two inside the size range of the
+//     float or double engine the profile runs (basic_log_mel<Sample>::
+//     supports_geometry below; the geometry's own valid() cannot know the
+//     engine and checks only >= 4); the windowed frame occupies
 //     [0, frame) and zeros occupy [frame, fft_size). The transform is the
 //     unnormalized real DFT of tap::dsp::basic_real_fft (the packed spectrum
 //     defined in fft/spectrum.h), so the power spectrum is |X_k|^2 with
@@ -126,6 +129,16 @@ namespace tap::dsp {
 
         std::size_t bins() const noexcept { return fft_size / 2 + 1; }
 
+        /// The engine-independent half of the precondition: every field in
+        /// range, fft_size a power of two >= 4. NOT sufficient on its own:
+        /// the FFT engine a profile runs has its own size range (fft.h:
+        /// split-radix 4 … 2^30, vDSP 4 … 2^20, CMSIS-DSP 32 … 4096 on the
+        /// M55), and a geometry that is valid() but outside it is undefined
+        /// behaviour in a release build — measured on the M55 under QEMU:
+        /// log_mel32 at fft_size 16 and 8192 returns wrong features with no
+        /// fault. The gate for a geometry that comes from configuration (a
+        /// trained model, a C ABI caller) is basic_log_mel<Sample>::
+        /// supports_geometry(g), which ANDs this with the engine's predicate.
         bool valid() const noexcept {
             const bool pow2 = fft_size >= 4 && (fft_size & (fft_size - 1)) == 0;
             return sample_rate > 0.0 && hop >= 1 && frame >= hop && pow2 && fft_size >= frame && bands >= 1
@@ -168,11 +181,27 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
                       "basic_log_mel supports the two Tap numeric profiles: float and double");
 
       public:
-        /// @pre g.valid()
+        /// The FFT this profile runs: the build's default engine for Sample.
+        using fft_type = basic_real_fft<Sample>;
+
+        /// The whole precondition of the constructor, and the MANDATORY gate
+        /// wherever a geometry comes from configuration (fft.h's rule for
+        /// supports_size, applied to this class): g.valid() and the FFT
+        /// engine's own size predicate, fft_type::supports_size(g.fft_size).
+        /// On every engine but CMSIS-DSP the two differ only above the
+        /// engine's upper bound (2^30 split-radix, 2^20 vDSP); under
+        /// TAP_DSP_FFT_CMSIS the float profile also rejects every fft_size
+        /// outside 32 … 4096 that valid() accepts (4, 8, 16, 8192, …), while
+        /// the double profile (split-radix on every build) does not.
+        static bool supports_geometry(const log_mel_geometry& g) noexcept {
+            return g.valid() && fft_type::supports_size(g.fft_size);
+        }
+
+        /// @pre supports_geometry(g): release builds do not check (assert).
         explicit basic_log_mel(const log_mel_geometry& g)
             : m_g(g)
             , m_fft(g.fft_size) {
-            assert(g.valid());
+            assert(supports_geometry(g));
             m_history.assign(g.frame, Sample(0));
             m_pending.assign(g.hop, Sample(0));
             m_window.assign(g.frame, Sample(0));

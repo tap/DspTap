@@ -329,6 +329,31 @@ namespace {
     }
 
     // ------------------------------------------------------------------------
+    // `int` and the Q31 profile, per target (fft.h, class docstring). The Q31
+    // profile is basic_real_fft<std::int32_t> on every target; whether `int`
+    // spells it depends on the target's std::int32_t: int on the three hosted
+    // legs (glibc, MSVC, Apple), long on arm-none-eabi (newlib's
+    // __INT32_TYPE__ is long int — all four QEMU legs), where
+    // basic_real_fft<int> does not compile (the primary template's
+    // static_assert). The row the log carries is the measurement.
+    // ------------------------------------------------------------------------
+#if defined(__arm__) && defined(__GNUC__) && !defined(__linux__) && !defined(__APPLE__)
+    constexpr bool k_int32_is_long = true; // arm-none-eabi (newlib)
+#else
+    constexpr bool k_int32_is_long = false;
+#endif
+    static_assert(std::is_same_v<tap::dsp::basic_real_fft<std::int32_t>, tap::dsp::real_fft_q31>);
+
+    TEST(fft_engine, Int32IsIntOnTheHostsAndLongOnArmNoneEabi) {
+        std::printf("[ measured ] std::int32_t is %s on this target\n", std::is_same_v<std::int32_t, int> ? "int"
+                                                                        : std::is_same_v<std::int32_t, long>
+                                                                            ? "long"
+                                                                            : "neither int nor long");
+        EXPECT_EQ((std::is_same_v<std::int32_t, int>), !k_int32_is_long);
+        EXPECT_EQ((std::is_same_v<std::int32_t, long>), k_int32_is_long);
+    }
+
+    // ------------------------------------------------------------------------
     // The precondition itself: a debug assertion (TAP_EXPECTS). Compiled in
     // only where it can fire and be caught — a Debug configure on a host with
     // death tests — since every CI battery is Release / MinSizeRel and the

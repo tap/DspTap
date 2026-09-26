@@ -53,7 +53,10 @@
 // to the split-radix engine, the golden model, so the double-precision
 // reference battery is unaffected:
 //   TAP_DSP_FFT_CMSIS       CMSIS-DSP Helium on the bare-metal Cortex-M55
-//                           (fft/backends/cmsis.h; N = 32 … 4096 only)
+//                           (fft/backends/cmsis.h; N = 32 … 4096 only).
+//                           The root CMakeLists.txt defaults it ON only when
+//                           the compiler targets floating-point Helium
+//                           (__ARM_FEATURE_MVE & 2), OFF otherwise.
 //   TAP_DSP_FFT_ACCELERATE  Apple's vDSP (Accelerate) on macOS
 //                           (fft/backends/accelerate.h)
 // Each accelerated engine re-presents the split-radix engine's EXACT numeric
@@ -204,9 +207,13 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     /// engine beside the accelerated default in the same binary, which is
     /// what makes engine parity a test rather than a CI-matrix property),
     /// basic_real_fft<std::int16_t> / <std::int32_t, scaling::block_floating>
-    /// (the fixed-point profiles, unchanged; note that `int` is std::int32_t
-    /// on every CI target, so basic_real_fft<int> compiles and IS the Q31
-    /// profile — the docstrings say std::int32_t and mean it), and
+    /// (the fixed-point profiles, unchanged; the docstrings say std::int32_t
+    /// and mean it: `int` IS std::int32_t on the three hosted CI legs —
+    /// glibc, MSVC, Apple — so there basic_real_fft<int> is the Q31 profile,
+    /// but on arm-none-eabi, all four QEMU legs, std::int32_t is `long`
+    /// (newlib's __INT32_TYPE__) and basic_real_fft<int> does not compile;
+    /// `Int32IsIntOnTheHostsAndLongOnArmNoneEabi` pins which on every leg),
+    /// and
     /// basic_real_fft<float, scaling::fixed> / <double, scaling::fixed>, the spelling all four
     /// profiles shared before Stage 4 (the capi's generic seam writes it):
     /// for a floating Sample, scaling::fixed in the second position names the
@@ -231,14 +238,22 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///     nothing in a release build, the house precondition style,
     ///     STYLE.md §4 and detail/expects.h). Stated so nobody reads more
     ///     into it: in a release build a size outside the range is a
-    ///     precondition violation, i.e. undefined behaviour (for the CMSIS
-    ///     engine a HardFault on the first transform; for the others whatever
-    ///     the arithmetic does past its tables), and there is deliberately no
-    ///     defined fallback in the transforms. supports_size is therefore the
-    ///     MANDATORY gate wherever N comes from configuration rather than a
-    ///     constant: the capi's dsptap_fft_create applies it per profile, and
-    ///     a consumer's config path must (docs/fft-design.md, "MuTap bump
-    ///     checklist"). `SupportsSizeIsThePowerOfTwoInterval` pins the
+    ///     precondition violation, i.e. undefined behaviour, and nothing
+    ///     promises a fault. Measured (QEMU mps3-an547, Release and
+    ///     MinSizeRel, CMSIS engine): N = 16 and 8192 return a wrong spectrum
+    ///     with no fault at all; N = 4 returns a wrong spectrum and corrupts
+    ///     the heap, so a later call fails somewhere else (a HardFault after
+    ///     the transform in one probe, newlib's "Balloc succeeded" assertion
+    ///     in the next printf in another). On the host the
+    ///     split-radix engine at N = 12 reads past the caller's buffer
+    ///     (ASan). There is deliberately no defined fallback in the
+    ///     transforms. supports_size is therefore the MANDATORY gate wherever
+    ///     N comes from configuration rather than a constant: the capi's
+    ///     dsptap_fft_create applies it per profile; the config-driven classes
+    ///     in DspTap expose it for their own FFT (basic_log_mel::
+    ///     supports_geometry, basic_pvoc::supports_size), and the capi gates
+    ///     on those; a consumer's config path must (docs/fft-design.md,
+    ///     "MuTap bump checklist"). `SupportsSizeIsThePowerOfTwoInterval` pins the
     ///     predicate on every leg. Per engine:
     ///       split-radix (double, float)   4 … 2^30  (the int-indexing bound
     ///                                     of Ooura's arithmetic; bit identity
@@ -249,8 +264,8 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///       CMSIS-DSP (float, Cortex-M55) 32 … 4096 (CMSIS's own table; below
     ///                                     32 or above 4096 the library's init
     ///                                     fails, which the constructor now
-    ///                                     checks instead of ignoring — audit
-    ///                                     Part 13; N = 4 hard-faulted)
+    ///                                     checks, in a debug build, instead
+    ///                                     of ignoring — audit Part 13)
     ///       fixed point (Q15, Q31)        4 … 65536
     ///     `EngineRangesAreTheStatedNumbers`, `SupportsSizeIsThePowerOfTwoInterval`,
     ///     `ConstructsAtTheRangeBounds` (tests/test_fft_engine.cpp).

@@ -71,9 +71,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # TAP_DSP_FFT_CMSIS defaults ON for every bare-metal Arm profile
-          # (root CMakeLists.txt), so every non-Helium key pins it OFF here
-          # explicitly, whatever its toolchain file also does.
+          # TAP_DSP_FFT_CMSIS defaults ON only where the compiler targets
+          # floating-point Helium (the root CMakeLists.txt's MVE-F check: the
+          # m55 keys here), so the explicit OFF on the M4 / M33 keys restates
+          # the detected default; it stays so that each key's configuration is
+          # spelled out in full and does not depend on the detection. The
+          # m55-ooura key needs it (it overrides the M55's detected ON).
           #
           # text_ceiling_<profile>: the .text byte ceiling for the MinSizeRel
           # tap_dsp_size_probe_rfft_<profile>_512 on this key (bench/README.md,

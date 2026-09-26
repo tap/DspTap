@@ -93,18 +93,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # cmsis: what the root CMakeLists.txt's MVE-F check must select with
+          # no -DTAP_DSP_FFT_CMSIS on the command line (asserted after
+          # configure, so a broken detection cannot quietly turn the M55 leg
+          # into a second split-radix leg, or an M4/M33 leg into a CMSIS one).
           - name: cortex-m4-softfp
             toolchain: cmake/arm-cortex-m4-mps2.cmake
             extra: -DTAP_DSP_M4_FPU=OFF
+            cmsis: "OFF"
           - name: cortex-m4f
             toolchain: cmake/arm-cortex-m4-mps2.cmake
             extra: -DTAP_DSP_M4_FPU=ON
+            cmsis: "OFF"
           - name: cortex-m33
             toolchain: cmake/arm-cortex-m33-mps2.cmake
             extra: ""
+            cmsis: "OFF"
           - name: cortex-m55
             toolchain: cmake/arm-cortex-m55-mps3.cmake
-            extra: "" # CMSIS Helium FFT backend ON by default on this profile
+            extra: "" # CMSIS Helium FFT backend ON by default: the compiler targets MVE-F
+            cmsis: "ON"
     steps:
       - uses: actions/checkout@v5
 
@@ -130,6 +138,11 @@ jobs:
           -DCMAKE_TOOLCHAIN_FILE=${{ matrix.toolchain }}
           -DTAP_DSP_WERROR=ON
           ${{ matrix.extra }}
+
+      - name: Default FFT backend is the detected one
+        run: |
+          grep '^TAP_DSP_HAVE_MVE_FLOAT:' build-${{ matrix.name }}/CMakeCache.txt || true
+          grep -x 'TAP_DSP_FFT_CMSIS:BOOL=${{ matrix.cmsis }}' build-${{ matrix.name }}/CMakeCache.txt
 
       - name: Build
         run: cmake --build build-${{ matrix.name }} -j 4

@@ -250,8 +250,10 @@ DSPTAP_API int dsptap_psola_process(dsptap_psola h, const double* in, double* ou
 
 /// -- pvoc -----------------------------------------------------------------------------------
 
-/// Create a phase-vocoder shifter (tap::dsp::basic_pvoc<double>), or NULL unless fft_size is a
-/// power of two in the header's [64, 2^28], or on allocation failure.
+/// Create a phase-vocoder shifter (tap::dsp::basic_pvoc<double>), or NULL unless
+/// basic_pvoc<double>::supports_size(fft_size) — a power of two in [64, 2^28], the class's range
+/// intersected with its FFT engine's (split-radix for double on every build) — or on allocation
+/// failure.
 DSPTAP_API dsptap_pvoc dsptap_pvoc_create(int fft_size) DSPTAP_NOEXCEPT;
 DSPTAP_API void        dsptap_pvoc_destroy(dsptap_pvoc h) DSPTAP_NOEXCEPT;
 DSPTAP_API int         dsptap_pvoc_latency(dsptap_pvoc h) DSPTAP_NOEXCEPT;
@@ -264,7 +266,9 @@ DSPTAP_API int dsptap_pvoc_process(dsptap_pvoc h, const double* in, double* out,
 /// -- log_mel --------------------------------------------------------------------------------
 
 /// Create a log-mel front end at the given geometry (tap::dsp::log_mel_geometry; sqrt_window
-/// selects the sqrt-Hann window, preemphasis 0 = off), or NULL on invalid geometry. The log
+/// selects the sqrt-Hann window, preemphasis 0 = off), or NULL unless
+/// basic_log_mel<double>::supports_geometry(g) — valid() and the FFT engine's size range, the gate
+/// the setters below apply too. The log
 /// constants and PCEN default per the header; the setters below rebuild the object (geometry is
 /// fixed at construction), which also resets it; a setter that fails (invalid values, or
 /// allocation failure while rebuilding) returns -1 and leaves the handle exactly as it was.

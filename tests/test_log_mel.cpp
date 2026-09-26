@@ -10,9 +10,11 @@
 // number. MuTap's keyword spotter is trained against exactly these numbers.
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <numbers>
+#include <type_traits>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -354,6 +356,59 @@ namespace {
         g.pcen.smoother = 0.0;
         EXPECT_FALSE(g.valid());
         EXPECT_EQ(log_mel_geometry::k_contract_version, 1U);
+    }
+
+    // The constructor's whole precondition is supports_geometry(g): valid()
+    // AND the FFT engine's size predicate. valid() cannot know the engine; the
+    // float profile's is CMSIS-DSP (32 … 4096) on the M55 leg, where log_mel32
+    // at fft_size 16 and 8192 — both valid() — was measured returning wrong
+    // features with no fault in a release build (QEMU mps3-an547, the audit's
+    // probe and this change's). With every other field valid (frame 4, hop 2),
+    // a size is supported exactly when it is a power of two in
+    // [max(4, engine min), engine max]: swept over 0 … 2^17, plus 2^31, which
+    // valid() accepts and every engine's range (2^30 at most) excludes.
+    TYPED_TEST(log_mel_test, SupportsGeometryIsValidityAndTheEngineSizeRange) {
+        using fe  = basic_log_mel<TypeParam>;
+        using fft = typename fe::fft_type;
+        static_assert(std::is_same_v<fft, tap::dsp::basic_real_fft<TypeParam>>,
+                      "the class gates on the FFT it instantiates: the build's default engine");
+        log_mel_geometry g;
+        g.frame = 4;
+        g.hop   = 2;
+        for (size_t n = 0; n <= (size_t{1} << 17); ++n) {
+            g.fft_size = n;
+            const bool expected =
+                std::has_single_bit(n) && n >= std::max<size_t>(4, fft::k_min_size) && n <= fft::k_max_size;
+            ASSERT_EQ(fe::supports_geometry(g), expected) << "fft_size=" << n;
+            ASSERT_EQ(fe::supports_geometry(g), g.valid() && fft::supports_size(n)) << "fft_size=" << n;
+        }
+        g.fft_size = size_t{1} << 31;
+        EXPECT_TRUE(g.valid());
+        EXPECT_FALSE(fe::supports_geometry(g)) << "above every engine's k_max_size";
+
+        // An invalid geometry stays rejected at a size every engine takes.
+        g     = log_mel_geometry{};
+        g.hop = 401;
+        EXPECT_TRUE(fft::supports_size(g.fft_size));
+        EXPECT_FALSE(fe::supports_geometry(g));
+        // The reference geometry (fft_size 512) is inside every engine's range.
+        EXPECT_TRUE(fe::supports_geometry(log_mel_geometry{}));
+
+        // The M55 rows: valid() geometries at 16 and 8192, which only the
+        // CMSIS float engine rejects; double is split-radix on every build.
+#if defined(TAP_DSP_FFT_CMSIS)
+        constexpr bool k_engine_rejects = std::is_same_v<TypeParam, float>;
+#else
+        constexpr bool k_engine_rejects = false;
+#endif
+        for (const size_t n : {size_t{16}, size_t{8192}}) {
+            log_mel_geometry m;
+            m.frame    = 16;
+            m.hop      = 8;
+            m.fft_size = n;
+            EXPECT_TRUE(m.valid()) << "fft_size=" << n;
+            EXPECT_EQ(fe::supports_geometry(m), !k_engine_rejects) << "fft_size=" << n;
+        }
     }
 
     TEST(LogMelCrossPrecision, FloatTracksDouble) {

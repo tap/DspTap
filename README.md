@@ -25,7 +25,7 @@ its size range and shareability as contract numbers:
 | Engine | Profiles | Selected by | Size range | Shareable | What it is |
 |---|---|---|---|---|---|
 | split-radix (`fft/split_radix.h`) | `double`; `float` unless a backend is on | default | 4 … 2^30 | yes | the C++20 transliteration of Ooura's `rdft`, **bit-identical** to the C it replaced (both precisions; gated against a reference copy of the C from Stage 2a until Decision D6 deleted it, pinned since as output fingerprints in `tests/test_fft_split_radix_fingerprint.cpp`), tables built in the constructor |
-| CMSIS-DSP Helium (`fft/backends/cmsis.h`) | `float` | `TAP_DSP_FFT_CMSIS` (default ON for the bare-metal Cortex-M55 profile) | **32 … 4096** (CMSIS-DSP's own init table; the constructor checks the init status since Stage 4 — outside this range the library never initialized, and N = 4 hard-faulted) | no | Arm's radix-4/8 MVE real FFT, re-presented in the same contract to float epsilon; on the `m55` icount key the vendored C (to which the split-radix engine is bit-identical) executes 1.81× (N = 512) / 1.97× (N = 2048) the instructions of the CMSIS build over the whole ratchet scenario, transform plus the class's copy loop, 2/N scaling and checksum ([run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811), `bench/README.md`); MuTap's transform-only figure on the C was ~3×, not re-measured here |
+| CMSIS-DSP Helium (`fft/backends/cmsis.h`) | `float` | `TAP_DSP_FFT_CMSIS` (default ON exactly when the compiler targets floating-point Helium, `__ARM_FEATURE_MVE & 2`: the Cortex-M55 / M85 class; OFF for every other target, other Cortex-M cores included) | **32 … 4096** (CMSIS-DSP's own init table; the constructor checks the init status since Stage 4, in a debug build — outside this range the library never initializes, and a release build is undefined behaviour with no fault promised: measured under QEMU, N = 16 and 8192 give a wrong spectrum silently, N = 4 a wrong spectrum and a corrupted heap) | no | Arm's radix-4/8 MVE real FFT, re-presented in the same contract to float epsilon; on the `m55` icount key the vendored C (to which the split-radix engine is bit-identical) executes 1.81× (N = 512) / 1.97× (N = 2048) the instructions of the CMSIS build over the whole ratchet scenario, transform plus the class's copy loop, 2/N scaling and checksum ([run 35844483811](https://github.com/tap/DspTap/actions/runs/35844483811), `bench/README.md`); MuTap's transform-only figure on the C was ~3×, not re-measured here |
 | Apple vDSP (`fft/backends/accelerate.h`) | `float` | `TAP_DSP_FFT_ACCELERATE` (default ON on Apple) | 4 … 2^20 | no | `vDSP_fft_zrip`, same contract to float epsilon; ~3× faster per transform on Apple Silicon is MuTap's transform-only measurement on the vendored C (tap/MuTap#31), not re-measured in this repo (the same-binary parity *test* exists since Stage 4; the microbenchmark needs a Mac) |
 | int32 radix-4 (`fft/fixed_point.h`) | Q15, Q31 | the sample type (the second template argument is the scaling policy here) | 4 … 65536 | Q31 yes, Q15 no | one kernel over Q1.30 twiddles under two scaling policies, returning an exponent |
 
@@ -162,7 +162,9 @@ Key contract points (full detail in the header docstring):
   the out-of-place `inverse()` applies the `2/N` for you.
 - Transforms are `noexcept` and allocation-free after construction — real-time
   safe. Size must be a power of two inside the engine's range (the table
-  above; `supports_size(n)`), fixed at construction (Q15 allocates an int32
+  above; `supports_size(n)`, the mandatory gate for a size that comes from
+  configuration — a size outside it is undefined behaviour in a release
+  build, with no fault promised), fixed at construction (Q15 allocates an int32
   work buffer of N at construction, Q31 transforms in place).
 - One transform at a time per object unless `k_is_shareable` says otherwise
   for the engine in use (split-radix and Q31: yes; vDSP, CMSIS and Q15: no).
@@ -228,7 +230,11 @@ Laroche–Dolson-style **peak-region shifting**: each spectral peak's region is
 translated rigidly by an integer bin offset and rotated by one accumulated
 residual phase, so phase relationships across the peak stay intact. At
 ratio 1 the output reconstructs the input's waveform delayed by exactly one
-FFT frame (pinned by the tests). Latency = the FFT size (1024 default).
+FFT frame (pinned by the tests). Latency = the FFT size (1024 default). The
+size range is the class's own [64, 2^28] intersected with its FFT engine's
+(`basic_pvoc<Sample>::k_min_size` / `k_max_size`, `supports_size(n)`): 64 …
+2^28 for double on every build and for float on the split-radix engine, 64 …
+2^20 for float under vDSP, 64 … 4096 for float under CMSIS-DSP.
 
 ```cpp
 tap::dsp::pvoc shifter(1024);
@@ -257,7 +263,12 @@ priming — and stamps it with `k_contract_version`. Everything a trainer
 tunes (band count, fmin/fmax, log floor/shift/scale, every PCEN parameter,
 pre-emphasis) is runtime geometry in `log_mel_geometry`, carried by a trained
 model, so retraining never touches the header. Reference geometry: 16 kHz,
-400 / 160 / 512, 40 bands 20–7600 Hz. Latency = the frame length.
+400 / 160 / 512, 40 bands 20–7600 Hz. Latency = the frame length. A geometry
+from configuration is gated by `basic_log_mel<Sample>::supports_geometry(g)`:
+`g.valid()` (engine-independent; any power of two ≥ 4) AND the FFT engine's
+`supports_size(g.fft_size)` — under CMSIS-DSP the float profile takes 32 …
+4096 only, and a `valid()` geometry outside it (16, 8192) was measured
+returning wrong features with no fault in a release build.
 
 ```cpp
 tap::dsp::log_mel_geometry g;          // the reference geometry
@@ -529,7 +540,9 @@ CI also runs an emulation-sized selection of the battery
 FPU flavour selected by `-DTAP_DSP_M4_FPU=ON`), `cortex-m33`
 (`cmake/arm-cortex-m33-mps2.cmake`) and `cortex-m55`
 (`cmake/arm-cortex-m55-mps3.cmake`, where the CMSIS-DSP Helium FFT backend is
-ON and its parity suite runs against the split-radix engine). Every suite compiled into a test
+ON — detected, not pinned: the compiler targets MVE-F — and its parity suite
+runs against the split-radix engine; CI asserts the detected value on every
+leg). Every suite compiled into a test
 executable runs on the target unless excluded by name in
 `tests/CMakeLists.txt` (a negative filter; each exclusion is a budget note).
 To run one locally, with `arm-none-eabi-g++` and `qemu-system-arm` on `PATH`:
@@ -556,8 +569,14 @@ alone it also links the `tap::dsp_fft` static library that carries the CMSIS
 objects, and nothing else is ever compiled); it does not build the tests when
 added as a subdirectory (`TAP_DSP_BUILD_TESTS` defaults OFF unless
 top-level). The per-platform float32 backend defaults follow the target: vDSP
-on Apple, CMSIS on the bare-metal M55 profile, the split-radix engine
-elsewhere — override with `-DTAP_DSP_FFT_ACCELERATE=OFF` etc.
+on Apple; CMSIS where the compiler targets floating-point Helium — a compile
+check on `__ARM_FEATURE_MVE & 2` under your toolchain's flags, so it does not
+matter how the toolchain spells the CPU (`-mcpu=cortex-m55`, `cortex-m85`,
+`-march=armv8.1-m.main+mve.fp`); the split-radix engine elsewhere, including
+Cortex-M0+/M4/M7/M33 toolchains. Flags the check cannot see (options added per
+target after the toolchain) leave it OFF, which costs speed, never the
+contract. Override with `-DTAP_DSP_FFT_CMSIS=ON|OFF`,
+`-DTAP_DSP_FFT_ACCELERATE=OFF` etc.
 
 ## Provenance
 

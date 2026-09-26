@@ -1212,6 +1212,16 @@ opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
   fixed-point and engine tests, is renamed `TAP_DSP_TEST_MAX_FFT_N` (test-only; no consumer sets
   it). The CI job names `linux-ooura` / `windows-ooura` and the bench key `m55-ooura` keep their
   names (check names and baseline keys); comments say why.
+- **Final audit (2026-09-26), contract safety: SYNTHESIS A1–A4. Landed (#PR_A).** A1: the
+  CMSIS backend's default is ON only where the compiler targets floating-point Helium (a
+  compile check on `__ARM_FEATURE_MVE & 2`), not for every Generic+arm target; the M4/M33
+  toolchain pins are gone and CI asserts the detected value per leg. A2: DspTap's own
+  config-driven classes apply the mandatory size gate — `basic_log_mel<Sample>::
+  supports_geometry`, `basic_pvoc<Sample>::k_min_size` / `k_max_size` / `supports_size`,
+  derived from the engine — and the capi gates on them. A3/A4: the "HardFault" promise and
+  "`int` is `std::int32_t` on every CI target" are withdrawn in `fft.h`, `cmsis.h` and the
+  design note, with measured replacements. Record: docs/fft-design.md, "After the final
+  audit".
 
 ---
 
