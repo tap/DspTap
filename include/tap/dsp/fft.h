@@ -196,7 +196,7 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     /// Sample's second argument must satisfy real_fft_engine<Engine, Sample>
     /// (static_assert). basic_real_fft<float | double, scaling::fixed>, the
     /// spelling all four profiles shared before Stage 4, is ILL-FORMED since
-    /// the D4 expiry (#__PR__): a static_assert names
+    /// the D4 expiry (#40): a static_assert names
     /// the one-argument form basic_real_fft<float | double> in its place. It
     /// had resolved to the selected engine for one consumer cycle, as a type
     /// distinct from the one-argument form (same code, +2,949 bytes of .text

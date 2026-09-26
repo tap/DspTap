@@ -341,7 +341,7 @@ Deviations from the text above, each recorded there:
   changes; `basic_real_fft<float | double, scaling::fixed>` (the pre-Stage-4 spelling; no
   in-tree code writes it since the #35 fix pass) resolves to the selected engine and is a
   distinct type from the one-argument form, tolerated for one consumer cycle (D4); expired at
-  tap/DspTap#__PR__ (Part 13, "D4 expiry and D5 executed").
+  tap/DspTap#40 (Part 13, "D4 expiry and D5 executed").
 - **The fixed-point profiles carry the tag** (a partial specialization lives beside its
   primary) although their layout does not depend on the selection; cost stated in the design
   note (a harmless coalescing prevented; a link error instead of a silent merge).
@@ -1213,7 +1213,7 @@ opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
   fixed-point and engine tests, is renamed `TAP_DSP_TEST_MAX_FFT_N` (test-only; no consumer sets
   it). The CI job names `linux-ooura` / `windows-ooura` and the bench key `m55-ooura` keep their
   names (check names and baseline keys); comments say why.
-- **D4 expiry and D5 executed (tap/DspTap#__PR__, after the final audit of 2026-09-26, its
+- **D4 expiry and D5 executed (tap/DspTap#40, after the final audit of 2026-09-26, its
   finding F2).** Both conditions were met: MuTap pins DspTap `0c5bf59` and MuTap-Max pins MuTap
   `edf160e`, which pins DspTap `0db95b6`; both trees contain `bbfa48d` (the D5 deprecation,
   #31) and `6f6f77f` (#35), checked with `git merge-base --is-ancestor`. Removed: the two
@@ -1259,12 +1259,12 @@ wrappers when both are instantiated); no in-tree writer remains after the #35 fi
 capi's seam uses `detail::default_real_fft_policy_t`), and the resolution is tolerated for one
 consumer cycle — until MuTap and MuTap-Max pin a tree containing #35 — then
 `detail::floating_engine_of<Sample, scaling::fixed>` goes and the spelling becomes a
-`static_assert`. **Expiry executed** (tap/DspTap#__PR__; Part 13, "D4 expiry and D5
+`static_assert`. **Expiry executed** (tap/DspTap#40; Part 13, "D4 expiry and D5
 executed"). Alternative kept on record: no default, consumers name the engine.
 
 **D5. Float-I/O-on-double overloads: `[[deprecated]]` for one consumer cycle, then deleted.**
 Not gated on AmbiTap, which is not on disk and keeps its own wrapper per README. **Executed**
-(tap/DspTap#__PR__; Part 13, "D4 expiry and D5 executed").
+(tap/DspTap#40; Part 13, "D4 expiry and D5 executed").
 
 **D6. `fftsg.c` moves to `tests/reference/ooura/` at 2c and is deleted after both MuTap and
 MuTap-Max pin a tree containing 2c. `readme.txt` stays at `third_party/ooura/readme.txt`
