@@ -133,9 +133,9 @@ DSPTAP_API int dsptap_fft_profile(dsptap_fft h) DSPTAP_NOEXCEPT;
 /// Q31 / Q31_BFP) — the element width of the buffers the *_inplace_raw transforms take.
 DSPTAP_API int dsptap_fft_sample_bytes(dsptap_fft h) DSPTAP_NOEXCEPT;
 /// The float32 engine this build compiled: "srdif" (the portable engine of fft/srdif.h; the
-/// string was "split_radix" for the engine it replaced, and "ooura" before Stage 2c),
-/// "accelerate" (Apple vDSP) or "cmsis" (CMSIS-DSP Helium). The double profile is always the
-/// srdif engine; the four fixed-point profiles are always the portable int32 kernel
+/// string was "split_radix" for the engine it replaced, until tap/DspTap#42, and "ooura" before
+/// Stage 2c), "accelerate" (Apple vDSP) or "cmsis" (CMSIS-DSP Helium). The double profile is
+/// always the srdif engine; the four fixed-point profiles are always the portable int32 kernel
 /// (fft/fixed_point.h), on every host.
 DSPTAP_API const char* dsptap_fft_backend(void) DSPTAP_NOEXCEPT;
 /// The exponent contract's constant for this handle's size: basic_real_fft<Sample,

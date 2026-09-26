@@ -376,7 +376,8 @@ const char* dsptap_fft_backend(void) DSPTAP_NOEXCEPT {
 #else
     // The srdif engine (fft/srdif.h): what basic_real_fft<float> runs where no
     // backend is selected. The string names the engine (Decision D7): it was
-    // "split_radix" for the engine srdif replaced, and "ooura" before Stage 2c.
+    // "split_radix" for the engine srdif replaced (until tap/DspTap#42), and
+    // "ooura" before Stage 2c.
     return "srdif";
 #endif
 }

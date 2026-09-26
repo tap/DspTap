@@ -24,7 +24,7 @@ its size range and shareability as contract numbers:
 
 | Engine | Profiles | Selected by | Size range | Shareable | What it is |
 |---|---|---|---|---|---|
-| srdif (`fft/srdif.h`) | `double`; `float` unless a backend is on | default | 4 … 2^30 | yes | a split-radix decimation-in-frequency kernel of length N/2 (Duhamel–Hollmann 1984; Sorensen–Heideman–Burrus 1986), the bit-reversal permutation and the real post-pass of Cooley–Lewis–Welch 1970 / Sorensen et al. 1987 (the fixed-point engine's structure in floating point), written from the literature; exactly the split-radix operation count, 2N log₂N − 2N − 2 real operations per forward transform; tables from integer arithmetic (no libm), built in the constructor, so the output bits are the same on every host (pinned as output fingerprints in `tests/test_fft_srdif_fingerprint.cpp`). It replaced a port of a third-party split-radix engine at the same contract |
+| srdif (`fft/srdif.h`) | `double`; `float` unless a backend is on | default | 4 … 2^30 | yes | a split-radix decimation-in-frequency kernel of length N/2 (Duhamel–Hollmann 1984; Sorensen–Heideman–Burrus 1986), the bit-reversal permutation and the real post-pass of Cooley–Lewis–Welch 1970 / Sorensen et al. 1987 (the fixed-point engine's structure in floating point), written from the literature; exactly the split-radix operation count, 2N log₂N − 2N − 2 real operations per forward transform; tables from integer arithmetic (no libm), built in the constructor, so the output bits are the same on every host (pinned as output fingerprints in `tests/test_fft_srdif_fingerprint.cpp`). Since tap/DspTap#42, written clean-room; it replaced, at the same contract, the C++20 port of Ooura's `rdft` (`fft/split_radix.h`) that the floating profiles ran from Stage 2b (#31) until #42 (see Provenance) |
 | CMSIS-DSP Helium (`fft/backends/cmsis.h`) | `float` | `TAP_DSP_FFT_CMSIS` (default ON exactly when the compiler targets floating-point Helium, `__ARM_FEATURE_MVE & 2`: the Cortex-M55 / M85 class; OFF for every other target, other Cortex-M cores included) | **32 … 4096** (CMSIS-DSP's own init table; the constructor checks the init status since Stage 4, in a debug build — outside this range the library never initializes, and a release build is undefined behaviour with no fault promised: measured under QEMU, N = 16 and 8192 give a wrong spectrum silently, N = 4 a wrong spectrum and a corrupted heap) | no | Arm's radix-4/8 MVE real FFT, re-presented in the same contract to float epsilon; on the M55 the srdif engine (the `m55-ooura` icount key) executes 1.65× (N = 512) / 1.82× (N = 2048) the instructions of the CMSIS build (the `m55` key) over the whole ratchet scenario, transform plus the class's copy loop, 2/N scaling and checksum (`bench/README.md`) |
 | Apple vDSP (`fft/backends/accelerate.h`) | `float` | `TAP_DSP_FFT_ACCELERATE` (default ON on Apple) | 4 … 2^20 | no | `vDSP_fft_zrip`, same contract to float epsilon; ~3× faster per transform on Apple Silicon is MuTap's transform-only measurement against the engine the library carried before (tap/MuTap#31), not re-measured in this repo against srdif (the same-binary parity *test* exists since Stage 4; the microbenchmark needs a Mac) |
 | int32 radix-4 (`fft/fixed_point.h`) | Q15, Q31 | the sample type (the second template argument is the scaling policy here) | 4 … 65536 | Q31 yes, Q15 no | one kernel over Q1.30 twiddles under two scaling policies, returning an exponent |
@@ -66,24 +66,24 @@ image's code while the same embedder inside it did not —
 value closes the same exposure by opening the same namespace in its own
 (`namespace tap::mu::inline TAP_DSP_FFT_ABI` for MuTap, on its bump).
 
-**Migration note for consumers (the srdif engine).** What changed: the
-floating profiles' engine. `basic_real_fft<double>` and
+**Migration note for consumers (the srdif engine, tap/DspTap#42).** What
+changed: the floating profiles' engine. `basic_real_fft<double>` and
 `basic_real_fft<float>` (where no backend is selected) now hold a
 `detail::srdif_rdft<Sample>`; every output bit of those profiles moves, at the
 error level of either engine (the srdif engine's rms error against a
-quad-precision reference is 4–14 % lower than its predecessor's at every
-N ≥ 128, `fft/srdif.h` and `docs/fft-design.md`), so a consumer's own
-bit-exact pins of floating FFT output are re-measured once; its tables take
-2.6–2.8× the memory per object (11.3 kB for a float N = 2048); and the ABI tag
-is `fft_srdif` (it was `fft_split_radix`), so an image built against the new
-tree does not coalesce with one built against the old. What did not change:
-the contract (packing, sign, scale, size range 4 … 2^30, shareability,
+quad-precision reference is 4–14 % lower than its predecessor's at every N ≥
+128, `fft/srdif.h` and `docs/fft-design.md`), so a consumer's own bit-exact
+pins of floating FFT output are re-measured once; its tables take 2.6–2.8× the
+memory per object (11.3 kB for a float N = 2048); and the ABI tag is
+`fft_srdif` (it was `fft_split_radix`), so an image built against the new tree
+does not coalesce with one built against the old. What did not change: the
+contract (packing, sign, scale, size range 4 … 2^30, shareability,
 allocation-free `noexcept` transforms, tables built in the constructor), the
 API, and the Q15 / Q31 profiles, which do not use the floating engine. The
-float-I/O-on-double overloads `forward(const float*, float*)` /
-`inverse(const float*, float*)` were removed at tap/DspTap#40 (API break;
-neither consumer calls them). `tap::dsp` sets no `-ffp-contract` flag and
-exports none (Decision D9; the reasoning is in `fft.h`'s class docstring).
+float-I/O-on-double overloads `forward(const float*, float*)` / `inverse(const
+float*, float*)` were removed at tap/DspTap#40 (API break; neither consumer
+calls them). `tap::dsp` sets no `-ffp-contract` flag and exports none
+(Decision D9; the reasoning is in `fft.h`'s class docstring).
 
 **Header-only.** `tap::dsp` is a pure INTERFACE target: no vendored C is
 compiled into what ships. A static library (`tap_dsp_fft`, alias
@@ -600,38 +600,41 @@ from its bank constructor, and the `tests/support/` measurement harness) at
 the moment **RatioTap** became the second consumer — the same
 extract-on-second-consumer rule that created this repo.
 
-See [`third_party/ooura/readme.txt`](third_party/ooura/readme.txt) and
-[`third_party/cmsis-dsp/VENDOR.md`](third_party/cmsis-dsp/VENDOR.md) for the
-vendored-code provenance and licenses. The floating profiles run the C++20
-port of the same split-radix transform (`include/tap/dsp/fft/split_radix.h`,
-landed bit-identical to the C at Stage 2a, #28, and routed at Stage 2b, #31);
-the Q15 / Q31 profiles landed at Stage 3b (#27), and their real post-pass was
-re-derived from the literature under a clean-room procedure in #39
-(bit-identical; `NOTICE.md`). At Stage 2c the vendored C
+See [`third_party/cmsis-dsp/VENDOR.md`](third_party/cmsis-dsp/VENDOR.md) for
+the vendored CMSIS-DSP subset's provenance, and [`NOTICE.md`](NOTICE.md) for
+the licenses. The FFT the two libraries carried was Takuya Ooura's `fftsg.c`,
+vendored. At Stage 2a (#28) DspTap landed a C++20 port of its `rdft`
+(`include/tap/dsp/fft/split_radix.h`), bit-identical to the C, and routed the
+floating profiles at it at Stage 2b (#31); at Stage 2c (#32) the vendored C
 left the shipping tree, and a reference copy (`fftsg.c` and its float
 instantiation `fftsg_float.c`) under `tests/reference/ooura/` served the
 bit-identity gate alone until both MuTap and MuTap-Max pinned a tree
-containing 2c; Decision D6 then deleted it. The engine's identity to the C is
-pinned since by `tests/test_fft_split_radix_fingerprint.cpp` (output
-fingerprints measured equal to the C's; how to re-verify against upstream is
-in the design note), and `third_party/ooura/readme.txt` stays permanently as
-the license record. The
+containing 2c; Decision D6 (#36) then deleted it and pinned the port's
+output as fingerprints. The Q15 / Q31 profiles landed at Stage 3b (#27); their
+real post-pass, a transcription of the package's, was re-derived from the
+literature under a clean-room procedure in #39 (bit-identical). In #42 the
+maintainer replaced the port itself: the floating profiles run the srdif
+engine (`include/tap/dsp/fft/srdif.h`), written clean-room from the
+literature and DspTap's own fixed-point engine, and every floating output
+bit changed once. Since #42 DspTap ships no code derived from Ooura's
+package; `third_party/ooura/readme.txt` and `LICENSES/LicenseRef-Ooura.txt`
+stay as the license record for the trees before #42 that consumers pinned.
+The procedures, and what each did and did not cover, are in the design note
+("Provenance and licensing") and `NOTICE.md`. The
 design note is [`docs/fft-design.md`](docs/fft-design.md), filled in as each
 stage lands; the plan of record is `docs/audit-fft-and-code-smells.md` (#25).
 
 ## License
 
 DspTap's own code is MIT (`LICENSE`). Vendored third-party code keeps its own
-license. The Ooura FFT is under its author's own terms, stated in
-`third_party/ooura/readme.txt`: "You may use, copy, modify this code for any
-purpose and without fee. You may distribute this ORIGINAL package." — a grant
-of use, copying and modification, and of distribution of the original package.
-DspTap ships the C++ port of that file, a derivative work whose redistribution
-relies on the modification grant (SPDX `LicenseRef-Ooura AND MIT` for the port
-header, with the notice text in `LICENSES/LicenseRef-Ooura.txt`; the readme
-stays at `third_party/ooura/readme.txt` permanently). No copy of the original
-`fftsg.c` is carried any more (the test-only reference copy was deleted at
-Decision D6). CMSIS-DSP / CMSIS-Core are
+license. Since tap/DspTap#42 DspTap ships no code derived from Ooura's FFT
+package. Earlier trees did: from Stage 2b (#31) until #42 the floating
+profiles ran a C++ port of its `fftsg.c` (SPDX `LicenseRef-Ooura AND MIT`), a
+derivative work whose redistribution relied on the package's modification
+grant — its terms, in `third_party/ooura/readme.txt`, are "You may use, copy,
+modify this code for any purpose and without fee. You may distribute this
+ORIGINAL package." The readme and `LICENSES/LicenseRef-Ooura.txt` stay
+permanently as the license record for those trees. CMSIS-DSP / CMSIS-Core are
 Apache-2.0 with SPDX headers retained in every file. The canonical statement,
 and the maintainer's reading of what it covers — a judgement call, not legal
 advice — is [`NOTICE.md`](NOTICE.md).

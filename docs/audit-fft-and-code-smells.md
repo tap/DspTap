@@ -1,10 +1,13 @@
 # Audit: the FFT layer and its relatives across DspTap
 
 *September 2026. Baseline at the time of the audit: `5ca3b1c`, builds warning-free with
-`-DTAP_DSP_WERROR=ON`, 160/160 tests pass on Linux/Ooura. Revision 2: Parts 3-5 rewritten
-after the adversarial review recorded in Part 6. Revision 3: fixed point reinstated as
-Stage 3 (Part 7); documentation, testing and embedded-CI plans added (Parts 8-10). Revision 3.1:
-amendments from the wave-1 hostile reviews (Part 13).*
+`-DTAP_DSP_WERROR=ON`, 160/160 tests pass on Linux/Ooura. Revision 2: Parts 3-5 rewritten after the
+adversarial review recorded in Part 6. Revision 3: fixed point reinstated as Stage 3 (Part 7);
+documentation, testing and embedded-CI plans added (Parts 8-10). Revision 3.1: amendments from the
+wave-1 hostile reviews (Part 13). Since tap/DspTap#42 the port that Parts 3–5 plan (and Parts 6–12
+measure) is history: the floating profiles run the srdif engine, written clean-room, and DspTap
+ships no code derived from Ooura's package (Part 13, "The floating engine replaced"; D6, D7, D10
+amended). Parts 1–12 are kept as written, against the tree they describe.*
 
 The trigger was one smell: the float Ooura build is produced by `#define double float` plus
 forty symbol-renaming `#define`s in `third_party/ooura/fftsg_float.c`. This document records
@@ -1242,6 +1245,24 @@ opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
   "`int` is `std::int32_t` on all CI legs" are withdrawn in `fft.h`, `cmsis.h` and the
   design note, with measured replacements. Record: docs/fft-design.md, "After the final
   audit".
+- **The floating engine replaced (tap/DspTap#42, after the final audit). Landed.** The maintainer
+  decided (2026-09-26) to remove the last code derived from Ooura's package from what DspTap ships,
+  rather than rely on the package's modification grant for the port or ask the author (Part 5's
+  contact bullet: not sent, superseded). #42 deleted `fft/split_radix.h` and its fingerprint pins in
+  hand-off commits (`17db855`, `05c81f1`) and replaced the port with `detail::srdif_rdft`
+  (`fft/srdif.h`): the fixed-point engine's structure in floating point (N/2 complex values, a
+  split-radix DIF kernel, bit reversal, #39's real post-pass), written clean-room from the
+  literature; tables from integer arithmetic (no libm), so the output fingerprints are one row for
+  every host. **Every floating output bit changed** — the first move of a floating output bit since
+  the vendored C: rms error against a quad-precision reference 4–14 % lower from N = 128, heap per
+  object 2.6–2.8×, float icount −2.2 … −6.5 % on the four portable-engine keys (re-recorded),
+  MinSizeRel float `.text` −10 … −21 kB (ceilings re-recorded), x86-64 3–20 % slower
+  (informational). ABI tag `fft_split_radix` → `fft_srdif`; capi backend string `"srdif"`. Consumers
+  re-measure (MuTap's fingerprint gate re-records all nine legs; MuTap-Max via MuTap). This
+  supersedes D10 and the parts of D6 and D7 that concern the port (amended below). Record:
+  `docs/fft-design.md`, "The floating engine (srdif)" and "The floating engine, replaced clean-room"
+  (the procedure, what the hand-off did not remove, and the provenance review's structural
+  comparison); `NOTICE.md`.
 
 ---
 
@@ -1260,20 +1281,20 @@ header numbers. Settled.** `fixed` for analysis consumers, `block_floating` for 
 consumers; the inverse has its own per-stage scaling; CMSIS compatibility of the output
 convention is decided in 3b.
 
-**D4. Engine as a template parameter with a build-selected default, plus an inline-namespace
-ABI tag derived from the selection. Landed (#35).** The default alone leaves the layout-by-define
-hazard in every class that embeds the FFT by value; the tag closes it — for DspTap's own
-embedders at #35, for MuTap's on its bump. Tag names `fft_split_radix` / `fft_cmsis` /
-`fft_vdsp`; the second template argument keeps meaning "scaling policy" on the fixed-point
-profiles, which therefore carry the tag too (recorded in Part 13). **Expiry, D5-style (35a/F3):**
-`basic_real_fft<float | double, scaling::fixed>`, the pre-Stage-4 spelling, resolves to the
-selected engine as a second type with identical code (+2,949 B x86-64 / +1,995 B M55 of duplicate
-wrappers when both are instantiated); no in-tree writer remains after the #35 fix pass (the
-capi's seam uses `detail::default_real_fft_policy_t`), and the resolution is tolerated for one
-consumer cycle — until MuTap and MuTap-Max pin a tree containing #35 — then
+**D4. Engine as a template parameter with a build-selected default, plus an inline-namespace ABI tag
+derived from the selection. Landed (#35).** The default alone leaves the layout-by-define hazard in
+every class that embeds the FFT by value; the tag closes it — for DspTap's own embedders at #35, for
+MuTap's on its bump. Tag names `fft_split_radix` / `fft_cmsis` / `fft_vdsp` (`fft_srdif` in place of
+`fft_split_radix` since #42, with the engine); the second template argument keeps meaning "scaling
+policy" on the fixed-point profiles, which therefore carry the tag too (recorded in Part 13).
+**Expiry, D5-style (35a/F3):** `basic_real_fft<float | double, scaling::fixed>`, the pre-Stage-4
+spelling, resolves to the selected engine as a second type with identical code (+2,949 B x86-64 /
++1,995 B M55 of duplicate wrappers when both are instantiated); no in-tree writer remains after the
+#35 fix pass (the capi's seam uses `detail::default_real_fft_policy_t`), and the resolution is
+tolerated for one consumer cycle — until MuTap and MuTap-Max pin a tree containing #35 — then
 `detail::floating_engine_of<Sample, scaling::fixed>` goes and the spelling becomes a
-`static_assert`. **Expiry executed** (tap/DspTap#40; Part 13, "D4 expiry and D5
-executed"). Alternative kept on record: no default, consumers name the engine.
+`static_assert`. **Expiry executed** (tap/DspTap#40; Part 13, "D4 expiry and D5 executed").
+Alternative kept on record: no default, consumers name the engine.
 
 **D5. Float-I/O-on-double overloads: `[[deprecated]]` for one consumer cycle, then deleted.**
 Not gated on AmbiTap, which is not on disk and keeps its own wrapper per README. **Executed**
@@ -1286,10 +1307,14 @@ one fixed path is what the port header's banner can cite). **Executed** (#36) af
 `main` `6f6f77f` (the last `main` carrying the C), once MuTap `801204d` pinned DspTap `8350f13`
 (2c) and MuTap-Max `544e756` pinned that MuTap: the reference C, its declaration header and the
 parity gate are deleted, and the engine's bit identity to the C (D10) is pinned as output
-fingerprints measured equal to the C's (Part 13, "D6 executed").
+fingerprints measured equal to the C's (Part 13, "D6 executed"). **Amended at #42:** the port
+itself is gone (Part 13, "The floating engine replaced"); `readme.txt` and
+`LICENSES/LicenseRef-Ooura.txt` stay at their paths permanently, now as the license record for the
+trees before #42 that carry the port, and the port's fingerprints went with it.
 
 **D7. Settled: `detail::split_radix_rdft`**, one house token (`real_fft`) for everything
-consumer-facing, provenance per Part 5.
+consumer-facing, provenance per Part 5. (The engine was replaced at #42 by `detail::srdif_rdft`,
+named by the same rule: for its algorithm, not its author.)
 
 **D8. No explicit-instantiation escape hatch.** Verified ineffective for in-class definitions
 and unnecessary at measured compile cost. Revisit only if MuTap's test build shows a
@@ -1299,7 +1324,9 @@ regression the numbers in Part 4 do not predict.
 whether `tap::dsp` exports that flag to consumers is decided in Stage 1 and stated in `fft.h`.
 
 **D10 (new). Float stays bit-identical to the vendored C.** The port reproduces the C's table
-semantics for both precisions; no numeric change ships with the port.
+semantics for both precisions; no numeric change ships with the port. **Held from Stage 2b to
+#41; retired at #42**, which replaced the port and moved every floating output bit once, by the
+maintainer's decision (Part 13, "The floating engine replaced").
 
 **D11 (new). Performance is a ratcheted gate from Stage 1b onward.** Instruction counts per
 scenario per QEMU leg at ±3%, `.text` ceilings per leg, baselines seeded from the vendored C

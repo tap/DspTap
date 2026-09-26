@@ -4,8 +4,9 @@ This is a **minimal subset** of Arm's CMSIS-DSP and CMSIS-Core, vendored so
 the optional Cortex-M55 (Helium/MVE) FFT backend can be built without a
 submodule or network fetch. It is compiled **only** when the `TAP_DSP_FFT_CMSIS`
 CMake option is ON (ARM cross builds); nothing here is touched by the default
-desktop/Apple/Hexagon builds, which run the split-radix engine
-(`include/tap/dsp/fft/split_radix.h`).
+desktop/Apple/Hexagon builds, which run the portable srdif engine
+(`include/tap/dsp/fft/srdif.h`; for `float` on Apple, vDSP by default) —
+until tap/DspTap#42 the C++20 port `include/tap/dsp/fft/split_radix.h`.
 
 ## Provenance
 

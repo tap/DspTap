@@ -229,8 +229,8 @@ class RealFFT:
     @staticmethod
     def backend() -> str:
         """The float32 engine this build compiled: "srdif" (the portable engine of fft/srdif.h;
-        "split_radix" for the engine it replaced, "ooura" before Stage 2c), "accelerate" or
-        "cmsis". The double profile is always the srdif engine; the fixed-point profiles are
+        "split_radix" for the engine it replaced, until tap/DspTap#42; "ooura" before Stage 2c),
+        "accelerate" or "cmsis". The double profile is always the srdif engine; the fixed-point profiles are
         always the portable int32 kernel."""
         return _lib.dsptap_fft_backend().decode()
 
