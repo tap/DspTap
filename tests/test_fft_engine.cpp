@@ -112,15 +112,15 @@ namespace {
 #endif
 
     // ------------------------------------------------------------------------
-    // Every spelling in use keeps compiling, with its meaning.
+    // Every spelling in use compiles, with its meaning. The pre-Stage-4
+    // basic_real_fft<float | double, scaling::fixed> is not among them since
+    // the D4 expiry: it is a static_assert in fft.h, and a translation unit
+    // that instantiates it does not compile — with the D4 message as its
+    // only error, pinned by the compile-fail ctests over
+    // tests/compile_fail/fft_legacy_spelling.cpp (record: the audit doc's
+    // Part 13, "D4 expiry and D5 executed", and docs/fft-design.md, "The
+    // engine parameter").
     // ------------------------------------------------------------------------
-    using legacy_float  = tap::dsp::basic_real_fft<float, tap::dsp::scaling::fixed>;
-    using legacy_double = tap::dsp::basic_real_fft<double, tap::dsp::scaling::fixed>;
-    static_assert(std::is_same_v<legacy_float::engine, tap::dsp::real_fft32::engine>,
-                  "scaling::fixed on a floating Sample names the selected engine (the pre-Stage-4 spelling)");
-    static_assert(std::is_same_v<legacy_double::engine, split_radix_d>);
-    static_assert(!std::is_same_v<legacy_float, tap::dsp::real_fft32>,
-                  "... and is a distinct type from the one-argument form, as documented");
     static_assert(
         std::is_same_v<tap::dsp::real_fft_q15, tap::dsp::basic_real_fft<std::int16_t, tap::dsp::scaling::fixed>>);
     static_assert(std::is_same_v<tap::dsp::real_fft_q15::engine, fixed_q15>);
@@ -136,20 +136,8 @@ namespace {
     static_assert(tap::dsp::real_fft_engine<fixed_q31_bfp, std::int32_t>);
     static_assert(!tap::dsp::real_fft_engine<int, float>);
     static_assert(!tap::dsp::real_fft_engine<tap::dsp::scaling::fixed, float>,
-                  "the legacy spelling is not an engine; the class resolves it before the concept is checked");
+                  "a scaling policy is not an engine (the pre-Stage-4 spelling is rejected by name in fft.h)");
     static_assert(!tap::dsp::real_fft_engine<split_radix_d, float>, "an engine is typed over its sample");
-
-    TEST(fft_engine, LegacySpellingComputesWhatTheDefaultComputes) {
-        constexpr std::size_t n = 512;
-        const auto            x = tap::dsp::test::random_signal<float>(n, 0x9E3779B9u);
-        tap::dsp::real_fft32  a(n);
-        legacy_float          b(n);
-        std::vector<float>    via_a = x;
-        std::vector<float>    via_b = x;
-        a.forward_inplace(via_a.data());
-        b.forward_inplace(via_b.data());
-        EXPECT_EQ(std::memcmp(via_a.data(), via_b.data(), n * sizeof(float)), 0);
-    }
 
     // ------------------------------------------------------------------------
     // Size ranges: the stated numbers, per engine, and the class re-exports

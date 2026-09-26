@@ -31,7 +31,6 @@
 #include <cstdint>
 #include <type_traits>
 #include <utility>
-#include <vector>
 
 #include "tap/dsp/detail/expects.h"
 #include "tap/dsp/fft/fixed_point.h"
@@ -161,18 +160,6 @@ namespace tap::dsp {
         template <typename Sample>
         using default_real_fft_policy_t = typename default_real_fft_policy<Sample>::type;
 
-        /// The engine a floating profile's second argument names: itself, or
-        /// — when it is scaling::fixed, the spelling every profile shared
-        /// before Stage 4 — the selected engine.
-        template <typename Sample, typename Policy>
-        struct floating_engine_of {
-            using type = Policy;
-        };
-        template <typename Sample>
-        struct floating_engine_of<Sample, scaling::fixed> {
-            using type = default_real_fft_engine_t<Sample>;
-        };
-
     } // namespace detail
 
 } // namespace tap::dsp
@@ -200,8 +187,7 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///
     /// Two parameter lists in one (Stage 4, Decision D4). The second
     /// parameter means "engine" for a floating Sample and "scaling policy"
-    /// for a fixed-point one, so that every spelling in use keeps compiling
-    /// and keeps its meaning: basic_real_fft<double> and <float> (the
+    /// for a fixed-point one: basic_real_fft<double> and <float> (the
     /// selected engine), basic_real_fft<float, detail::split_radix_rdft<float>>
     /// (an engine named explicitly — on a macOS or M55 build, the split-radix
     /// engine beside the accelerated default in the same binary, which is
@@ -214,24 +200,21 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     /// (all four QEMU legs) std::int32_t is `long` (the compiler's
     /// __INT32_TYPE__, from GCC's target configuration, not from newlib) and
     /// basic_real_fft<int> does not compile;
-    /// `Int32IsLongOnlyUnderArmNoneEabiGcc` pins which on every leg),
-    /// and
-    /// basic_real_fft<float, scaling::fixed> / <double, scaling::fixed>, the spelling all four
-    /// profiles shared before Stage 4 (the capi's generic seam writes it):
-    /// for a floating Sample, scaling::fixed in the second position names the
-    /// selected engine. That legacy spelling is a distinct type from
-    /// basic_real_fft<float> (same layout, same code, different template
-    /// arguments — measured +2,949 bytes of .text on x86-64 g++ -O2 and
-    /// +1,995 on the M55 when both are instantiated, the class wrappers
-    /// duplicated over one shared engine); nothing in DspTap writes it since
-    /// the #35 fix pass (the capi's generic seam uses
-    /// detail::default_real_fft_policy_t<Sample>) and nothing in MuTap or
-    /// MuTap-Max ever did. EXPIRY, D5-style: the resolution
-    /// (detail::floating_engine_of<Sample, scaling::fixed>) is tolerated for
-    /// one consumer cycle — until MuTap and MuTap-Max have pinned a tree
-    /// containing #35 — and then becomes a static_assert naming the
-    /// one-argument form. Any other second argument on a floating Sample
-    /// must satisfy real_fft_engine<Engine, Sample> (static_assert).
+    /// `Int32IsLongOnlyUnderArmNoneEabiGcc` pins which on every leg). A
+    /// floating Sample's second argument must satisfy
+    /// real_fft_engine<Engine, Sample> (static_assert).
+    /// basic_real_fft<float | double, scaling::fixed>, the spelling all four
+    /// profiles shared before Stage 4, cannot be instantiated since the D4
+    /// expiry (#40): a static_assert in the class body names the one-argument
+    /// form basic_real_fft<float | double> in its place. The template-id can
+    /// still be named (an alias, a pointer), so a dead `using` of it compiles
+    /// until something instantiates the class; pinned by the compile-fail
+    /// test tests/compile_fail/, which requires the D4 message and nothing
+    /// else as the diagnostic. It had resolved to the selected engine for one
+    /// consumer cycle, as a type distinct from the one-argument form (same
+    /// code, +2,949 bytes of .text on x86-64 g++ -O2 and +1,995 on the M55
+    /// when both were instantiated); nothing in DspTap wrote it after #35 and
+    /// neither consumer ever did.
     ///
     /// Engine contract numbers, read from the engine and re-exported here:
     ///   - k_min_size / k_max_size, the power-of-two size range, and
@@ -444,10 +427,20 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
 
       public:
         /// The engine this instantiation runs (see the class docstring).
-        using engine = typename detail::floating_engine_of<Sample, Policy>::type;
+        /// For the pre-Stage-4 spelling (Policy = scaling::fixed, cv-qualified
+        /// or not) the static_assert below rejects every instantiation; the
+        /// split-radix engine stands in here only as error recovery, so the
+        /// rest of the class body stays well-formed and the D4 message is the
+        /// one diagnostic (g++ would otherwise cascade through every use of
+        /// engine). It is never an engine any program runs.
+        static constexpr bool k_is_pre_stage4_spelling = std::is_same_v<std::remove_cv_t<Policy>, scaling::fixed>;
+        using engine = std::conditional_t<k_is_pre_stage4_spelling, detail::split_radix_rdft<Sample>, Policy>;
+        static_assert(!k_is_pre_stage4_spelling,
+                      "basic_real_fft<float | double, scaling::fixed> is the pre-Stage-4 spelling, removed at the D4 "
+                      "expiry: write basic_real_fft<float> / basic_real_fft<double> (real_fft32 / real_fft), or name "
+                      "an engine explicitly");
         static_assert(real_fft_engine<engine, Sample>,
-                      "basic_real_fft<float | double, Engine>: Engine must satisfy tap::dsp::real_fft_engine (or be "
-                      "scaling::fixed, the pre-Stage-4 spelling of the selected engine)");
+                      "basic_real_fft<float | double, Engine>: Engine must satisfy tap::dsp::real_fft_engine");
         static_assert(std::is_void_v<decltype(std::declval<engine&>().forward_inplace(std::declval<Sample*>()))>,
                       "a floating engine's transforms return void (the fixed-point engine returns the exponent)");
 
@@ -498,54 +491,6 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
             const Sample scale = Sample(2) / static_cast<Sample>(m_size);
             for (int i = 0; i < m_size; ++i) {
                 output[i] *= scale;
-            }
-        }
-
-        /// Float-I/O convenience on the DOUBLE engine: run the double-precision
-        /// transform over float buffers (copy in, transform, copy out), so a
-        /// caller holding float data can use the double FFT without maintaining
-        /// its own double staging buffer — e.g. AmbiTap's binaural HRTF analysis,
-        /// which wants double-precision spectra from float impulse responses.
-        /// Only the double instantiation offers these; basic_real_fft<float>
-        /// already takes float in the same-type forward()/inverse() above. These
-        /// allocate a staging buffer (a setup-time path), unlike the noexcept,
-        /// allocation-free in-place transforms.
-        ///
-        /// DEPRECATED (Decision D5, audit item F7): removed after one consumer
-        /// cycle, i.e. once MuTap and MuTap-Max have pinned a tree containing
-        /// this deprecation. No consumer on disk calls them (grepped at Stage
-        /// 2b: DspTap's tools/capi, MuTap, MuTap-Max); the replacement is the
-        /// caller's own double staging buffer and the same-type transforms.
-        [[deprecated("basic_real_fft<double>::forward(const float*, float*) allocates per call and is removed "
-                     "after one consumer cycle (Decision D5); stage through a double buffer instead")]]
-        void forward(const float* input, float* output)
-            requires std::is_same_v<Sample, double>
-        {
-            std::vector<double> buf(static_cast<size_t>(m_size));
-            for (int i = 0; i < m_size; ++i) {
-                buf[static_cast<size_t>(i)] = static_cast<double>(input[i]);
-            }
-            forward_inplace(buf.data());
-            for (int i = 0; i < m_size; ++i) {
-                output[i] = static_cast<float>(buf[static_cast<size_t>(i)]);
-            }
-        }
-
-        /// Float-I/O inverse on the double engine, scaled by 2/size like inverse().
-        /// DEPRECATED with forward(const float*, float*) above (Decision D5).
-        [[deprecated("basic_real_fft<double>::inverse(const float*, float*) allocates per call and is removed "
-                     "after one consumer cycle (Decision D5); stage through a double buffer instead")]]
-        void inverse(const float* input, float* output)
-            requires std::is_same_v<Sample, double>
-        {
-            std::vector<double> buf(static_cast<size_t>(m_size));
-            for (int i = 0; i < m_size; ++i) {
-                buf[static_cast<size_t>(i)] = static_cast<double>(input[i]);
-            }
-            inverse_inplace(buf.data());
-            const double scale = 2.0 / static_cast<double>(m_size);
-            for (int i = 0; i < m_size; ++i) {
-                output[i] = static_cast<float>(buf[static_cast<size_t>(i)] * scale);
             }
         }
 

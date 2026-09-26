@@ -59,7 +59,7 @@ profiles" below.
 | Latency | 0 (block transform, no internal delay) | 0 | 0 | 0 |
 | Alignment | none required on `Sample*` | none (vDSP's internal split buffers are placed by the wrapper, not the caller) | none | none |
 | Shareability across threads (`k_is_shareable`, an engine trait re-exported by the class; Stage 4) | **true**: tables built in the constructor, transforms `const noexcept` | **true** on the split-radix engine, **false** on vDSP and CMSIS (per-object scratch); the class's transforms stay non-const on every profile (audit N11) and the trait is the statement; a shareable engine's transforms are `const` and the class `static_assert`s it (`ShareabilityIsTheHeadersNumber` in `test_fft_rt.cpp` and `test_fft_engine.cpp`) | **false**: the in-place int16 API needs the per-object int32 work buffer (a recorded deviation from audit Part 7, which listed both fixed profiles as shareable) | **true**: no mutable state during a transform; the engine's transforms are `const` behind `requires`-constrained overloads since Stage 4 |
-| Real-time safety | transforms `noexcept`, allocation-free (`test_fft_rt.cpp`; the float-I/O-on-double overloads are the exception, `[[deprecated]]` since 2b and removed after one consumer cycle, D5) | same | same (`TransformsAreNoexcept`, `*AllocatesNothing`, `CopyProducesBitIdenticalOutput`) | same |
+| Real-time safety | transforms `noexcept`, allocation-free (`test_fft_rt.cpp`; no exception since the float-I/O-on-double overloads, `[[deprecated]]` at 2b, were removed at the D5 expiry, tap/DspTap#40) | same | same (`TransformsAreNoexcept`, `*AllocatesNothing`, `CopyProducesBitIdenticalOutput`) | same |
 | NaN / denormals | NaN propagates to every bin; denormal input is slow on x86 without FTZ, and FTZ differs between the split-radix, vDSP and CMSIS builds | same | not applicable / none | not applicable / none |
 | Host identity | not across hosts: libm's `cos` / `sin` last bit differs between glibc, newlib, UCRT and Apple (below) | same | one bit pattern on every host, pinned per profile, policy, direction and N = 64 / 512 / 1024 / 2048 (`OutputFingerprintIsPinned`, `TwiddleTableChecksumIsPinned`) | same |
 
@@ -967,23 +967,44 @@ not close.
 ### The engine parameter
 
 `basic_real_fft<Sample, Policy = detail::default_real_fft_policy_t<Sample>>`.
-One parameter list, two meanings, so every spelling in use keeps compiling
-with its meaning (pinned by `tests/test_fft_engine.cpp`):
+One parameter list, two meanings; every spelling in use compiles with its
+meaning (pinned by `tests/test_fft_engine.cpp`), and the one pre-Stage-4
+spelling that did not survive the D4 expiry is rejected by name:
 
 | Spelling | Resolves to | Note |
 |---|---|---|
 | `basic_real_fft<double>`, `real_fft` | `<double, detail::split_radix_rdft<double>>` | always |
 | `basic_real_fft<float>`, `real_fft32` | `<float, default_real_fft_engine_t<float>>` | the split-radix engine, or `detail::cmsis_real_fft_f32` under `TAP_DSP_FFT_CMSIS`, or `detail::accelerate_real_fft_f32` under `TAP_DSP_FFT_ACCELERATE`; selected in exactly one place in `fft.h` |
 | `basic_real_fft<float, detail::split_radix_rdft<float>>` | that engine | new: an engine named explicitly, beside the accelerated default in the same binary |
-| `basic_real_fft<float \| double, scaling::fixed>` | the selected engine | the pre-Stage-4 spelling every profile shared; accepted, resolves to the default engine, and is a **distinct type** from the one-argument form (same layout and code, different template arguments: +2,949 B x86-64 / +1,995 B M55 of duplicate wrappers when both are instantiated, 35a/F3). No in-tree writer since the #35 fix pass (the capi's seam uses `detail::default_real_fft_policy_t<Sample>`, so `fft_impl<float>` holds exactly `real_fft32`); **expires after one consumer cycle** (D4), then a `static_assert` |
+| `basic_real_fft<float \| double, scaling::fixed>` | cannot be instantiated | the pre-Stage-4 spelling every profile shared. From #35 until the D4 expiry it resolved to the default engine as a **distinct type** from the one-argument form (same layout and code, different template arguments: +2,949 B x86-64 / +1,995 B M55 of duplicate wrappers when both were instantiated, 35a/F3). **Expired** (tap/DspTap#40): a `static_assert` in the class body whose message names `basic_real_fft<float>` / `basic_real_fft<double>`, and `detail::floating_engine_of` is gone. The template-id can still be named (an alias, a pointer) without error; only instantiating the class fails, so a dead `using` of it survives until something instantiates it. No in-tree writer since the #35 fix pass (the capi's seam uses `detail::default_real_fft_policy_t<Sample>`, so `fft_impl<float>` holds exactly `real_fft32`); none in MuTap or MuTap-Max, which never wrote it |
 | `basic_real_fft<std::int16_t \| std::int32_t, Scaling>` | the fixed-point specialization | unchanged; the second argument is the Scaling policy |
 
 Any other second argument on a floating `Sample` must satisfy the concept
 `tap::dsp::real_fft_engine<Engine, Sample>`: constructible from the size,
 copyable, two `noexcept` in-place transforms, `size()`, and the three
 contract constants `k_min_size`, `k_max_size`, `k_is_shareable`. The four
-engines satisfy it; `int` and `scaling::fixed` do not (the class resolves
-the legacy spelling before the concept is checked). The alternative D4 kept
+engines satisfy it; `int` and `scaling::fixed` do not. Since the D4 expiry
+(tap/DspTap#40) the class rejects `scaling::fixed`, cv-qualified or not, by
+name, and that is the only diagnostic: for that spelling `engine` falls back
+to the split-radix engine purely as error recovery, so the rest of the class
+body stays well-formed while the unconditional `static_assert` still rejects
+every instantiation. Measured on the compile-fail fixture
+`tests/compile_fail/fft_legacy_spelling.cpp` (`float`, `double` and
+`const scaling::fixed`):
+
+| Compiler | Before the recovery (first cut of #40) | Shipped |
+|---|---|---|
+| clang 18.1.3 | one error, the D4 message | one error, the D4 message |
+| g++ 13.3.0 | the D4 message, then 3 cascade errors (no `forward_inplace`, no `k_is_shareable`, a non-constant condition) | one error, the D4 message |
+
+The ctests `fft_compile_fail.LegacySpellingIsRejectedWithTheD4Message.*`
+(hosted GCC / Clang legs; `tests/compile_fail/expect_compile_failure.cmake`)
+pin it: the fixture must fail to build, its output must contain the D4
+message, and it must contain exactly one `error:`. Each condition was shown
+to fail when broken: with the named `static_assert` deleted the fixture
+compiles (the recovery engine is a working engine, which is why the test
+exists); without the recovery g++ reports 5 errors; with a wrong include
+path the build fails without the message. The alternative D4 kept
 on record — no default, consumers name the engine — was not taken: the
 consumers hold `basic_real_fft<Sample>` in forty-odd places and the default
 is what makes the build define a build define.
@@ -1824,6 +1845,12 @@ from MuTap `origin/main` `0f6a7f0` and MuTap-Max `origin/main` `8850144` on
 2026-09-23 (`git show origin/main:<path>`); re-verify against the tree each
 bump starts from.
 
+- **After tap/DspTap#40 (D4 expiry, D5): nothing to change.** Neither
+  removed API is used by MuTap or MuTap-Max (grepped at MuTap `origin/main`,
+  MuTap `edf160e` and MuTap-Max `origin/main`; MuTap builds against the tree
+  at both SHAs with `-DMUTAP_WERROR=ON`). A future consumer that stages float
+  data through the double FFT keeps its own `double` buffer and calls the
+  same-type transforms.
 - **After #39: MuTap (and MuTap-Max through it) pins past the re-derivation.**
   No code or number changes (no consumer uses the Q15/Q31 FFT, and the
   output is bit-identical), but MuTap's `THIRD_PARTY_NOTICES.md` says what
@@ -2246,3 +2273,4 @@ byte-identical.
 | tap/DspTap#39 | post-program | Q15, Q31 | **no output bit**: the real post-pass / pre-pass, its table and the DC/Nyquist handling re-derived from the literature under a clean-room procedure ("The fixed-point post-pass, re-derived", including what the hand-off left in the tree), bit-identical to the transcription it replaces (every pinned fingerprint and checksum unchanged, as any single-product two-rounding arrangement predicts); fingerprints added at N = 64 and 1024 (the radix-2 stage); the inverse's antisymmetric-pair worst case added to the saturation sweep; the Q31 deviation and F(x) + F(−x) maxima pinned per size at N = 4096 … 65536 by two host-only tests (Q31 block floating 31–80 / 121–286 LSB measured, pinned at 2×); Welch-model ratio pins re-derived; Q15/Q31 icount +0.49 … +1.15 %, inside the band | none numerically (no consumer on fixed point); provenance: MuTap's `THIRD_PARTY_NOTICES.md` ("what remains of the package is the derived port") is incomplete for any pin in #27 … #38 and exact again once it pins past #39 (Consumer follow-ups) |
 | tap/DspTap#41 | final audit A1–A4 | `float` (the CMSIS build); `log_mel`, `pvoc` | **no output bit**. Build: `TAP_DSP_FFT_CMSIS` defaults ON only where the compiler targets MVE-F (`__ARM_FEATURE_MVE & 2`) — for a consumer's non-Helium bare-metal Arm toolchain (Cortex-M7, M33, …, and Cortex-A / R) that previously defaulted ON, the float engine moves from CMSIS-DSP to split-radix: size range 32 … 4096 → 4 … 2^30, ABI tag `fft_cmsis` → `fft_split_radix`; unchanged for every in-tree leg and for MuTap's M55 (measured). Contract points: `basic_log_mel<Sample>::supports_geometry` (valid() AND the engine's size predicate) is the constructor's `@pre`; `basic_pvoc<Sample>`'s range is derived, `[max(64, engine min), min(2^28, engine max)]` (float 64 … 4096 under CMSIS, 64 … 2^20 under vDSP), with `k_min_size` / `k_max_size` / `supports_size`; the capi's `log_mel` / `pvoc` create and setters gate on them. The narrowing is only where release builds were already undefined behaviour. Documentation: no fault is promised out of range (measured wrong output, or heap corruption at N = 4); `int` is Q31 on the hosts and under clang, not under arm-none-eabi-gcc | none needed (MuTap `0385ea9` / MuTap-Max `4cfcca3` read: nothing changes for them; "Consumer follow-ups") |
 | tap/DspTap#36 | D6 | none numerically | **no output bit and no contract point**: the reference C (`tests/reference/ooura/`), its declaration header and the parity gate with its informational twin are deleted; `tests/test_fft_split_radix_fingerprint.cpp` pins the engine's output bits at every power of two from 4 to 65536 (one float row; double per C library build, glibc as an FMA/SSE2 dispatch pair), measured equal to the C's on every leg ("The bit-identity record after D6"); nothing under `include/` changes but comments; the test-only cache variable `TAP_DSP_PARITY_MAX_N` is renamed `TAP_DSP_TEST_MAX_FFT_N` | none needed (no shipping code changed; icount ratchet expected +0.00 % on every key) |
+| tap/DspTap#40 | D4 expiry, D5 | `double`, `float` | **API break, no output bit**: `forward(const float*, float*)` / `inverse(const float*, float*)` on the double engine are deleted (D5; they allocated per call and were not `noexcept`), and `basic_real_fft<float \| double, scaling::fixed>` is a `static_assert` naming the one-argument form (D4 expiry; `detail::floating_engine_of` deleted). Every remaining spelling instantiates the same types as before, so no instruction a consumer can still write changes other than assertion line numbers (`TAP_EXPECTS` `__LINE__` immediates at `-O0` without `NDEBUG`: fft.h's line numbers moved; objects byte-identical to `ddadb74` at `-O2`/`-O3`/`-Os` on g++, clang, M33, M55 and M4, review of #40); the class now fails with the D4 message alone (error-recovery `engine`), pinned by the `fft_compile_fail.*` ctests | **consumers verified unaffected**: no use of either API in MuTap `origin/main`, MuTap `edf160e` (MuTap-Max's pin) or MuTap-Max `origin/main` (`git grep`); MuTap at both SHAs builds against this tree with `-DMUTAP_WERROR=ON`; no pin to re-measure |
