@@ -299,7 +299,7 @@ namespace {
     /// Rebuild h's front end at geometry g, or report -1 and leave h untouched: validate, build
     /// the new object, and only then commit both fields (neither assignment can throw).
     int rebuild_log_mel(dsptap_log_mel h, const tap::dsp::log_mel_geometry& g) noexcept {
-        if (!g.valid()) {
+        if (!tap::dsp::log_mel::supports_geometry(g)) { // valid() and the FFT engine's size range
             return -1;
         }
         try {
@@ -553,8 +553,11 @@ int dsptap_psola_process(dsptap_psola h, const double* in, double* out, int n, d
 // -- pvoc -------------------------------------------------------------------------------------
 
 dsptap_pvoc dsptap_pvoc_create(int fft_size) DSPTAP_NOEXCEPT {
-    if (fft_size < 64 || fft_size > (1 << 28) || (fft_size & (fft_size - 1)) != 0) {
-        return nullptr; // pvoc.h's @pre: a power of two in [64, 2^28]
+    // pvoc.h's @pre, as the class states it: a power of two in [k_min_size, k_max_size], the
+    // class's own [64, 2^28] intersected with its FFT engine's range (for this double profile,
+    // split-radix on every build, the intersection is [64, 2^28]).
+    if (fft_size <= 0 || !tap::dsp::pvoc::supports_size(static_cast<std::size_t>(fft_size))) {
+        return nullptr;
     }
     try {
         return new dsptap_pvoc_s(static_cast<std::size_t>(fft_size));
@@ -618,7 +621,9 @@ dsptap_log_mel dsptap_log_mel_create(double sample_rate, int frame, int hop, int
     g.fmax_hz     = fmax_hz;
     g.window      = sqrt_window != 0 ? tap::dsp::mel_window::sqrt_hann : tap::dsp::mel_window::hann;
     g.preemphasis = preemphasis;
-    if (!g.valid()) {
+    // log_mel.h's @pre: valid() and the FFT engine's size range (for this double profile,
+    // split-radix on every build, 4 … 2^30).
+    if (!tap::dsp::log_mel::supports_geometry(g)) {
         return nullptr;
     }
     try {

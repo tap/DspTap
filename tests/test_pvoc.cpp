@@ -7,9 +7,13 @@
 // clear() semantics, and float/double cross-precision agreement. The pitch
 // oracle is tap::dsp::yin, certified by its own battery.
 
+#include <algorithm>
+#include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <numbers>
+#include <type_traits>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -40,6 +44,51 @@ namespace {
         EXPECT_EQ(shifter.fft_size(), 1024u);
         EXPECT_EQ(shifter.hop(), 256u);
         EXPECT_EQ(shifter.latency(), 1024u);
+    }
+
+    // The size range is derived from the FFT engine, not stated as a constant:
+    // the class's own [64, 2^28] intersected with fft_type's range. Per build:
+    // double 64 … 2^28 everywhere; float 64 … 2^28 on the split-radix engine,
+    // 64 … 2^20 under vDSP (macOS), 64 … 4096 under CMSIS-DSP (the M55 leg,
+    // where 8192 — accepted by the pre-change [64, 2^28] — is rejected; 16 is
+    // below the class's 64 on every build). supports_size agrees with the
+    // engine's own predicate across the class's bounds, swept over 0 … 2^17,
+    // and construction works at both ends where they fit the leg (<= 4096).
+    TYPED_TEST(pvoc_test, SupportsSizeIsTheEngineRangeInsideTheClassBounds) {
+        using shifter = tap::dsp::basic_pvoc<TypeParam>;
+        using fft     = typename shifter::fft_type;
+        static_assert(std::is_same_v<fft, tap::dsp::basic_real_fft<TypeParam>>,
+                      "the class gates on the FFT it instantiates: the build's default engine");
+#if defined(TAP_DSP_FFT_CMSIS)
+        constexpr std::size_t k_float_max = 4096;
+#elif defined(TAP_DSP_FFT_ACCELERATE)
+        constexpr std::size_t k_float_max = std::size_t{1} << 20;
+#else
+        constexpr std::size_t k_float_max = std::size_t{1} << 28;
+#endif
+        constexpr std::size_t k_expected_max = std::is_same_v<TypeParam, float> ? k_float_max : std::size_t{1} << 28;
+        static_assert(shifter::k_min_size == 64);
+        static_assert(shifter::k_max_size == k_expected_max);
+        EXPECT_EQ(shifter::k_min_size, 64u);
+        EXPECT_EQ(shifter::k_max_size, k_expected_max);
+
+        for (std::size_t n = 0; n <= (std::size_t{1} << 17); ++n) {
+            const bool expected = std::has_single_bit(n) && n >= 64 && n <= k_expected_max;
+            ASSERT_EQ(shifter::supports_size(n), expected) << "n=" << n;
+            if (n >= 64 && n <= (std::size_t{1} << 28)) {
+                ASSERT_EQ(shifter::supports_size(n), fft::supports_size(n)) << "n=" << n;
+            }
+        }
+        EXPECT_FALSE(shifter::supports_size(16));
+        EXPECT_EQ(shifter::supports_size(8192), k_expected_max >= 8192);
+        EXPECT_EQ(shifter::supports_size(std::size_t{1} << 28), k_expected_max == (std::size_t{1} << 28));
+        EXPECT_FALSE(shifter::supports_size(std::size_t{1} << 29));
+
+        for (const std::size_t n : {shifter::k_min_size, std::min<std::size_t>(shifter::k_max_size, 4096)}) {
+            shifter s(n);
+            EXPECT_EQ(s.fft_size(), n);
+            EXPECT_EQ(s.latency(), n);
+        }
     }
 
     TYPED_TEST(pvoc_test, IdentityRatioReconstructsTheWaveform) {

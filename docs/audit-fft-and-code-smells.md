@@ -1232,6 +1232,16 @@ opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
   negative demonstrations in `docs/fft-design.md`, "The engine parameter"). fft.h's self-contradiction about the capi
   writing the legacy spelling (final audit F5) went with the paragraph: the capi never did
   after the #35 fix pass.
+- **Final audit (2026-09-26), contract safety: SYNTHESIS A1–A4. Landed (#41).** A1: the
+  CMSIS backend's default is ON only where the compiler targets floating-point Helium (a
+  compile check on `__ARM_FEATURE_MVE & 2`), not for every Generic+arm target; the M4/M33
+  toolchain pins are gone and CI asserts the detected value per leg. A2: DspTap's own
+  config-driven classes apply the mandatory size gate — `basic_log_mel<Sample>::
+  supports_geometry`, `basic_pvoc<Sample>::k_min_size` / `k_max_size` / `supports_size`,
+  derived from the engine — and the capi gates on them. A3/A4: the "HardFault" promise and
+  "`int` is `std::int32_t` on all CI legs" are withdrawn in `fft.h`, `cmsis.h` and the
+  design note, with measured replacements. Record: docs/fft-design.md, "After the final
+  audit".
 
 ---
 

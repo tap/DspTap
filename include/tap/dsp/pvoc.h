@@ -70,9 +70,17 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///   - process(x, ratio) consumes one input sample and produces one output
     ///     sample; ratio (2 = up an octave) is clamped to [1/4, 4] and sampled
     ///     once per analysis hop.
-    ///   - fft_size must be a power of two >= 64. Frequency resolution and
-    ///     transient smearing both scale with it; 1024 at 48 kHz is the
-    ///     intended desktop operating point.
+    ///   - fft_size must be a power of two in [k_min_size, k_max_size]
+    ///     (supports_size): at least 64, at most 2^28 (the int32 sample
+    ///     clock), and inside the size range of the FFT engine this profile
+    ///     runs — the range is DERIVED from the engine, not a constant:
+    ///       double, every build             64 … 2^28   (split-radix 4 … 2^30)
+    ///       float, split-radix default      64 … 2^28
+    ///       float, vDSP (macOS)             64 … 2^20
+    ///       float, CMSIS-DSP (M55 build)    64 … 4096
+    ///     Frequency resolution and transient smearing both scale with it;
+    ///     1024 at 48 kHz is the intended desktop operating point, inside
+    ///     every row.
     ///   - Peak-to-region phase continuity is keyed by the region's target
     ///     bin, so a peak gliding across bins picks up a fresh phase register;
     ///     stationary and slowly-moving material is seamless.
@@ -89,15 +97,35 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
         static constexpr double k_env_floor = 1e-6; // |A| guard when inverting the envelope
         static constexpr double k_max_boost = 16.0; // per-bin formant-correction gain cap
 
-        /// @pre fft_size is a power of two in [64, 2^28]; the upper bound keeps
-        /// 6 * fft_size inside the int32 sample clock.
+        /// The FFT this profile runs: the build's default engine for Sample.
+        using fft_type = basic_real_fft<Sample>;
+
+        /// The size range, as numbers: this class's own bounds (64, its
+        /// stated minimum; 2^28, which keeps 6 * fft_size inside the int32
+        /// sample clock) intersected with the FFT engine's range
+        /// (fft_type::k_min_size / k_max_size, fft.h). The engine never binds
+        /// the lower end (its minimum is 4 or 32), and binds the upper end
+        /// under vDSP (2^20) and CMSIS-DSP (4096) — float profile only.
+        static constexpr size_t k_min_size = std::max<size_t>(64, fft_type::k_min_size);
+        static constexpr size_t k_max_size = std::min<size_t>(size_t{1} << 28, fft_type::k_max_size);
+
+        /// The constructor's precondition as a predicate, and the MANDATORY
+        /// gate wherever fft_size comes from configuration (fft.h's rule for
+        /// basic_real_fft::supports_size, applied to this class): a power of
+        /// two in [k_min_size, k_max_size]. A size outside it is undefined
+        /// behaviour in a release build (measured on the M55 under QEMU for
+        /// the CMSIS engine it would reach: wrong output, no fault).
+        static constexpr bool supports_size(size_t n) noexcept {
+            return n >= k_min_size && n <= k_max_size && (n & (n - 1)) == 0;
+        }
+
+        /// @pre supports_size(fft_size): release builds do not check (assert).
         explicit basic_pvoc(size_t fft_size = 1024)
             : m_n_size(static_cast<int>(fft_size))
             , m_hop(static_cast<int>(fft_size) / k_overlap)
             , m_bins(static_cast<int>(fft_size) / 2 + 1)
             , m_fft(fft_size) {
-            assert(fft_size >= 64 && (fft_size & (fft_size - 1)) == 0);
-            assert(fft_size <= (size_t{1} << 28)); // see @pre
+            assert(supports_size(fft_size)); // see @pre
 
             m_window.assign(static_cast<size_t>(m_n_size), Sample(0));
             for (int i = 0; i < m_n_size; ++i) {
