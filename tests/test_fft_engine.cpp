@@ -115,8 +115,11 @@ namespace {
     // Every spelling in use compiles, with its meaning. The pre-Stage-4
     // basic_real_fft<float | double, scaling::fixed> is not among them since
     // the D4 expiry: it is a static_assert in fft.h, and a translation unit
-    // that instantiates it does not compile (verified out of tree, as the
-    // repo has no negative-compile harness; docs/fft-design.md, D4).
+    // that instantiates it does not compile — with the D4 message as its
+    // only error, pinned by the compile-fail ctests over
+    // tests/compile_fail/fft_legacy_spelling.cpp (record: the audit doc's
+    // Part 13, "D4 expiry and D5 executed", and docs/fft-design.md, "The
+    // engine parameter").
     // ------------------------------------------------------------------------
     static_assert(
         std::is_same_v<tap::dsp::real_fft_q15, tap::dsp::basic_real_fft<std::int16_t, tap::dsp::scaling::fixed>>);

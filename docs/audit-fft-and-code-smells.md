@@ -1225,8 +1225,11 @@ opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
   `floating_engine_of` or float-buffer call on a double FFT, and MuTap at both SHAs builds
   against this tree with `-DMUTAP_WERROR=ON`. `test_fft_rt.cpp` now asserts that the double
   profile takes no float buffers, so its `noexcept` list is again the whole transform API. The
-  repo has no negative-compile harness; the `static_assert` was verified with a scratch
-  translation unit (the PR records the diagnostics). fft.h's self-contradiction about the capi
+  repo had no negative-compile harness; #40 adds one for this rule
+  (`tests/compile_fail/`, ctests `fft_compile_fail.LegacySpellingIsRejectedWithTheD4Message.*`
+  on the hosted GCC / Clang legs): the fixture must fail with the D4 message as its only error,
+  which an error-recovery `engine` makes true on g++ as well as clang (diagnostics and the
+  negative demonstrations in `docs/fft-design.md`, "The engine parameter"). fft.h's self-contradiction about the capi
   writing the legacy spelling (final audit F5) went with the paragraph: the capi never did
   after the #35 fix pass.
 

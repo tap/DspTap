@@ -48,9 +48,10 @@ policy for Q15 / Q31: `real_fft32` is
 `basic_real_fft<float, detail::split_radix_rdft<float>>` runs the split-radix
 engine on a build whose default is vDSP or CMSIS. `basic_real_fft<float |
 double, scaling::fixed>`, the pre-Stage-4 spelling, resolved to the default
-engine (as a distinct type) for one consumer cycle and is a `static_assert`
-naming the one-argument form since the D4 expiry (tap/DspTap#40; API break,
-neither consumer writes it). The class re-exports the engine's `k_min_size` /
+engine (as a distinct type) for one consumer cycle and cannot be instantiated
+since the D4 expiry: a `static_assert` names the one-argument form
+(tap/DspTap#40; API break, neither consumer writes it; pinned by the
+`fft_compile_fail.*` ctests). The class re-exports the engine's `k_min_size` /
 `k_max_size` / `k_is_shareable`, offers `supports_size(n)`, and requires
 `supports_size(size)` at construction (`TAP_EXPECTS`: a debug assertion,
 STYLE.md §4; `supports_size` is the release-mode query). The build's
@@ -72,8 +73,9 @@ words. `basic_real_fft<double>` and `basic_real_fft<float>` now hold a
 tables are built in the constructor rather than on the first transform, and the
 float-I/O-on-double overloads `forward(const float*, float*)` /
 `inverse(const float*, float*)` were `[[deprecated]]` (Decision D5, one consumer
-cycle) and are removed since tap/DspTap#40 (API break; neither consumer calls them:
-stage through a `double` buffer and the same-type transforms). What did not change, as measured: any output bit at default
+cycle) and are removed since tap/DspTap#40 (API break; neither consumer calls
+them: stage through a `double` buffer and the same-type transforms). What did
+not change, as measured: any output bit at default
 fp-contraction on every CI platform (x86-64 without `-march`, MSVC, Apple
 arm64, the four Cortex-M legs) and on clang with FMA. Every transform through
 `basic_real_fft` produced the same bytes as before the flip there, for

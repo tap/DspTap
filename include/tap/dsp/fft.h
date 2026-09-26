@@ -195,9 +195,13 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     /// profile — the docstrings say std::int32_t and mean it). A floating
     /// Sample's second argument must satisfy real_fft_engine<Engine, Sample>
     /// (static_assert). basic_real_fft<float | double, scaling::fixed>, the
-    /// spelling all four profiles shared before Stage 4, is ILL-FORMED since
-    /// the D4 expiry (#40): a static_assert names the one-argument form
-    /// basic_real_fft<float | double> in its place. It had resolved to the
+    /// spelling all four profiles shared before Stage 4, cannot be
+    /// instantiated since the D4 expiry (#40): a static_assert in the class
+    /// body names the one-argument form basic_real_fft<float | double> in its
+    /// place. The template-id can still be named (an alias, a pointer), so a
+    /// dead `using` of it compiles until something instantiates the class;
+    /// pinned by the compile-fail test tests/compile_fail/, which requires the
+    /// D4 message and nothing else as the diagnostic. It had resolved to the
     /// selected engine for one consumer cycle, as a type distinct from the
     /// one-argument form (same code, +2,949 bytes of .text on x86-64 g++ -O2
     /// and +1,995 on the M55 when both were instantiated); nothing in DspTap
@@ -406,12 +410,19 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
 
       public:
         /// The engine this instantiation runs (see the class docstring).
-        using engine = Policy;
-        static_assert(!std::is_same_v<Policy, scaling::fixed>,
+        /// For the pre-Stage-4 spelling (Policy = scaling::fixed, cv-qualified
+        /// or not) the static_assert below rejects every instantiation; the
+        /// split-radix engine stands in here only as error recovery, so the
+        /// rest of the class body stays well-formed and the D4 message is the
+        /// one diagnostic (g++ would otherwise cascade through every use of
+        /// engine). It is never an engine any program runs.
+        static constexpr bool k_is_pre_stage4_spelling = std::is_same_v<std::remove_cv_t<Policy>, scaling::fixed>;
+        using engine = std::conditional_t<k_is_pre_stage4_spelling, detail::split_radix_rdft<Sample>, Policy>;
+        static_assert(!k_is_pre_stage4_spelling,
                       "basic_real_fft<float | double, scaling::fixed> is the pre-Stage-4 spelling, removed at the D4 "
                       "expiry: write basic_real_fft<float> / basic_real_fft<double> (real_fft32 / real_fft), or name "
                       "an engine explicitly");
-        static_assert(std::is_same_v<Policy, scaling::fixed> || real_fft_engine<engine, Sample>,
+        static_assert(real_fft_engine<engine, Sample>,
                       "basic_real_fft<float | double, Engine>: Engine must satisfy tap::dsp::real_fft_engine");
         static_assert(std::is_void_v<decltype(std::declval<engine&>().forward_inplace(std::declval<Sample*>()))>,
                       "a floating engine's transforms return void (the fixed-point engine returns the exponent)");
