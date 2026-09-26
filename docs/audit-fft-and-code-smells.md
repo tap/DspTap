@@ -300,7 +300,9 @@ flips; `test_decimate.cpp:192` becomes Q15-vs-double; the numpy pin does not mov
 
 **3b. The fixed-point kernel** (`fft/fixed_point.h`): one int32 complex kernel with Q1.30
 twiddles, two scaling policies (fixed, block floating point), Ooura's real post-pass formulas
-so the packing and the `exp(+i)` convention are identical, Q15 and Q31 I/O widths.
+so the packing and the `exp(+i)` convention are identical, Q15 and Q31 I/O widths. (The
+post-pass was re-derived from the literature at tap/DspTap#39, bit-identical; see the
+amendment after D6 in Part 13.)
 `basic_real_fft<std::int16_t>` / `<std::int32_t>` route to it; aliases `real_fft_q15`,
 `real_fft_q31`. Gates: the Part 9 fixed-point battery on the hosts, and the same battery on the
 M4 (soft-float), M4F, M33 and M55 QEMU legs; new ratchet scenarios `rfft_q15_512`,
@@ -749,7 +751,8 @@ convention is noted only where compatibility with it is a stated goal.
   is a separately pinned profile or a second named operation with the hardware's rounding
   point that the kernel selects explicitly.
 - **Structure is its own radix-4 DIF complex kernel of length N/2 with a radix-2 final stage
-  for odd log2, plus Ooura's real post-pass formulas.** Part 6 established that Ooura's
+  for odd log2, plus Ooura's real post-pass formulas** (re-derived from the literature at
+  tap/DspTap#39, bit-identical; `NOTICE.md`). Part 6 established that Ooura's
   split-radix graph can be reused only as a data-flow graph with a different operation order,
   and that its first stage derives twiddles at run time; a dedicated kernel is simpler to
   scale, simpler to prove against Welch's model, and shares the *contract* (packing, `exp(+i)`,
@@ -1168,7 +1171,8 @@ opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
   Ooura's `rftfsub` / `rftbsub` while marked MIT and absent from `NOTICE.md`. The maintainer
   chose re-derivation over dual marking; #39 did it under a clean-room procedure (hand-off
   commit, brief from Cooley–Lewis–Welch 1970 and Sorensen et al. 1987, access list and
-  statement) and converged bit-identically on the same arithmetic. Record:
+  statement) and converged bit-identically on the same arithmetic — checked against the old
+  pins the hand-off left in the tree, which review B of #39 found and the record states. Record:
   `docs/fft-design.md`, "The fixed-point post-pass, re-derived"; `NOTICE.md`.
 - **D6 executed (wave 4, tap/DspTap#36).** Precondition met after Stage 4: MuTap `801204d`
   pins DspTap `8350f13` (2c), MuTap-Max `544e756` pins that MuTap. Deleted:

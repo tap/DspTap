@@ -1549,14 +1549,24 @@ were Ooura's `rftfsub` / `rftbsub` / `makect` formulas transcribed into
 `fft_arith`'s operations, and `fixed_point.h` said so while its banner read
 `SPDX: MIT` and `NOTICE.md` named only the port as a derivative (final
 audit, 2026-09-26). The maintainer chose to re-derive the pass from the
-literature rather than extend the `LicenseRef-Ooura` marking. The
-procedure, as #39's history records it:
+literature rather than extend the `LicenseRef-Ooura` marking. The procedure,
+as #39's history and review record it, including where it fell short:
 
 1. **Hand-off.** The PR's first commit removes the transcribed code and
    every passage in the code, the tests and the fixed-point design record
    that stated its formulas, leaving 20 `<<CLEAN-ROOM>>` markers (the tree
    does not build there). It was written by the party that had read the
-   package.
+   package. **What it left, and should not have** (hostile review B of #39):
+   the pre-existing post-pass table checksums (`TwiddleTableChecksumIsPinned`,
+   N = 256 / 512 / 2048) and the 16 pre-existing output fingerprints
+   (`OutputFingerprintIsPinned`, N = 512 / 2048) stayed pinned in
+   `tests/test_fft_fixed.cpp` — hash values, not formulas, but together a
+   bit-exact black-box check of the removed table and arithmetic — and
+   structural remarks that are not formulas: the Welch model's post-pass
+   stage `{1, 1, 1.0}` (a one-bit shift, unit power gain, a rotation on every
+   output) in the test and the notebook, "the pre-pass takes pre + 1 bits",
+   "+0.25 from the final one-bit shift on every component", and §5's
+   "0.229 from the post-pass".
 2. **Brief.** The implementer — a separate agent — received the half-length
    method as Cooley, Lewis & Welch (1970) and Sorensen et al. (1987) state
    it, rewritten in DspTap's convention (E/O decomposition, the (k, M − k)
@@ -1567,29 +1577,62 @@ procedure, as #39's history records it:
    history; the hand-off diff and the history of the four affected files;
    this note's port and provenance sections, the audit doc and `NOTICE.md`;
    and every other FFT library's source, the vendored CMSIS-DSP included.
-3. **Access statement** (the implementer's report): none of the listed
+   The brief did not contain the (1 ± i W)/2 fold, the ½ − ½ sin
+   coefficient or the transcription's statement order (review B); it did
+   say that the pair (k, M − k) follows from one complex product W_N^k O[k].
+3. **Access statement** (the implementer's reports). None of the listed
    material was viewed. Tree-wide greps for the markers and for pin values
    searched the listed files' contents and surfaced no content from them,
    only the audit doc's file name, which it filtered out; one grep of
    `README.md` printed one line of its Provenance section, about when Stage
    3b landed; heading lists were read to find the forbidden sections'
-   boundaries. It also noted that, as a model, it may have met widely
-   published real-FFT code in training.
+   boundaries. The same machine held further copies of the transcribed
+   header outside the list (the main clone, the audit worktree, a
+   reviewer's worktree, and about 87 files in the session's shared
+   scratchpad); asked afterwards, the implementer reported opening none of
+   them — the one scratchpad file it read was the conventions file the
+   brief named — while its worktree shared the main clone's git directory.
+   On the pins: it read `tests/test_fft_fixed.cpp` in full before writing
+   code, so it saw the hex values; it wrote the arrangement and the table
+   generator before building anything; the first run matched every checksum
+   and all 16 fingerprints, and nothing was changed after any comparison;
+   the rejected arrangements were weighed on paper and never coded. Before
+   choosing, it noticed that §5's surviving "0.229" equals 2.75/12, the
+   count of the arrangement it then chose. It also noted that, as a model,
+   it may have met widely published real-FFT code in training.
 4. **Result.** The implementer's arrangement: with u = Z[k] and
    v = conj Z[M − k] after the pass's one-bit shift, G = C_k (u − v) with
    C_k = (1 + i W_N^k)/2, then Z[k] ← u − G and Z[M − k] ← Z[M − k] + conj G
-   (the inverse the same statements with conj C_k); two `mul_coeff`
-   roundings per output component, against 2.75 units with a +0.25 LSB bias
-   and 4 units for the arrangements it rejected. That is the arithmetic the
-   transcription had, and with the coefficient rounded once from its double
-   the output is **bit-identical**: every output fingerprint and table
-   checksum pinned before #39 reproduced unchanged, on the host and on all
-   four newlib legs. The code, its structure (DC/Nyquist before the loop,
-   the kernel's `rotate<Inverse>`), the table generator (libm on the first
-   octant only, the real part as an exact integer complement) and the
-   derivation in the docstrings were written independently; the arithmetic
-   is the published method's, and the convergence is what one would expect
-   of the fewest-roundings arrangement under a fixed growth budget.
+   (the inverse the same statements with conj C_k). Rounding cost per
+   output component, simulated by review B in the trait's integer
+   arithmetic (N = 512, 50 800 components, units of q²/12): 2.08 for this
+   form; 2.81 with a +0.246 LSB mean bias for E and W·O formed separately
+   with E halved; 4.10 for A·u + B·v. It is not the only form at that cost:
+   v + D (u − v) with D = (1 − i W_N^k)/2 = 1 − C_k also takes two roundings,
+   stays saturation-free, and gives the same integers as the chosen form
+   except at exact half-LSB ties (0 differing components in the
+   simulation), because round-half-up satisfies round(x − y) = x − round(y)
+   away from ties. That is why bit identity with the transcription was to
+   be expected of any single-product, two-rounding arrangement over a
+   once-rounded table, and it is what the result showed: every output
+   fingerprint and table checksum pinned before #39 reproduced unchanged,
+   on the host and on all four newlib legs (and in CI on Windows and
+   macOS).
+
+**What the record supports, and what it does not.** The text — the code,
+the comments, the table generator and the derivation in the docstrings —
+was written without access to the package or to the removed code, from the
+published method. It is not different code: side by side with `rftfsub` /
+`rftbsub` (review B), the dataflow, the statement order, the signs, the
+coefficient values and the table layout are the same; what differs is the
+text (indexing by bin, pointer aliases, the kernel's `rotate<Inverse>`, DC
+before the loop). The table generator's first-octant evaluation and its
+½ − ½ sin split, which differ from the removed transcription, coincide with
+`makect`'s structure; here they come from `make_twiddle_table`'s octant fold
+and D9's no-contraction rule. The fold (u + v)/2 = u − (u − v)/2 into one
+product is a derivation step beyond the cited equations, and the same step
+Ooura's code takes. The bit identity was checked against the old pins the
+hand-off left in the tree, not obtained blind.
 
 The maintainer's judgement (`NOTICE.md`): the fixed-point engine is DspTap's
 own and MIT. Not legal advice.
@@ -1601,6 +1644,14 @@ from MuTap `origin/main` `0f6a7f0` and MuTap-Max `origin/main` `8850144` on
 2026-09-23 (`git show origin/main:<path>`); re-verify against the tree each
 bump starts from.
 
+- **After #39: MuTap (and MuTap-Max through it) pins past the re-derivation.**
+  No code or number changes (no consumer uses the Q15/Q31 FFT, and the
+  output is bit-identical), but MuTap's `THIRD_PARTY_NOTICES.md` says what
+  remains of the package is the derived port, which is incomplete for any
+  DspTap pin from #27 to before #39 (that tree's `fixed_point.h` is the
+  transcription, under `SPDX: MIT`) and exact again once the pin is past
+  #39. The next routine bump closes it; until then the notice is short by
+  one file.
 - **MuTap `.github/workflows/ci.yml`**, job `branchless-parity` (lines
   360–392; its `run:` block starts at 369) — compiles
   `submodules/dsptap/third_party/ooura/fftsg*.c` by path, so it breaks by
@@ -1995,5 +2046,5 @@ byte-identical.
 | tap/DspTap#31 (`bbfa48d` on `main`) | 2b | `double`, `float` | **no output bit**: `basic_real_fft` routes to `detail::split_radix_rdft` instead of the vendored C (bit-identical, both precisions); tables built in the constructor (no first-call cost); `forward(const float*, float*)` / `inverse(const float*, float*)` on the double engine `[[deprecated]]` (D5); fp-contraction policy stated (D9: no export) | MuTap fingerprint harness: 14 rows byte-identical, float rows included; `test_float32`, `test_g168`, `test_nn_suppressor` unchanged; DspTap icount baselines re-recorded to the port's counts (`bench/README.md`) |
 | tap/DspTap#32 (`8350f13` on `main`) | 2c | none numerically | **no output bit and no contract point**: the vendored C leaves the shipping tree (`fftsg.c` and `fftsg_float.c` to `tests/reference/ooura/`, D6); `tap::dsp` is a pure INTERFACE target and `tap_dsp_fft` exists only under `TAP_DSP_FFT_CMSIS`; the `extern "C"` `rdft`/`cdft`/`rdft_f`/`cdft_f` declarations leave `fft.h` (a consumer that took them from there no longer links — none did: MuTap and MuTap-Max were grepped); the capi's `dsptap_fft_backend()` returns `"split_radix"` where it returned `"ooura"`; the Q15/Q31 ratchet scenarios are seeded and the `.text` ceilings set | MuTap fingerprint harness (scratch build of MuTap `0f6a7f0` with this tree as the submodule, `-DMUTAP_WERROR=ON`): 14 rows byte-identical to the current pin `b08f6c6`; DspTap icount at +0.00 % on every float key |
 | tap/DspTap#35 | 4 | none numerically | **no output bit** (the Ooura gate and the class-vs-engine memcmp are green on every leg; fixed-point icount checksums identical): `basic_real_fft`'s second template argument is the engine for the floating profiles (default `default_real_fft_engine_t<Sample>`); `k_min_size` / `k_max_size` / `supports_size` / `k_is_shareable` added; construction requires `supports_size(size)` (`TAP_EXPECTS`, debug) — the one narrowing is the CMSIS engine's 32 … 4096, which was already the library's behaviour (undefined outside it); `basic_real_fft`, `basic_pvoc`, `basic_log_mel` and the aliases move into `inline namespace fft_split_radix | fft_cmsis | fft_vdsp` (mangled names change: every consumer image is rebuilt on its bump, and two images with different defaults no longer share symbols); backends move to `fft/backends/`; the Q31 engine's transforms are `const`. Fingerprint A/B of this tree vs `main` (`tools/fingerprint`, 12 lines, review 35b): identical at g++ default flags, at `-O3 -DNDEBUG`, at `-O3 -DNDEBUG -march=x86-64-v3`, and on the Cortex-M33 leg | none yet (MuTap's bump: fingerprints must be byte-identical; its own embedders adopt the tag in `tap::mu` — checklist above) |
-| tap/DspTap#39 | post-program | Q15, Q31 | **no output bit**: the real post-pass / pre-pass, its table and the DC/Nyquist handling re-derived from the literature under a clean-room procedure ("The fixed-point post-pass, re-derived"), bit-identical to the transcription it replaces (every pinned fingerprint and checksum unchanged); fingerprints added at N = 64 and 1024 (the radix-2 stage); the inverse's antisymmetric-pair worst case added to the saturation sweep; the Q31 block-floating maximum scoped to N ≤ 2048 (31–80 LSB measured at 4096 … 65536, stated, not pinned); Welch-model ratio pins re-derived; Q15/Q31 icount +0.49 … +1.15 %, inside the band | none (no consumer on fixed point) |
+| tap/DspTap#39 | post-program | Q15, Q31 | **no output bit**: the real post-pass / pre-pass, its table and the DC/Nyquist handling re-derived from the literature under a clean-room procedure ("The fixed-point post-pass, re-derived", including what the hand-off left in the tree), bit-identical to the transcription it replaces (every pinned fingerprint and checksum unchanged, as any single-product two-rounding arrangement predicts); fingerprints added at N = 64 and 1024 (the radix-2 stage); the inverse's antisymmetric-pair worst case added to the saturation sweep; the Q31 block-floating maximum scoped to N ≤ 2048 (31–80 LSB measured at 4096 … 65536, stated, not pinned); Welch-model ratio pins re-derived; Q15/Q31 icount +0.49 … +1.15 %, inside the band | none numerically (no consumer on fixed point); provenance: MuTap's `THIRD_PARTY_NOTICES.md` ("what remains of the package is the derived port") is incomplete for any pin in #27 … #38 and exact again once it pins past #39 (Consumer follow-ups) |
 | tap/DspTap#36 | D6 | none numerically | **no output bit and no contract point**: the reference C (`tests/reference/ooura/`), its declaration header and the parity gate with its informational twin are deleted; `tests/test_fft_split_radix_fingerprint.cpp` pins the engine's output bits at every power of two from 4 to 65536 (one float row; double per C library build, glibc as an FMA/SSE2 dispatch pair), measured equal to the C's on every leg ("The bit-identity record after D6"); nothing under `include/` changes but comments; the test-only cache variable `TAP_DSP_PARITY_MAX_N` is renamed `TAP_DSP_TEST_MAX_FFT_N` | none needed (no shipping code changed; icount ratchet expected +0.00 % on every key) |
