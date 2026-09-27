@@ -23,8 +23,8 @@
 // functions only. An engine that allocates through malloc/calloc directly, or
 // inside a vendor library (Apple's vDSP on the macOS leg, CMSIS on the M55),
 // is invisible to it. For the srdif engine (the double profile, and float
-// without a backend) the claim is complete: the engine's tables are four
-// std::vectors built in the constructor, and nothing in a transform touches
+// without a backend) the claim is complete: the engine's tables are one
+// std::vector built in the constructor, and nothing in a transform touches
 // an allocator. For the backends the guard
 // covers the wrapper's own code and nothing more; a malloc interposer
 // (glibc's __libc_malloc, or DYLD_INTERPOSE) is the tool for the vendor
@@ -427,7 +427,31 @@ namespace {
     // one allocation of sizeof(Sample) x (N/2 for N <= 32, 44 at N = 64, 112
     // at N = 128, 7N/8 + 36 from N = 256) bytes, and nothing else allocated
     // during construction (no temporary, no second table).
+    //
+    // The contract number is the element storage; what the standard library's
+    // std::allocator adds on top is excluded, and the guard, which counts the
+    // bytes operator new is asked for, sees it. One library adds any: MSVC's
+    // STL on x86 / x64 over-allocates every request of at least 4096 bytes
+    // (_Big_allocation_threshold) by sizeof(void*) + 31 bytes (two pointers
+    // + 31 in a _DEBUG build) to align big blocks to 32 bytes by hand
+    // (_Allocate_manually_vector_aligned): 39 bytes on x64 release, so float
+    // 7,312 -> 7,351 B at N = 2048 and 14,480 -> 14,519 at 4096, double
+    // 14,624 -> 14,663 and 28,960 -> 28,999; every smaller pin, and every
+    // other library, is exact.
     // ------------------------------------------------------------------------
+    constexpr std::size_t std_allocator_overhead(std::size_t bytes) noexcept {
+#if defined(_MSVC_STL_VERSION) && (defined(_M_IX86) || defined(_M_X64)) && !defined(_M_ARM64EC)
+#ifdef _DEBUG
+        return bytes >= 4096 ? 2 * sizeof(void*) + 31 : 0;
+#else
+        return bytes >= 4096 ? sizeof(void*) + 31 : 0;
+#endif
+#else
+        (void)bytes;
+        return 0;
+#endif
+    }
+
     template <typename Sample>
     void expect_srdif_heap_is_the_formula() {
         struct pin {
@@ -443,7 +467,7 @@ namespace {
             {
                 const tap::dsp::detail::srdif_rdft<Sample> engine(p.n);
                 EXPECT_EQ(guard.allocations_since(), 1u) << "N=" << p.n;
-                EXPECT_EQ(guard.bytes_since(), bytes) << "N=" << p.n;
+                EXPECT_EQ(guard.bytes_since(), bytes + std_allocator_overhead(bytes)) << "N=" << p.n;
                 EXPECT_EQ(engine.size(), p.n);
             }
         }

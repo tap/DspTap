@@ -6,9 +6,10 @@ DspTap's own code — everything outside `third_party/`:
 (the bare-metal startup file and linker scripts the QEMU legs link, carried
 from, or written beside, MuTap's MIT copies; `platform/README.md` records
 their origin), `docs/` and the build files — is licensed under the MIT
-License — see [`LICENSE`](LICENSE). As of tap/DspTap#42 none of it is
-derived from third-party code; the trees before #42 carried a derivative of
-Ooura's package, recorded below.
+License — see [`LICENSE`](LICENSE). As of tap/DspTap#42, in the
+maintainer's judgement (below), none of it is derived from third-party code;
+the trees before #42 carried the C of Ooura's package, code derived from it,
+or both, as recorded below ("Which trees carry what").
 
 It bundles the following third-party code, each retaining its own license
 text:
@@ -19,8 +20,9 @@ text:
   `third_party/ooura/readme.txt` (the package's readme: the only upstream
   license text) and `LICENSES/LicenseRef-Ooura.txt` (the readme's
   `Copyright:` block, lines 140–145, verbatim, in the REUSE layout). As of
-  tap/DspTap#42 DspTap ships **no code derived from the package**: no source
-  file of it, no port, no transcription. Both files stay at these paths
+  tap/DspTap#42 DspTap ships, in the maintainer's judgement (the #42 and
+  #39 bullets below), **no code derived from the package**: no source file
+  of it, no port, no transcription. Both files stay at these paths
   permanently as the license record for the historical trees consumers
   pinned, which do carry derived code (below): in those trees the SPDX
   reference `LicenseRef-Ooura` resolves to the second file, and a
@@ -107,28 +109,42 @@ text:
   - *The replacement of the port.* tap/DspTap#42 replaced it with the srdif
     engine (`include/tap/dsp/fft/srdif.h`), written under a recorded
     clean-room procedure: hand-off commits (`17db855`, `05c81f1`) removed the
-    port, its bit-exact output pins and every comment naming its internal
-    routines or table recurrences, so — unlike at #39 — no bit-exact oracle of
-    the removed code remained; the implementer worked from the published
-    literature, DspTap's own fixed-point engine and a numbers-only targets
-    sheet, was barred from every copy of the port and the package, the
+    port, its per-N bit-exact output pins and every comment naming its
+    internal routines or table recurrences; unlike at #39 no per-N oracle
+    remained, but one whole-scenario checksum of the port did
+    (`bench/README.md`, `0x662dd085b5b88325`, the x86-64 `rfft_f32_512`
+    value), in a paragraph the implementer read and rewrote, and the
+    replacement does not match it; the implementer worked from the published
+    literature, DspTap's own fixed-point engine and a targets sheet of
+    numbers, was barred from every copy of the port and the package, the
     history before the hand-off, the provenance records and every other FFT
-    library's source, and reported what it accessed. Every floating output
-    bit changed. What the hand-off did not remove is stated rather than
-    implied: history prose naming the port and structural facts at that
-    level (a split-radix `rdft`, tables from libm), and the fixed-point
-    post-pass, which the srdif engine generalizes to floating point and
-    which #39 records as arithmetically the package's `rftfsub` / `rftbsub`.
+    library's source, and reported what it accessed. The brief, written by
+    the party that had read the port, named the split-radix literature and
+    the half-length DIF / bit-reversal / post-pass pipeline, which is also
+    the port's; independence is claimed for the arrangement and the text,
+    not the family. Every floating output bit changed. What the hand-off did
+    not remove is stated rather than implied: history prose naming the port
+    and structural facts at that level (a split-radix `rdft`, tables from
+    libm); the targets sheet's heap formula (which implies the port's
+    two-table layout) and its deterministic cells (three-digit fingerprints
+    of the port's output); the port's routine names and verbatim statements
+    in files the brief forbade but the worktree still held, fenced by the
+    brief alone; and the fixed-point post-pass, which the srdif engine
+    generalizes to floating point and which #39 records as arithmetically
+    the package's `rftfsub` / `rftbsub`.
     `docs/fft-design.md` ("The floating engine, replaced clean-room") records
     the procedure, the access statement and its near misses, and the
     structural comparison against `fftsg.c` made by #42's provenance review.
     The maintainer's judgement is that the srdif engine is DspTap's own,
     MIT, and not a derivative of the package.
   - *Which trees carry what* (for a consumer's notices): trees before
-    tap/DspTap#32 ship `fftsg.c` itself; trees from #28 to the base of #42
-    (`7a58ebe`) carry the port, shipped by routing from #31; trees from #27
-    to before #39 also carry the fixed-point transcription; trees from #42
-    on carry only the license record above.
+    tap/DspTap#32 ship `fftsg.c` itself; trees from #32 (`8350f13`) to
+    before #36 (D6, `0db95b6`) carry it as a test-only reference copy under
+    `tests/reference/ooura/` (`fftsg.c`, `fftsg_float.c`: in the checkout,
+    not shipped); trees from #28 to the base of #42 (`7a58ebe`) carry the
+    port, shipped by routing from #31; trees from #27 to before #39 also
+    carry the fixed-point transcription; trees from #42 on carry only the
+    license record above.
 - Contact with the author (audit Part 5: "before Stage 2c merges, attempt the
   address in the notice for an explicit statement on derivative distribution
   and record the outcome either way"): **not sent; superseded by the

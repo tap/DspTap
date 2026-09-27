@@ -8,9 +8,11 @@
 // accelerated backend (fft.h). It replaced, at the same contract, a port of a
 // third-party split-radix engine, and was written without reference to that
 // engine or to any other FFT library: from the literature below and from
-// DspTap's own fixed-point engine (fft/fixed_point.h), whose structure it
-// generalizes to floating point (docs/fft-design.md, "The floating engine
-// (srdif)").
+// DspTap's own fixed-point engine (fft/fixed_point.h), whose real post-pass
+// tap/DspTap#39 records as the same arrangement of the published method as
+// the third-party package's, and whose structure it generalizes to floating
+// point (docs/fft-design.md, "The floating engine (srdif)"; that this engine
+// is not derived from the package is the maintainer's judgement, NOTICE.md).
 //
 // The contract it presents (fft.h is the authority): N a power of two in
 // [4, 2^30]; packing a[0] = Re X[0], a[1] = Re X[N/2], a[2k] + i a[2k+1] =

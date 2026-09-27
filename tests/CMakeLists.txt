@@ -198,7 +198,8 @@ target_compile_definitions(tap_dsp_tests PRIVATE TAP_DSP_TEST_MAX_FFT_N=${TAP_DS
 # contract under /fp:precise; windows-latest is well past 17.0; MSVC on ARM64
 # has no leg and is unverified). IntelLLVM (icx) defaults to -fp-model=fast,
 # which licenses reassociation as well: -fp-model=precise first, then
-# -ffp-contract=off, since clang-based precise still contracts in a statement.
+# -ffp-contract=off, since clang-based precise still contracts in a statement
+# (no CI leg builds with icx, so the IntelLLVM flags are untested).
 set(_tap_dsp_nocontract_cxx
     "$<$<CXX_COMPILER_ID:IntelLLVM>:-fp-model=precise>"
     "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang,IntelLLVM>:-ffp-contract=off>")

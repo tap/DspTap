@@ -44,8 +44,8 @@ asset's contract summary.
   derived for the fixed-point engine (#39), written clean-room from the literature the header cites
   (tap/DspTap#42; it replaced, at the same contract, the C++20 port of Ooura's `rdft`,
   `fft/split_radix.h`, that the floating profiles ran from Stage 2b, so DspTap ships no code derived
-  from Ooura's package — `NOTICE.md`). Since Stage 4 the engine is a template parameter
-  (`basic_real_fft<Sample, Policy = detail::default_real_fft_policy_t<Sample>>`: the engine for
+  from Ooura's package — the maintainer's judgement, `NOTICE.md`). Since Stage 4 the engine is a
+  template parameter (`basic_real_fft<Sample, Policy = detail::default_real_fft_policy_t<Sample>>`: the engine for
   `float`/`double`, defaulting to `default_real_fft_engine_t<Sample>`, the scaling policy for
   Q15/Q31; the accelerated engines under `fft/backends/`, each stating its size range and
   shareability as contract numbers), and the build's selection opens an inline-namespace ABI tag on
@@ -57,7 +57,7 @@ asset's contract summary.
   for every compiler and target CI runs, float and double alike. A change that moves a pin is a
   numeric change to the engine; a host that needs a second row is a finding, not a row to add.
   `third_party/ooura/readme.txt` (with `LICENSES/LicenseRef-Ooura.txt`) stays as the license record
-  for the trees before #42, which carry the port.
+  for the older trees: from #28 to #42's base they carry the port, earlier ones the C (`NOTICE.md`).
 - **Real-time safe by construction.** Geometry fixed at construction, every buffer allocated
   there; processing is `noexcept` and allocation-free. Numerically fragile recursions (e.g. the
   order-48 Levinson–Durbin inside `pvoc`) run in double even in the float profile — documented

@@ -617,9 +617,11 @@ literature under a clean-room procedure in #39 (bit-identical). In #42 the
 maintainer replaced the port itself: the floating profiles run the srdif
 engine (`include/tap/dsp/fft/srdif.h`), written clean-room from the
 literature and DspTap's own fixed-point engine, and every floating output
-bit changed once. Since #42 DspTap ships no code derived from Ooura's
-package; `third_party/ooura/readme.txt` and `LICENSES/LicenseRef-Ooura.txt`
-stay as the license record for the trees before #42 that consumers pinned.
+bit changed once. Since #42 DspTap ships, in the maintainer's judgement
+(`NOTICE.md`), no code derived from Ooura's package;
+`third_party/ooura/readme.txt` and `LICENSES/LicenseRef-Ooura.txt` stay as
+the license record for the older trees consumers pinned (from #28 to #42's
+base they carry the port, earlier ones the C itself; `NOTICE.md`).
 The procedures, and what each did and did not cover, are in the design note
 ("Provenance and licensing") and `NOTICE.md`. The
 design note is [`docs/fft-design.md`](docs/fft-design.md), filled in as each
@@ -628,14 +630,15 @@ stage lands; the plan of record is `docs/audit-fft-and-code-smells.md` (#25).
 ## License
 
 DspTap's own code is MIT (`LICENSE`). Vendored third-party code keeps its own
-license. Since tap/DspTap#42 DspTap ships no code derived from Ooura's FFT
-package. Earlier trees did: from Stage 2b (#31) until #42 the floating
-profiles ran a C++ port of its `fftsg.c` (SPDX `LicenseRef-Ooura AND MIT`), a
-derivative work whose redistribution relied on the package's modification
-grant — its terms, in `third_party/ooura/readme.txt`, are "You may use, copy,
-modify this code for any purpose and without fee. You may distribute this
-ORIGINAL package." The readme and `LICENSES/LicenseRef-Ooura.txt` stay
-permanently as the license record for those trees. CMSIS-DSP / CMSIS-Core are
-Apache-2.0 with SPDX headers retained in every file. The canonical statement,
-and the maintainer's reading of what it covers — a judgement call, not legal
-advice — is [`NOTICE.md`](NOTICE.md).
+license. Since tap/DspTap#42 DspTap ships, in the maintainer's judgement
+(`NOTICE.md`), no code derived from Ooura's FFT package. Earlier trees did:
+from Stage 2b (#31) until #42 the floating profiles ran a C++ port of its
+`fftsg.c` (SPDX `LicenseRef-Ooura AND MIT`), a derivative work whose
+redistribution relied on the package's modification grant — its terms, in
+`third_party/ooura/readme.txt`, are "You may use, copy, modify this code for
+any purpose and without fee. You may distribute this ORIGINAL package." The
+readme and `LICENSES/LicenseRef-Ooura.txt` stay permanently as the license
+record for those trees. CMSIS-DSP / CMSIS-Core are Apache-2.0 with SPDX
+headers retained in every file. The canonical statement, and the maintainer's
+reading of what it covers — a judgement call, not legal advice — is
+[`NOTICE.md`](NOTICE.md).

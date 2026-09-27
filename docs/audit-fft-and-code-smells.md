@@ -6,7 +6,7 @@ adversarial review recorded in Part 6. Revision 3: fixed point reinstated as Sta
 documentation, testing and embedded-CI plans added (Parts 8-10). Revision 3.1: amendments from the
 wave-1 hostile reviews (Part 13). Since tap/DspTap#42 the port that Parts 3–5 plan (and Parts 6–12
 measure) is history: the floating profiles run the srdif engine, written clean-room, and DspTap
-ships no code derived from Ooura's package (Part 13, "The floating engine replaced"; D6, D7, D10
+ships, in the maintainer's judgement (`NOTICE.md`), no code derived from Ooura's package (Part 13, "The floating engine replaced"; D6, D7, D10
 amended). Parts 1–12 are kept as written, against the tree they describe.*
 
 The trigger was one smell: the float Ooura build is produced by `#define double float` plus
@@ -1253,11 +1253,13 @@ opposed to the PRs, are recorded here; the per-PR findings live on the PRs.
   (`fft/srdif.h`): the fixed-point engine's structure in floating point (N/2 complex values, a
   split-radix DIF kernel, bit reversal, #39's real post-pass), written clean-room from the
   literature; tables from integer arithmetic (no libm), so the output fingerprints are one row for
-  every host. **Every floating output bit changed** — the first move of a floating output bit since
-  the vendored C: rms error against a quad-precision reference 4–14 % lower from N = 128, heap per
-  object 2.6–2.8×, float icount −2.2 … −6.5 % on the four portable-engine keys (re-recorded),
-  MinSizeRel float `.text` −10 … −21 kB (ceilings re-recorded), x86-64 3–20 % slower
-  (informational). ABI tag `fft_split_radix` → `fft_srdif`; capi backend string `"srdif"`. Consumers
+  every compiler and target CI runs. **Every floating output bit changed** — the first move of a
+  floating output bit since the vendored C: rms error against a quad-precision reference 4–14 % lower
+  from N = 128 (review A's paired A/B: no cell worse in the mean), heap per object 1.73–1.82× in
+  one allocation (2.2–2.8× before the fix pass for review A), float icount −2.2 … −7.9 % on the
+  four portable-engine keys (re-recorded), MinSizeRel float `.text` −11 … −22 kB (ceilings
+  re-recorded), x86-64 at `-O3` float 0.5–5.9 % slower and double −3.4 … +3.6 %, at
+  `-march=native` float 9–18 % faster (informational). ABI tag `fft_split_radix` → `fft_srdif`; capi backend string `"srdif"`. Consumers
   re-measure (MuTap's fingerprint gate re-records all nine legs; MuTap-Max via MuTap). This
   supersedes D10 and the parts of D6 and D7 that concern the port (amended below). Record:
   `docs/fft-design.md`, "The floating engine (srdif)" and "The floating engine, replaced clean-room"
@@ -1310,7 +1312,8 @@ parity gate are deleted, and the engine's bit identity to the C (D10) is pinned 
 fingerprints measured equal to the C's (Part 13, "D6 executed"). **Amended at #42:** the port
 itself is gone (Part 13, "The floating engine replaced"); `readme.txt` and
 `LICENSES/LicenseRef-Ooura.txt` stay at their paths permanently, now as the license record for the
-trees before #42 that carry the port, and the port's fingerprints went with it.
+older trees (from #28 to #42's base they carry the port, earlier ones the C; `NOTICE.md`), and the
+port's fingerprints went with it.
 
 **D7. Settled: `detail::split_radix_rdft`**, one house token (`real_fft`) for everything
 consumer-facing, provenance per Part 5. (The engine was replaced at #42 by `detail::srdif_rdft`,

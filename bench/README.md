@@ -83,16 +83,22 @@ TAP_DSP_ICOUNT_DONE ok=1 engine=basic_real_fft backend=srdif scenario=rfft_f32_5
 
 (the `m4f` key's line on the srdif engine). The fold is exact and
 order-sensitive: two runs of the same binary print the same value, and a
-1-ulp change in any single output changes it (verified by nudging one
-spectrum bin at one iteration with `nextafterf`, on the engine and checksum of
-the time: `0x662dd085b5b88325` became `0x259510dc8721cba8`). A floating running sum cannot promise that — it
+1-ulp change in any single output changes it (verified on the port, the
+engine of the time, by nudging one spectrum bin at one iteration with
+`nextafterf`: its x86-64 value `0x662dd085b5b88325` became
+`0x259510dc8721cba8`). A floating running sum cannot promise that — it
 absorbs differences below the accumulator's ulp — which is why the checksum
-is an integer hash: it was the fingerprint the job compared between the C
-and the port on the QEMU legs at the bench's own build flags, beside the
-parity TU's comparison at `-ffp-contract=off` (retired at D6; the checksum
-above is the same value the C printed before the flip: the port is
-bit-identical), and it is what a same-key checksum change means today: an
-output bit moved. `ok` is a sanity check that the last iteration
+is an integer hash: until Stage 2c it was the fingerprint the job compared between
+the C and the port on each QEMU leg at the bench's own build flags (each key
+its own value; the port's `m4f` value was `0xa686b767a9d68725`), beside the
+parity TU's comparison at `-ffp-contract=off` (retired at D6; the port was
+bit-identical to the C, so `0x662dd085b5b88325` was also the value the C
+printed on x86-64 before the flip), and it is what a same-key checksum
+change means today: an output bit moved. The srdif engine prints
+`0x5caf505901a97f25` on x86-64 and the `m4f` line above; neither matches
+the port's. (The port's x86-64 value stayed in this paragraph through #42's
+clean-room hand-off: `docs/fft-design.md`, "The floating engine, replaced
+clean-room", item 1.) `ok` is a sanity check that the last iteration
 round-trips its input — within 1e-3 in the floating scenarios' own
 precision; within eight output LSB referred to the input, i.e.
 |out · 2^s − x| ≤ 8 · 2^s with s = e_fwd + e_inv + 1 − log₂N, in the
@@ -357,7 +363,7 @@ python3 scripts/icount.py --merge a.json b.json    # fold per-key files into one
 | 2c / 3b (fixed point; the Q15/Q31 scenarios seeded at 2c) | the seed itself gates nothing; every later `SMMULR`, Helium or table-layout change to the Q15/Q31 kernel has a number to beat |
 | 4 (engine as a parameter) | a backend regression on the deployed `m55` profile, or the `m55-ooura` fallback quietly getting slower |
 | 6 (hygiene) | the hygiene pass slowing the hot path unnoticed |
-| srdif (the floating engine replaced, tap/DspTap#42) | the replacement costing more than the engine it replaced on any key: the gate was "no float scenario above its baseline", met on all four portable-engine keys (−2.2 … −6.5 %) before the counts were re-recorded (table above) |
+| srdif (the floating engine replaced, tap/DspTap#42) | the replacement costing more than the engine it replaced on any key: the gate was "no float scenario above its baseline", met on all four portable-engine keys (−2.2 … −6.5 % at the first srdif record, −2.2 … −7.9 % after the fix pass for review A of #42) before the counts were re-recorded (table above) |
 
 **Stage 4 (engine parameter + ABI tag), tap/DspTap#35: what the ratchet
 caught, and a harness defect fixed without a re-record.** Measured locally

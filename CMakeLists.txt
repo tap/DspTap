@@ -18,10 +18,11 @@ project(DspTap VERSION 0.1.0 LANGUAGES C CXX)
 # tap::dsp is a pure INTERFACE target. Since Stage 2c
 # (docs/audit-fft-and-code-smells.md, Part 3; Decision D6) no vendored C is
 # compiled into what ships, and since tap/DspTap#42 no code derived from
-# Ooura's FFT package is either (the srdif engine replaced the C++20 port of
-# its rdft). third_party/ooura/readme.txt and LICENSES/LicenseRef-Ooura.txt
-# stay as the license record for the trees before #42, which carry that port
-# (NOTICE.md).
+# Ooura's FFT package is either, in the maintainer's judgement (NOTICE.md;
+# the srdif engine replaced the C++20 port of its rdft).
+# third_party/ooura/readme.txt and LICENSES/LicenseRef-Ooura.txt stay as the
+# license record for the older trees: from #28 to #42's base they carry that
+# port, earlier ones the C itself (NOTICE.md).
 # The one compiled (static) library, tap_dsp_fft, exists only when
 # TAP_DSP_FFT_CMSIS is ON and carries the CMSIS-DSP objects (below).
 # ==============================================================================

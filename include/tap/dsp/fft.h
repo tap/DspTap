@@ -249,7 +249,11 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///                                     N <= 32, 44 at N = 64, 112 at
     ///                                     N = 128, 7N/8 + 36 from N = 256)
     ///                                     bytes (srdif_rdft::heap_bytes;
-    ///                                     float 7,312 B at N = 2048)
+    ///                                     float 7,312 B at N = 2048): the
+    ///                                     element storage, the allocator's
+    ///                                     own bookkeeping excluded (MSVC's
+    ///                                     STL adds 39 B to a request of
+    ///                                     4 KiB or more on x64)
     ///       vDSP (float, Apple)           4 … 2^20  (fft/backends/accelerate.h)
     ///       CMSIS-DSP (float, Cortex-M55) 32 … 4096 (CMSIS's own table; below
     ///                                     32 or above 4096 the library's init
@@ -320,25 +324,27 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///                (tests/test_fft_backend.cpp, typed over the engines the
     ///                host can build — same-binary on macOS).
     ///   - Q15/Q31 -> detail::fixed_point_rdft (the specialization below).
-    /// The srdif engine's output bits are pinned at every power of two
-    /// 4 … 65536 in both precisions (tests/test_fft_srdif_fingerprint.cpp,
-    /// one row for every host: its tables come from integer arithmetic, not
-    /// libm). Replacing the engine it succeeded changed every consumer's
-    /// output bits, at the error level of either engine (fft/srdif.h has the
-    /// accuracy against a quad-precision reference). tests/test_fft_routing.cpp
-    /// pins that this class's output is byte-identical to the engine's, for
-    /// the srdif engine on every build (named explicitly) and for whatever
-    /// the default resolves to.
+    /// The srdif engine's output bits are pinned at every power of two 4 …
+    /// 65536 in both precisions (tests/test_fft_srdif_fingerprint.cpp, one
+    /// row for every compiler and target CI runs: its tables come from
+    /// integer arithmetic, not libm). Replacing the engine it succeeded
+    /// changed every consumer's output bits, at the error level of either
+    /// engine (fft/srdif.h has the accuracy against a quad-precision
+    /// reference). tests/test_fft_routing.cpp pins that this class's output
+    /// is byte-identical to the engine's, for the srdif engine on every build
+    /// (named explicitly) and for whatever the default resolves to.
     ///
     /// FFT size must be a power of 2 inside the engine's range (above), fixed
-    /// at construction. Workspace (bit-reversal and trig tables) is allocated
-    /// AND BUILT in the constructor (the vendored C of the early stages built
-    /// its tables lazily on the first transform; audit item F6), so the
-    /// first transform costs what every later one costs; the transforms
-    /// themselves are noexcept and allocation-free, so they are safe on a
-    /// real-time audio thread (tests/test_fft_rt.cpp). No alignment
-    /// requirement on the data pointer. NaN propagates to every bin (no
-    /// data-dependent branches). Latency 0. Copyable, and a copy is
+    /// at construction. Workspace (the engine's tables: for the srdif engine
+    /// one allocation of post-pass coefficients and kernel twiddles, the
+    /// bit reversal needing none; the backends' and the fixed-point engine's
+    /// their own) is allocated AND BUILT in the constructor (the vendored C
+    /// of the early stages built its tables lazily on the first transform;
+    /// audit item F6), so the first transform costs what every later one
+    /// costs; the transforms themselves are noexcept and allocation-free, so
+    /// they are safe on a real-time audio thread (tests/test_fft_rt.cpp). No
+    /// alignment requirement on the data pointer. NaN propagates to every bin
+    /// (no data-dependent branches). Latency 0. Copyable, and a copy is
     /// bit-identical to its source; the object is held by value in every
     /// consumer.
     ///
