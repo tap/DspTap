@@ -54,8 +54,8 @@ asset's contract summary.
   output bits are a function of the source once fp-contraction is off, and they are pinned as
   FNV-1a-64 output fingerprints at every power of two from 4 to 65536
   (`tests/test_fft_srdif_fingerprint.cpp`, pins in `tests/support/srdif_fingerprints.h`): one row
-  for every host and every QEMU leg, float and double alike. A change that moves a pin is a numeric
-  change to the engine; a host that needs a second row is a finding, not a row to add.
+  for every compiler and target CI runs, float and double alike. A change that moves a pin is a
+  numeric change to the engine; a host that needs a second row is a finding, not a row to add.
   `third_party/ooura/readme.txt` (with `LICENSES/LicenseRef-Ooura.txt`) stays as the license record
   for the trees before #42, which carry the port.
 - **Real-time safe by construction.** Geometry fixed at construction, every buffer allocated

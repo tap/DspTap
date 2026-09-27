@@ -43,15 +43,15 @@ jobs:
       # each host's values. The step runs even when the battery failed, so a
       # mismatch still leaves every value in the log. The engine's tables
       # are integer arithmetic (no libm) and the target is built without
-      # fp-contraction, so every host must match the one pinned row, for
-      # both profiles.
+      # fp-contraction, so every compiler and target CI runs must match the
+      # one pinned row, for both profiles.
       - name: srdif fingerprints (verbose)
         if: ${{ !cancelled() }}
         shell: bash
         run: |
           set -o pipefail
           ctest --test-dir build --build-config Release -R srdif_fingerprint -V | tee fingerprints.log
-          test "$(grep -c "matched row: every host" fingerprints.log)" = 2
+          test "$(grep -c "matched row: every compiler and target CI runs" fingerprints.log)" = 2
 
       # x86-64 glibc picks sin / cos by CPU at run time and its two builds
       # differ in the last bit; the engine that preceded srdif took its
@@ -67,7 +67,7 @@ jobs:
         run: |
           set -o pipefail
           ctest --test-dir build --build-config Release -R srdif_fingerprint -V | tee fingerprints-sse2.log
-          test "$(grep -c "matched row: every host" fingerprints-sse2.log)" = 2
+          test "$(grep -c "matched row: every compiler and target CI runs" fingerprints-sse2.log)" = 2
 
   # Bare-metal Cortex-M legs (newlib + semihosting) run under qemu-system-arm:
   # the emulation-sized selection in tests/bare_metal_main.cpp, judged on the

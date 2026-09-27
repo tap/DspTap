@@ -81,9 +81,11 @@ namespace {
     // coefficients) are computed in 64-bit fixed point from the Taylor series
     // and rounded once to the profile (fft/srdif.h, srdif_trig) — every float
     // table entry is the correctly rounded value and every double entry is
-    // within 0.5 + 2^-7.3 ulp of the exact one, per component, and the
-    // eighth-turn and pi/8 constants are correctly rounded literals — so
-    // |w_hat - w| <= 1.02 u |w| and mu <= 1.02 u. With mu ~ u, eta ~ 5u and,
+    // within 0.5 + 2^-7.25 ulp of the exact one (0.5052 ulp measured), per
+    // component, both exhaustive through L = 30 (every table any N <= 2^30
+    // builds; review A of tap/DspTap#42), and the eighth-turn and pi/8
+    // constants are correctly rounded literals — so |w_hat - w| <= 1.02 u |w|
+    // and mu <= 1.02 u. With mu ~ u, eta ~ 5u and,
     // for t * eta << 1, the 2-norm error is below about
     // 5 * u * log2(N) * ||y||_2. The largest single-element error cannot exceed
     // the 2-norm, and ||y||_2 comes free with the exact answer. Casting the

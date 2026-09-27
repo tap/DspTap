@@ -93,14 +93,17 @@
 namespace {
 
     std::atomic<std::size_t> allocation_count{0};
+    std::atomic<std::size_t> allocated_bytes{0}; // requested, summed
 
     void* counted_malloc(std::size_t n) {
         allocation_count.fetch_add(1, std::memory_order_relaxed);
+        allocated_bytes.fetch_add(n, std::memory_order_relaxed);
         return std::malloc(n == 0 ? 1 : n);
     }
 
     void* counted_aligned_malloc(std::size_t n, std::size_t alignment) {
         allocation_count.fetch_add(1, std::memory_order_relaxed);
+        allocated_bytes.fetch_add(n, std::memory_order_relaxed);
         const std::size_t slack = alignment + sizeof(void*);
         void* const       raw   = std::malloc(n + slack);
         if (raw == nullptr) {
@@ -318,13 +321,18 @@ namespace {
     class allocation_guard {
       public:
         allocation_guard() noexcept
-            : m_start(allocation_count.load(std::memory_order_relaxed)) {}
+            : m_start(allocation_count.load(std::memory_order_relaxed))
+            , m_start_bytes(allocated_bytes.load(std::memory_order_relaxed)) {}
         std::size_t allocations_since() const noexcept {
             return allocation_count.load(std::memory_order_relaxed) - m_start;
+        }
+        std::size_t bytes_since() const noexcept {
+            return allocated_bytes.load(std::memory_order_relaxed) - m_start_bytes;
         }
 
       private:
         std::size_t m_start;
+        std::size_t m_start_bytes;
     };
 
     constexpr std::size_t k_guarded_sizes[] = {512, 4096};
@@ -412,6 +420,41 @@ namespace {
             expect_no_allocation<TypeParam>(
                 n, "inverse", [](TypeParam& fft, const sample* in, sample* out) { (void)fft.inverse(in, out); });
         }
+    }
+
+    // ------------------------------------------------------------------------
+    // The srdif engine's heap per object (fft.h, the engine's range entry):
+    // one allocation of sizeof(Sample) x (N/2 for N <= 32, 44 at N = 64, 112
+    // at N = 128, 7N/8 + 36 from N = 256) bytes, and nothing else allocated
+    // during construction (no temporary, no second table).
+    // ------------------------------------------------------------------------
+    template <typename Sample>
+    void expect_srdif_heap_is_the_formula() {
+        struct pin {
+            std::size_t n;
+            std::size_t samples;
+        };
+        constexpr pin k_pins[] = {{4, 2},     {32, 16},   {64, 44},     {128, 112},
+                                  {256, 260}, {512, 484}, {2048, 1828}, {4096, 3620}};
+        for (const pin& p : k_pins) {
+            const std::size_t bytes = sizeof(Sample) * p.samples;
+            EXPECT_EQ(tap::dsp::detail::srdif_rdft<Sample>::heap_bytes(p.n), bytes) << "N=" << p.n;
+            allocation_guard guard;
+            {
+                const tap::dsp::detail::srdif_rdft<Sample> engine(p.n);
+                EXPECT_EQ(guard.allocations_since(), 1u) << "N=" << p.n;
+                EXPECT_EQ(guard.bytes_since(), bytes) << "N=" << p.n;
+                EXPECT_EQ(engine.size(), p.n);
+            }
+        }
+    }
+
+    TEST(fft_rt_srdif, FloatHeapIsOneAllocationOfTheStatedSize) {
+        expect_srdif_heap_is_the_formula<float>();
+    }
+
+    TEST(fft_rt_srdif, DoubleHeapIsOneAllocationOfTheStatedSize) {
+        expect_srdif_heap_is_the_formula<double>();
     }
 
     // ------------------------------------------------------------------------

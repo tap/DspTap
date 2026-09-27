@@ -48,8 +48,13 @@
 //       (the index maps behind the fused pass and the bit-reversed output
 //       order of in-place decimation in frequency).
 //
-//   The permutation: A. H. Karp, "Bit reversal on uniprocessors," SIAM
-//     Review 38(1), 1-26, 1996 (the table-driven swap method).
+//   The permutation: B. Gold and C. M. Rader, Digital Processing of
+//     Signals, McGraw-Hill, 1969 (the reverse-carry counter: a bit-reversed
+//     index advanced beside the natural one, swapping when i < rev(i));
+//     A. H. Karp, "Bit reversal on uniprocessors," SIAM Review 38(1), 1-26,
+//     1996 (the survey of such methods, among them splitting the index
+//     into its end bits and its middle so that one counter serves several
+//     swaps).
 //
 //   The tables: the Maclaurin series of cos and sin evaluated by Horner's
 //     rule in 64-bit fixed point (D. E. Knuth, The Art of Computer
@@ -70,7 +75,6 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <limits>
 #include <type_traits>
 #include <utility>
@@ -120,23 +124,28 @@ namespace tap::dsp::detail {
     /// sin = theta (1 - y ts) and 1 - cos = theta^2 tc with the normalized
     /// theta, so a small angle keeps full relative precision in both.
     ///
-    /// Accuracy, measured against __float128 (libquadmath) over every k of
-    /// every 2^L <= 2^18 and 200,000 random k per L = 19 … 30 (2026-09-26):
-    /// the 64-bit mantissa is within 12.7 units of its last place of the
-    /// exact value (1 - cos is the worst of the four; cos 2.7, sin 4.6,
-    /// 1 - sin 4.8). Rounded by to_sample: every float value is the correctly
-    /// rounded one (no exact value lies within 2.2e4 units of a float
-    /// rounding tie); a double value is within 0.5 + 2^-7.3 ulp of the exact
-    /// one, and 0.08 % of them are the neighbour of the correctly rounded
-    /// double. Deterministic either way. `GeneratorAgreesWithLibmToTheLastBits`,
-    /// `OctantEndpointsAreExact`, `KernelLiteralsAreTheGeneratorsValues`,
-    /// `ToSampleRoundsHalfToEven` (tests/test_fft_srdif.cpp).
+    /// Accuracy, against __float128 (libquadmath), exhaustive over every k
+    /// of every 2^L, L = 3 … 30 (every angle any N <= 2^30 builds; review A
+    /// of tap/DspTap#42, 2026-09-26): the 64-bit mantissa is within 13.44
+    /// units of its last place of the exact value (1 - cos is the worst of
+    /// the four, at L = 30; 12.34 at L = 19, 13.07 at L = 24). Rounded by
+    /// to_sample: every float value is the correctly rounded one, with no
+    /// misrounding at any L <= 30 (the nearest exact value to a float
+    /// rounding tie is 547 units away, first at L = 25; 21,970 units up to
+    /// L = 24); a double value is within 0.5 + 13.44/2048 = 0.5 + 2^-7.25 ulp
+    /// of the exact one (0.5052 ulp measured), and 0.04 - 0.17 % of them,
+    /// by function, are the neighbour of the correctly rounded double
+    /// (0.08 % of the 2^20 post table). Deterministic either way.
+    /// `GeneratorAgreesWithLibmToTheLastBits`, `OctantEndpointsAreExact`,
+    /// `KernelLiteralsAreTheGeneratorsValues`, `ToSampleRoundsHalfToEven`
+    /// (tests/test_fft_srdif.cpp).
     ///
     /// Cost: about 25 64 x 64 -> 128 high products per angle (four 32-bit
-    /// multiplies each); the engine evaluates about 3N/16 angles at
-    /// construction. Measured on the Cortex-M4F (QEMU, -O3), construction
-    /// whole, allocation included: 103 k instructions at N = 512, 396 k at
-    /// N = 2048 (0.11 % / 0.37 % of the ratchet scenarios).
+    /// multiplies each); the engine evaluates N/8 angles at construction
+    /// (the post table's; the kernel tables are read out of it). Measured on
+    /// the Cortex-M4F (QEMU, -O3), construction whole, allocation included:
+    /// 52 k instructions at N = 512, 204 k at N = 2048 (0.06 % / 0.19 % of
+    /// the ratchet scenarios).
     namespace srdif_trig {
 
         /// A non-negative value m * 2^e, m normalized (bit 63 set) or zero.
@@ -348,49 +357,62 @@ namespace tap::dsp::detail {
     ///     transformed through every remaining level and stored once). The
     ///     run-time recursion (kernel) handles l >= 128 only.
     ///
-    /// The tables (built in the constructor, never touched by a transform
-    /// except to read):
-    ///   - m_twiddles: for the fused pass at run time, twelve Samples per
-    ///     jj in [1, M/16): W_M^jj, W_M^3jj, W_M^(jj + M/8),
-    ///     W_M^(3jj + 3M/8), W_M^2jj, W_M^6jj (cos, sin each); a block of
-    ///     length l reads the entry j (M/l) for its group j. 12 (M/16 - 1)
-    ///     Samples (none below M = 32).
-    ///   - m_small: the same layout at M = 32 (one entry) and 64 (three), for
-    ///     block<32> and block<64>: 12 + 36 Samples where used.
-    ///   - m_post: C_k = (1 + i W_N^k) / 2 for k < N/4 (fixed_point.h's
+    /// The tables: one allocation, sized once and built in place by the
+    /// constructor, never touched by a transform except to read. In Samples,
+    /// in this order:
+    ///   - post: C_k = (1 + i W_N^k) / 2 for k < N/4 (fixed_point.h's
     ///     real_post_pass derives it), stored as ((1 - sin theta_k) / 2,
     ///     cos theta_k / 2) with 1 - sin and, past the octant, 1 - cos
     ///     evaluated without cancellation by srdif_trig, each rounded once:
     ///     N/2 Samples.
-    ///   - m_swaps: the bit-reversal permutation as the list of pairs
-    ///     (i, bitrev i), i < bitrev i, as Sample offsets: M - 2^ceil(log2 M
-    ///     / 2) uint32 words.
-    ///   Every table value is srdif_trig's, taken to the other octants by
-    ///   exact symmetry (negation and exchange). Heap per object, measured
-    ///   (x86-64, libstdc++): 2,896 B float / 4,832 B double at N = 512,
-    ///   11,280 B / 18,592 B at 2048, 359,568 B / 589,088 B at 65536, 2.6 to
-    ///   2.8 times what the engine it replaced held (docs/fft-design.md has
-    ///   the comparison); sizeof 104 B on LP64.
+    ///   - small: the fused pass's twiddles at M = 32 (one entry) and 64
+    ///     (three), for block<32> and block<64>: 12 Samples at M = 32, 12 + 36
+    ///     from M = 64.
+    ///   - kernel: for the run-time fused pass (M >= 128), twelve Samples per
+    ///     jj in [1, M/16): W_M^jj, W_M^3jj, W_M^(jj + M/8),
+    ///     W_M^(3jj + 3M/8), W_M^2jj, W_M^6jj (cos, sin each); a block of
+    ///     length l reads the entry j (M/l) for its group j. 12 (M/16 - 1)
+    ///     Samples.
+    ///   The post table is srdif_trig's; small and kernel are read out of
+    ///   its imaginary parts (fill_kernel_table), which gives the same bits
+    ///   as evaluating srdif_trig at their own resolution. Every value
+    ///   outside the first octant is taken there by exact symmetry (negation
+    ///   and exchange). The permutation needs no table (permute).
+    ///   Heap per object, exactly (heap_bytes; one allocation, no temporary
+    ///   at construction): sizeof(Sample) x (N/2 for N <= 32, 44 at N = 64,
+    ///   112 at N = 128, 7N/8 + 36 from N = 256). Float 1,936 B at N = 512,
+    ///   7,312 B at 2048, 229,520 B at 65536, double twice that: 1.73 - 1.82
+    ///   times what the engine it replaced held (docs/fft-design.md has the
+    ///   comparison). sizeof 32 B on LP64.
     ///
     /// Contract numbers (fft.h re-exports the first three):
-    ///   - k_min_size = 4, k_max_size = 2^30 (the uint32 swap offsets reach
-    ///     2^30 - 2 there; at 2^30 the float tables alone are 5.5 GiB beside
-    ///     the caller's 4 GiB, and no test constructs it).
+    ///   - k_min_size = 4, k_max_size = 2^30 (the contract's range, kept from
+    ///     the engine this one replaced; every index is a size_t, and at 2^30
+    ///     the float tables are 3.5 GiB beside the caller's 4 GiB). The
+    ///     constructor checks the precondition (assert) before any table is
+    ///     sized from n.
     ///   - k_is_shareable = true: the transforms are const, read the tables
     ///     and write the caller's buffer only, so two threads may transform
     ///     through one object at once.
     ///   - Transforms noexcept and allocation-free (tests/test_fft_rt.cpp),
     ///     the first as cheap as every later one; no alignment requirement;
-    ///     no data-dependent branch, so NaN propagates like any value;
-    ///     copyable, and a copy is bit-identical to its source.
+    ///     no data-dependent branch, so a NaN or Inf in the input reaches
+    ///     every output bin (per bin, not per word: one component of bin N/4,
+    ///     whose weight is structurally zero, can stay finite, as it did in
+    ///     the engine this one replaced; review A of tap/DspTap#42); copyable,
+    ///     and a copy is bit-identical to its source.
     ///   - Output bits: a function of the input, of this source and of
-    ///     fp-contraction alone (srdif_trig). Built without contraction they
-    ///     are the same on every host and QEMU leg, pinned at every power of
-    ///     two 4 … 65536 (tests/test_fft_srdif_fingerprint.cpp). A build that
-    ///     fuses a*b + c (GCC's default on FMA targets such as the M4F, M33
-    ///     and M55 legs; clang's, within a statement, on Apple arm64) moves
-    ///     last bits and not the error statistics (fft.h, "fp-contraction
-    ///     policy").
+    ///     fp-contraction alone (srdif_trig), given arithmetic that rounds
+    ///     every operation to its format (FLT_EVAL_METHOD == 0: not an x87
+    ///     build) and no flush-to-zero or -ffast-math. Built without
+    ///     contraction they are one row for every compiler and target CI
+    ///     runs (x86-64 g++ and clang++, Windows x64 MSVC, macOS arm64
+    ///     AppleClang, the four QEMU legs; MSVC on ARM64 has no leg), pinned
+    ///     at every power of two 4 … 65536
+    ///     (tests/test_fft_srdif_fingerprint.cpp). A build that fuses a*b + c
+    ///     (GCC's default on FMA targets such as the M4F, M33 and M55 legs;
+    ///     clang's, within a statement, on Apple arm64) moves last bits and
+    ///     not the error statistics (fft.h, "fp-contraction policy").
     ///
     /// Accuracy (the method of the maintainer's targets sheet: against a
     /// __float128 reference, white noise at full scale, eight trials pooled;
@@ -414,12 +436,35 @@ namespace tap::dsp::detail {
     /// Speed: the instruction-count ratchet's float scenarios (forward plus
     /// scaled inverse over 2^20 samples, harness included; arm-none-eabi-gcc
     /// 13.2.1 -O3, QEMU 8.2.2), against the engine it replaced, N = 512 /
-    /// 2048: Cortex-M4 soft-float -2.67 % / -2.18 %, M4F -3.23 % / -2.92 %,
-    /// M33 -6.50 % / -6.06 %, M55 without CMSIS -3.46 % / -2.62 %
+    /// 2048: Cortex-M4 soft-float -2.71 % / -2.23 %, M4F -4.70 % / -4.49 %,
+    /// M33 -7.89 % / -7.53 %, M55 without CMSIS -5.98 % / -5.04 %
     /// (bench/README.md, docs/fft-design.md, "The floating engine (srdif)").
-    /// On x86-64 without -march it is 3-10 % slower in float and 6-20 % in
-    /// double than the engine it replaced (informational; the design note
-    /// has the table).
+    /// On x86-64 (a same-machine A/B of the targets sheet's hostbench, g++
+    /// 13.3, pinned core, 11 runs; the predecessor's medians are review A's
+    /// of tap/DspTap#42, this engine's measured the same way on the same
+    /// machine, within 2 % of review A's own re-run of the previous tree),
+    /// N = 256 … 4096, forward / inverse against the engine it replaced:
+    /// -O3 float +0.5 … +5.7 % / +1.9 … +5.9 %, double +0.1 … +3.6 % /
+    /// -3.4 … +1.0 %; -O3 -march=native float -9.0 … -13.4 % /
+    /// -14.5 … -18.1 %, double -0.2 … +3.5 % / -2.2 … -7.5 %
+    /// (informational; the design note has the table).
+    ///
+    /// GCC's basic-block (SLP) vectorizer is off for this class (the pragma
+    /// below; a performance setting only). It packs the (re, im) halves of
+    /// the complex values into vector registers and then pays a lane
+    /// shuffle for every multiplication by i and every complex product,
+    /// which costs more than it saves: with it on, the double forward at
+    /// N = 512 took 1,403 ns at -O3 and 1,441 ns at -march=native (review A
+    /// measured +14 % and +28 % against the predecessor), and the M55 float
+    /// scenario (MVE) 1.9 - 2.3 % more instructions. The M4, M4F and M33 have no
+    /// vector unit and compile the same code either way; clang's SLP
+    /// vectorizer helps here and is left alone. The output bits do not
+    /// depend on it (it reassociates nothing; the fingerprints are the same
+    /// with and without).
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC push_options
+#pragma GCC optimize("no-tree-slp-vectorize")
+#endif
     template <std::floating_point Sample>
     class srdif_rdft {
         static_assert(std::is_same_v<Sample, float> || std::is_same_v<Sample, double>, "srdif_rdft: float or double");
@@ -430,13 +475,8 @@ namespace tap::dsp::detail {
         static constexpr bool        k_is_shareable = true;
 
         explicit srdif_rdft(std::size_t n)
-            : m_n(n)
-            , m_twiddles(make_kernel_table(n / 2))
-            , m_small(make_small_tables(n / 2))
-            , m_post(make_post_table(n))
-            , m_swaps(make_swap_table(n / 2)) {
-            assert(n >= k_min_size && n <= k_max_size && (n & (n - 1)) == 0);
-        }
+            : m_n(checked_size(n))
+            , m_tables(make_tables(n)) {}
 
         [[nodiscard]] std::size_t size() const noexcept { return m_n; }
 
@@ -452,84 +492,60 @@ namespace tap::dsp::detail {
             permute(a);
         }
 
+        /// Heap bytes one engine of size n holds: its single table allocation.
+        [[nodiscard]] static constexpr std::size_t heap_bytes(std::size_t n) noexcept {
+            return sizeof(Sample) * table_samples(n);
+        }
+
       private:
         static constexpr Sample k_sqrt_half =
             std::is_same_v<Sample, float> ? Sample(0x1.6a09e6p-1) : Sample(0x1.6a09e667f3bcdp-1);
 
         static int log2_of(std::size_t n) noexcept { return std::bit_width(n) - 1; }
 
-        /// The fused pass's twiddles at resolution m: for jj in [1, m/16), twelve
-        /// Samples W^jj, W^3jj, W^(jj + m/8), W^(3jj + 3m/8), W^2jj, W^6jj
-        /// (W = exp(+2 pi i/m), each as cos, sin). Entry 0 is not stored.
-        static std::vector<Sample> make_kernel_table(std::size_t m) {
-            const std::size_t   count = m >= 32 ? m / 16 - 1 : 0; // m == 0: empty
-            std::vector<Sample> t(12 * count);
-            if (count == 0) {
-                return t;
-            }
-            // The first octant, b in [0, m/8], once; every other angle by exact symmetry.
-            const std::size_t   octant = m / 8;
-            std::vector<Sample> fo(2 * (octant + 1));
-            const int           lg = log2_of(m);
-            for (std::size_t b = 0; b <= octant; ++b) {
-                const auto v  = srdif_trig::first_octant(b, lg);
-                fo[2 * b]     = srdif_trig::to_sample<Sample>(v.cos);
-                fo[2 * b + 1] = srdif_trig::to_sample<Sample>(v.sin);
-            }
-            const std::size_t quarter = m / 4;
-            const auto        unit    = [&](std::size_t angle, Sample* out) {
-                const std::size_t a  = angle % m;
-                const std::size_t qd = a / quarter;
-                const std::size_t r  = a % quarter;
-                Sample            c;
-                Sample            sn;
-                if (r <= octant) {
-                    c  = fo[2 * r];
-                    sn = fo[2 * r + 1];
-                }
-                else { // W^r = i conj W^(m/4 - r)
-                    c  = fo[2 * (quarter - r) + 1];
-                    sn = fo[2 * (quarter - r)];
-                }
-                for (std::size_t k = 0; k < qd; ++k) { // times i per quarter turn
-                    const Sample t0 = c;
-                    c               = -sn;
-                    sn              = t0;
-                }
-                out[0] = c;
-                out[1] = sn;
-            };
-            for (std::size_t jj = 1; jj <= count; ++jj) {
-                Sample* const e = t.data() + 12 * (jj - 1);
-                unit(jj, e);
-                unit(3 * jj, e + 2);
-                unit(jj + m / 8, e + 4);
-                unit(3 * jj + 3 * (m / 8), e + 6);
-                unit(2 * jj, e + 8);
-                unit(6 * jj, e + 10);
-            }
-            return t;
+        /// The precondition, checked before any table is sized from n.
+        static std::size_t checked_size(std::size_t n) noexcept {
+            assert(n >= k_min_size && n <= k_max_size && (n & (n - 1)) == 0);
+            return n;
         }
 
-        /// The fused pass's twiddles for the blocks of 32 and 64 (the kernel
-        /// tables of those lengths, concatenated: 12 + 36 Samples), read by the
-        /// compile-time blocks with constant offsets.
-        static std::vector<Sample> make_small_tables(std::size_t m) {
-            std::vector<Sample> t = make_kernel_table(m >= 32 ? 32 : 0);
+        // The one table allocation, in Samples: [post | small | kernel].
+        //   post:   C_k for k < N/4, N/2 Samples (make_post_table).
+        //   small:  the fused-pass twiddles at M = 32 (12 Samples) and M = 64
+        //           (36), for block<32> and block<64>, where the kernel uses them.
+        //   kernel: the fused-pass twiddles at M, twelve Samples per jj in
+        //           [1, M/16), where the run-time pass runs (M >= 128).
+        static constexpr std::size_t small_samples(std::size_t m) noexcept { return m >= 64 ? 48 : (m == 32 ? 12 : 0); }
+        static constexpr std::size_t kernel_samples(std::size_t m) noexcept { return m >= 128 ? 12 * (m / 16 - 1) : 0; }
+        static constexpr std::size_t table_samples(std::size_t n) noexcept {
+            return n / 2 + small_samples(n / 2) + kernel_samples(n / 2);
+        }
+
+        static std::vector<Sample> make_tables(std::size_t n) {
+            const std::size_t   m = n / 2;
+            std::vector<Sample> t(table_samples(n));
+            Sample* const       post = t.data();
+            fill_post_table(post, n);
+            Sample* const small = post + n / 2;
+            if (m >= 32) {
+                fill_kernel_table(small, 32, post, n);
+            }
             if (m >= 64) {
-                const std::vector<Sample> t64 = make_kernel_table(64);
-                t.insert(t.end(), t64.begin(), t64.end());
+                fill_kernel_table(small + 12, 64, post, n);
+            }
+            if (m >= 128) {
+                fill_kernel_table(small + 48, m, post, n);
             }
             return t;
         }
 
-        /// C_k = (1 + i W_n^k) / 2 for k in [0, n/4), interleaved (re, im).
-        static std::vector<Sample> make_post_table(std::size_t n) {
-            const std::size_t   quarter = n / 4;
-            const std::size_t   octant  = n / 8;
-            std::vector<Sample> t(2 * quarter);
-            if (quarter == 0) {
-                return t;
+        /// C_k = (1 + i W_n^k) / 2 for k in [0, n/4), interleaved (re, im):
+        /// n/2 Samples at t.
+        static void fill_post_table(Sample* t, std::size_t n) {
+            const std::size_t quarter = n / 4;
+            const std::size_t octant  = n / 8;
+            if (quarter == 0) { // n < 4: outside the contract; write nothing
+                return;
             }
             const int lg = log2_of(n);
             t[0]         = Sample(0.5);
@@ -546,43 +562,110 @@ namespace tap::dsp::detail {
                     t[2 * k + 1] = srdif_trig::to_sample<Sample>(srdif_trig::halved(v.sin));
                 }
             }
-            return t;
         }
 
-        /// The bit-reversal permutation of m complex values as swap pairs (i, j), i < j.
-        static std::vector<std::uint32_t> make_swap_table(std::size_t m) {
-            // m - 2^ceil(bits/2) indices are not their own reversal: half as many pairs.
-            const int                  bits = log2_of(m);
-            std::vector<std::uint32_t> t;
-            t.reserve(m - (std::size_t{1} << ((bits + 1) / 2)));
-            for (std::size_t i = 0; i < m; ++i) {
-                std::size_t r = 0;
-                for (int b = 0; b < bits; ++b) {
-                    r |= ((i >> b) & 1u) << (bits - 1 - b);
+        /// The fused pass's twiddles at resolution res (a power of two with
+        /// 32 <= res <= n/2), twelve Samples per jj in [1, res/16): W^jj,
+        /// W^3jj, W^(jj + res/8), W^(3jj + 3res/8), W^2jj, W^6jj (W =
+        /// exp(+2 pi i/res), each as cos, sin), at t. Every value is read
+        /// from the post table's imaginary parts, which hold cos theta_k / 2
+        /// for every k < n/4 (theta_k = 2 pi k/n; srdif_trig's cos or sin of
+        /// the first-octant angle, halved exactly): cos theta_r = 2 im_r and,
+        /// for r > 0, sin theta_r = cos theta_(n/4 - r) = 2 im_(n/4 - r).
+        /// Doubling undoes the halving exactly, so these are srdif_trig's
+        /// values, the same bits a table built from srdif_trig at resolution
+        /// res directly would hold (srdif_trig's value at (k, L) and at
+        /// (2k, L + 1) is the same computation).
+        static void fill_kernel_table(Sample* t, std::size_t res, const Sample* post, std::size_t n) {
+            const std::size_t quarter = n / 4;
+            const std::size_t step    = n / res; // index k at resolution n of angle 1 at res
+            const auto        unit    = [&](std::size_t angle, Sample* out) {
+                const std::size_t k  = (angle % res) * step;
+                const std::size_t qd = k / quarter;
+                const std::size_t r  = k % quarter;
+                Sample            c  = Sample(2) * post[2 * r + 1];
+                Sample            sn = r == 0 ? Sample(0) : Sample(2) * post[2 * (quarter - r) + 1];
+                for (std::size_t q = 0; q < qd; ++q) { // times i per quarter turn
+                    const Sample t0 = c;
+                    c               = -sn;
+                    sn              = t0;
                 }
-                if (i < r) { // Sample offsets of the two complex values
-                    t.push_back(static_cast<std::uint32_t>(2 * i));
-                    t.push_back(static_cast<std::uint32_t>(2 * r));
-                }
+                out[0] = c;
+                out[1] = sn;
+            };
+            for (std::size_t jj = 1; jj < res / 16; ++jj) {
+                Sample* const e = t + 12 * (jj - 1);
+                unit(jj, e);
+                unit(3 * jj, e + 2);
+                unit(jj + res / 8, e + 4);
+                unit(3 * jj + 3 * (res / 8), e + 6);
+                unit(2 * jj, e + 8);
+                unit(6 * jj, e + 10);
             }
-            return t;
         }
 
+        /// The bit-reversal permutation of the m = N/2 complex values, with no
+        /// index table: a reversed counter walked beside the forward index
+        /// (Gold and Rader's reverse-carry increment). Adding one to an index
+        /// flips its trailing ones and the zero above them; the reversed
+        /// counter flips the mirror image of those bits. With m = 2^b >= 16,
+        /// write i = A m/4 + 4y + B (A, B < 4, y < m/16); then rev(i) =
+        /// rev2(B) m/4 + 4 rev'(y) + rev2(A), rev2 reversing two bits and rev'
+        /// the middle b - 4. One counter over y therefore serves sixteen
+        /// indices: the six with A < rev2(B) are below their partners
+        /// whatever y is and swap unconditionally, the four with
+        /// A = rev2(B) swap when y < rev'(y), and the other six are the
+        /// partners. Below m = 16 the counter walks every index.
         void permute(Sample* a) const noexcept {
-            const std::uint32_t* s   = m_swaps.data();
-            const std::uint32_t* end = s + m_swaps.size();
-            for (; s != end; s += 2) {
-                Sample* const p  = a + s[0];
-                Sample* const q  = a + s[1];
-                const Sample  p0 = p[0];
-                const Sample  p1 = p[1];
-                const Sample  q0 = q[0];
-                const Sample  q1 = q[1];
-                p[0]             = q0;
-                p[1]             = q1;
-                q[0]             = p0;
-                q[1]             = p1;
+            const std::size_t m = m_n / 2;
+            if (m < 16) {
+                std::size_t j = 0; // rev(i)
+                for (std::size_t i = 0; i < m; ++i) {
+                    if (i < j) {
+                        swap2(a + 2 * i, a + 2 * j);
+                    }
+                    j ^= m - (m >> (std::countr_one(i) + 1));
+                }
+                return;
             }
+            // Sample offsets: a quarter (A) is m/2 Samples, and i, j are the
+            // offsets of complex indices 4y and 4 rev'(y) within a quarter.
+            const std::size_t q = m / 2;
+            Sample*           p = a; // row 0 at i; rows 1 ... 3 at p + q, p + 2q, p + 3q
+            std::size_t       j = 0;
+            for (std::size_t i = 0; i < q; i += 8, p += 8) {
+                Sample* const s0 = a + j;
+                Sample* const s1 = s0 + q;
+                Sample* const s2 = s1 + q;
+                Sample* const s3 = s2 + q;
+                Sample* const p1 = p + q;
+                Sample* const p2 = p1 + q;
+                // (A, B) <-> (rev2 B, rev2 A), A < rev2 B.
+                swap2(p + 2, s2);      // (0, 1) <-> (2, 0)
+                swap2(p1 + 2, s2 + 4); // (1, 1) <-> (2, 2)
+                swap2(p + 4, s1);      // (0, 2) <-> (1, 0)
+                swap2(p + 6, s3);      // (0, 3) <-> (3, 0)
+                swap2(p1 + 6, s3 + 4); // (1, 3) <-> (3, 2)
+                swap2(p2 + 6, s3 + 2); // (2, 3) <-> (3, 1)
+                if (i < j) {           // A = rev2 B: (0, 0), (2, 1), (1, 2), (3, 3)
+                    swap2(p, s0);
+                    swap2(p2 + 2, s2 + 2);
+                    swap2(p1 + 4, s1 + 4);
+                    swap2(p2 + q + 6, s3 + 6);
+                }
+                j ^= q - (q >> (std::countr_one(i >> 3) + 1));
+            }
+        }
+
+        static void swap2(Sample* p, Sample* q) noexcept {
+            const Sample p0 = p[0];
+            const Sample p1 = p[1];
+            const Sample q0 = q[0];
+            const Sample q1 = q[1];
+            p[0]            = q0;
+            p[1]            = q1;
+            q[0]            = p0;
+            q[1]            = p1;
         }
 
         static constexpr Sample k_cos_pi8 =
@@ -738,7 +821,7 @@ namespace tap::dsp::detail {
             group_first<Inverse>(a, e);
             // j = 1 alone, then two groups per step (e/2 - 1 is odd): the
             // eight row pointers serve both groups at constant offsets.
-            const Sample* w = m_twiddles.data() + stride - 12;
+            const Sample* w = m_tables.data() + m_n / 2 + 48 + stride - 12;
             group_low<Inverse>(a + 2, e, w);
             w += stride;
             for (std::size_t j = 2; j < h; j += 2, w += 2 * stride) {
@@ -827,7 +910,7 @@ namespace tap::dsp::detail {
         /// Split-radix DIF over l complex values at a (bit-reversed output).
         template <bool Inverse>
         void kernel(Sample* a, std::size_t l) const noexcept {
-            const Sample* const small = m_small.data();
+            const Sample* const small = m_tables.data() + m_n / 2;
             switch (l) {
             case 64:
                 block<Inverse, 64>(a, small);
@@ -881,7 +964,7 @@ namespace tap::dsp::detail {
             // (m/2 - 1 is odd for every m >= 4).
             Sample*       pk  = a + 2;
             Sample*       pj  = a + 2 * (m - 1);
-            const Sample* c   = m_post.data() + 2;
+            const Sample* c   = m_tables.data() + 2;
             Sample* const end = a + m;
             post_pair<Inverse>(pk, pj, c);
             for (pk += 2, pj -= 2, c += 2; pk < end; pk += 4, pj -= 4, c += 4) {
@@ -919,11 +1002,11 @@ namespace tap::dsp::detail {
             pj[1] = vi - gi;
         }
 
-        std::size_t                m_n;
-        std::vector<Sample>        m_twiddles;
-        std::vector<Sample>        m_small;
-        std::vector<Sample>        m_post;
-        std::vector<std::uint32_t> m_swaps;
+        std::size_t         m_n;
+        std::vector<Sample> m_tables;
     };
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
 
 } // namespace tap::dsp::detail

@@ -13,13 +13,21 @@
 // integer arithmetic (srdif_trig: no libm anywhere in the engine), so for
 // a fixed input the output bits are a function of the source alone once
 // fp-contraction is excluded, which this target does (-ffp-contract=off on
-// GCC / Clang / AppleClang; MSVC does not contract by default,
-// tests/CMakeLists.txt). The expectation is therefore ONE row for every host
-// and every leg — x86-64 glibc (either libm dispatch), MSVC, macOS arm64, and
-// the four Cortex-M legs under QEMU (soft-float libgcc, fpv4-sp, fpv5-sp,
-// M55) — and a second row would be a finding to explain, not a host to
-// record. A pin that moves is a numeric change to the engine: the docstring
-// of fft/srdif.h and docs/fft-design.md ("The floating engine (srdif)") say
+// GCC / Clang / AppleClang / IntelLLVM, IntelLLVM also at -fp-model=precise;
+// MSVC does not contract by default, tests/CMakeLists.txt), and every
+// operation rounds to its own format (FLT_EVAL_METHOD == 0, asserted below:
+// an x87 build, i386 or -mfpmath=387, evaluates in extended precision). The
+// expectation is therefore ONE row for every compiler and target CI runs —
+// x86-64 glibc under g++ and clang++ (either libm dispatch), Windows x64
+// MSVC, macOS arm64 AppleClang, and the four Cortex-M legs under QEMU
+// (arm-none-eabi-gcc: soft-float libgcc, fpv4-sp, fpv5-sp, M55) — and a
+// second row would be a finding to explain, not a toolchain to record. The
+// scope is those builds: a compiler this target does not name whose
+// default is not IEEE-strict, MSVC on ARM64 (no leg; its default
+// contraction is unverified here), or a consumer's -ffast-math or
+// flush-to-zero mode can move bits the pinned input never exercises. A pin
+// that moves is a numeric change to the engine: the docstring of
+// fft/srdif.h and docs/fft-design.md ("The floating engine (srdif)") say
 // what the numbers are and how they were measured.
 //
 // The engine is called directly, not through basic_real_fft (whose routing
@@ -32,6 +40,7 @@
 // passing test, so CI runs this target verbosely as its own step
 // (.github/workflows/ci.yml).
 
+#include <cfloat>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -47,6 +56,13 @@
 
 #ifndef TAP_DSP_TEST_MAX_FFT_N
 #define TAP_DSP_TEST_MAX_FFT_N (1 << 20)
+#endif
+
+// The pins assume every float and double operation rounds to its own format.
+#if defined(FLT_EVAL_METHOD)
+static_assert(FLT_EVAL_METHOD == 0, "srdif fingerprints: evaluation in wider precision (x87) moves the output bits");
+#elif !(defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64)))
+#error "srdif fingerprints: FLT_EVAL_METHOD is not defined; confirm this target rounds each operation to its format"
 #endif
 
 namespace {

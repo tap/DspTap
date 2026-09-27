@@ -229,7 +229,8 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///     the heap, so a later call fails somewhere else (a HardFault after
     ///     the transform in one probe, newlib's "Balloc succeeded" assertion
     ///     in the next printf in another). On the host the srdif engine
-    ///     at N = 12 reads past its own post-pass table (ASan). There is
+    ///     at N = 12 writes past the caller's buffer in its permutation
+    ///     (ASan). There is
     ///     deliberately no defined fallback in the
     ///     transforms. supports_size is therefore the MANDATORY gate wherever
     ///     N comes from configuration rather than a constant: the capi's
@@ -239,11 +240,16 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///     on those; a consumer's config path must (docs/fft-design.md,
     ///     "MuTap bump checklist"). `SupportsSizeIsThePowerOfTwoInterval` pins the
     ///     predicate on every leg. Per engine:
-    ///       srdif (double, float)         4 … 2^30  (the engine's uint32
-    ///                                     swap offsets reach 2^30 - 2; the
-    ///                                     output is fingerprinted and the
-    ///                                     oracle sweeps to 65536, the
-    ///                                     battery constructs up to 2^20)
+    ///       srdif (double, float)         4 … 2^30  (the output is
+    ///                                     fingerprinted and the oracle
+    ///                                     sweeps to 65536, the battery
+    ///                                     constructs up to 2^20). Heap per
+    ///                                     object, one allocation:
+    ///                                     sizeof(Sample) x (N/2 for
+    ///                                     N <= 32, 44 at N = 64, 112 at
+    ///                                     N = 128, 7N/8 + 36 from N = 256)
+    ///                                     bytes (srdif_rdft::heap_bytes;
+    ///                                     float 7,312 B at N = 2048)
     ///       vDSP (float, Apple)           4 … 2^20  (fft/backends/accelerate.h)
     ///       CMSIS-DSP (float, Cortex-M55) 32 … 4096 (CMSIS's own table; below
     ///                                     32 or above 4096 the library's init

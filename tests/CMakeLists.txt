@@ -195,8 +195,13 @@ target_compile_definitions(tap_dsp_tests PRIVATE TAP_DSP_TEST_MAX_FFT_N=${TAP_DS
 # contracts within a statement (Part 4, "fp-contraction policy"). MSVC:
 # nothing is passed; its default /fp:precise has not contracted since VS 2022
 # 17.0 made /fp:contract opt-in (earlier x64 /arch:AVX2 and ARM64 builds did
-# contract under /fp:precise; windows-latest is well past 17.0).
-set(_tap_dsp_nocontract_cxx "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>")
+# contract under /fp:precise; windows-latest is well past 17.0; MSVC on ARM64
+# has no leg and is unverified). IntelLLVM (icx) defaults to -fp-model=fast,
+# which licenses reassociation as well: -fp-model=precise first, then
+# -ffp-contract=off, since clang-based precise still contracts in a statement.
+set(_tap_dsp_nocontract_cxx
+    "$<$<CXX_COMPILER_ID:IntelLLVM>:-fp-model=precise>"
+    "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang,IntelLLVM>:-ffp-contract=off>")
 
 # The floating engine's output fingerprints (test_fft_srdif_fingerprint.cpp,
 # pins in support/srdif_fingerprints.h): FNV-1a-64 of the srdif engine's
@@ -205,9 +210,9 @@ set(_tap_dsp_nocontract_cxx "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-cont
 # macOS and M55 legs pin it beside their accelerated float default. Its own
 # target so it can carry -ffp-contract=off: the engine's tables come from
 # integer arithmetic (no libm), so without contraction its output bits are a
-# function of the source and one row of pins is expected on every host and
-# every QEMU leg; a leg that needs a second row is a finding (the test's file
-# comment). CI runs it verbosely as its own step (ci.yml), so every value is
+# function of the source and one row of pins is expected for every compiler
+# and target CI runs; a leg that needs a second row is a finding (the test's
+# file comment, which also states the scope). CI runs it verbosely as its own step (ci.yml), so every value is
 # in the log; the battery step excludes it by name (-E srdif_fingerprint).
 tap_dsp_add_gtest_executable(tap_dsp_srdif_fingerprint
     SOURCES test_fft_srdif_fingerprint.cpp)

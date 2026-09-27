@@ -31,9 +31,10 @@ namespace tap::dsp::test::srdif_fingerprints {
     // 13.3.0 and clang++ 18.1.3, -O3, glibc 2.39 under either libm dispatch)
     // and on the four QEMU legs (arm-none-eabi-gcc 13.2.1, MinSizeRel, newlib:
     // Cortex-M4 soft-float, M4F, M33, M55; they run N <= 4096), every one
-    // printing exactly these values.
+    // printing exactly these values; CI's Windows x64 MSVC and macOS arm64
+    // AppleClang jobs matched it too (review A of tap/DspTap#42).
     inline constexpr row k_rows[] = {
-        {"every host (integer tables, -ffp-contract=off)",
+        {"every compiler and target CI runs (integer tables, -ffp-contract=off)",
          {
              0x5309153b08c0bba3ull,
              0xc527d0fa579ad0ccull,

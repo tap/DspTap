@@ -70,7 +70,7 @@ profiles" below.
 | Shareability across threads (`k_is_shareable`, an engine trait re-exported by the class; Stage 4) | **true**: tables built in the constructor, transforms `const noexcept` | **true** on the srdif engine, **false** on vDSP and CMSIS (per-object scratch); the class's transforms stay non-const on every profile (audit N11) and the trait is the statement; a shareable engine's transforms are `const` and the class `static_assert`s it (`ShareabilityIsTheHeadersNumber` in `test_fft_rt.cpp` and `test_fft_engine.cpp`) | **false**: the in-place int16 API needs the per-object int32 work buffer (a recorded deviation from audit Part 7, which listed both fixed profiles as shareable) | **true**: no mutable state during a transform; the engine's transforms are `const` behind `requires`-constrained overloads since Stage 4 |
 | Real-time safety | transforms `noexcept`, allocation-free (`test_fft_rt.cpp`; no exception since the float-I/O-on-double overloads, `[[deprecated]]` at 2b, were removed at the D5 expiry, tap/DspTap#40) | same | same (`TransformsAreNoexcept`, `*AllocatesNothing`, `CopyProducesBitIdenticalOutput`) | same |
 | NaN / denormals | NaN propagates to every bin; denormal input is slow on x86 without FTZ, and FTZ differs between the srdif, vDSP and CMSIS builds | same | not applicable / none | not applicable / none |
-| Host identity | **one bit pattern on every host at `-ffp-contract=off`** since #42: the srdif engine's tables are integer arithmetic (`srdif_trig`, no libm), pinned as FNV-1a-64 output fingerprints at every power of two 4 … 65536 (4 … 4096 on the QEMU legs), **one row** (`tests/test_fft_srdif_fingerprint.cpp`; matched on x86-64 g++ 13.3 / clang++ 18.1 under both glibc dispatches and on the four QEMU legs; Windows and macOS in CI); with contraction the last bits move (D9, below). Until #42 not across hosts: the port's tables came from libm, whose last bit differs between glibc, newlib, UCRT and Apple (double pins per C library build, "The bit-identity record after D6") | same (until #42 the float row was already one value everywhere) | one bit pattern on every host, pinned per profile, policy, direction and N = 64 / 512 / 1024 / 2048 (`OutputFingerprintIsPinned`, `TwiddleTableChecksumIsPinned`) | same |
+| Host identity | **one bit pattern for every compiler and target CI runs at `-ffp-contract=off`** since #42: the srdif engine's tables are integer arithmetic (`srdif_trig`, no libm), pinned as FNV-1a-64 output fingerprints at every power of two 4 … 65536 (4 … 4096 on the QEMU legs), **one row** (`tests/test_fft_srdif_fingerprint.cpp`; matched on x86-64 g++ 13.3 / clang++ 18.1 under both glibc dispatches, on the four QEMU legs, and in CI on Windows x64 MSVC and macOS arm64 AppleClang; scope in "The floating engine (srdif)"); with contraction the last bits move (D9, below). Until #42 not across hosts: the port's tables came from libm, whose last bit differs between glibc, newlib, UCRT and Apple (double pins per C library build, "The bit-identity record after D6") | same (until #42 the float row was already one value everywhere) | one bit pattern on every host, pinned per profile, policy, direction and N = 64 / 512 / 1024 / 2048 (`OutputFingerprintIsPinned`, `TwiddleTableChecksumIsPinned`) | same |
 
 ## Why split-radix for floating point and a radix-4 int32 kernel for fixed point
 
@@ -1530,12 +1530,13 @@ is the port's (or the vendored C's, where the table says so).
 
 **The srdif engine (tap/DspTap#42; 2026-09-26, local, not yet a CI run).**
 MinSizeRel float probe (`tap_dsp_size_probe_rfft_f32_512`, `size -A`
-`.text`), arm-none-eabi-gcc 13.2.1 (15:13.2.rel1-2), the port's Stage 2c
-figure in parentheses: `m4-softfp` 32,201 (53,289), `m4f` 30,033 (44,601),
-`m33` 29,417 (44,001), `m55-ooura` 29,297 (39,281). The float profile no
+`.text`), arm-none-eabi-gcc 13.2.1 (15:13.2.rel1-2), 2026-09-27 (the tree
+after the fix pass for review A of #42), the port's Stage 2c figure in
+parentheses: `m4-softfp` 31,081 (53,289), `m4f` 28,921 (44,601), `m33`
+28,305 (44,001), `m55-ooura` 28,161 (39,281). The float profile no
 longer links libm's double `sin` / `cos` (the tables are integer
-arithmetic), which is most of the 10–21 kB. Ceilings re-recorded to
-measured + 3 %, rounded up to 64 bytes: 33,216 / 30,976 / 30,336 / 30,208 (from
+arithmetic), which is most of the 11–22 kB. Ceilings re-recorded to
+measured + 3 %, rounded up to 64 bytes: 32,064 / 29,824 / 29,184 / 29,056 (from
 54,912 / 45,952 / 45,376 / 40,512). The Q15 / Q31 probes and the `m55`
 (CMSIS) probe are unchanged. The confirming CI run is pending
 (`bench/README.md`, "Sizes").
@@ -1636,21 +1637,22 @@ rdft-reachable text, `--gc-sections`): float 15.7 KB at `-Os`, 19.9 KB at
 
 ### Instructions per scenario
 
-**The srdif engine (tap/DspTap#42; 2026-09-26, local, not yet a CI run).**
+**The srdif engine (tap/DspTap#42; 2026-09-27, local, not yet a CI run; the
+tree after the fix pass for review A of #42).**
 `scripts/icount.py` as `bench.yml` runs it; the port's baselines → the
 srdif engine's counts:
 
 | Scenario | `m4-softfp` | `m4f` | `m33` | `m55` (CMSIS, unchanged) | `m55-ooura` |
 |---|---|---|---|---|---|
-| `rfft_f32_512` | 1,864,929,141 → 1,815,063,718 (−2.67 %) | 97,138,544 → 94,003,130 (−3.23 %) | 100,945,841 → 94,382,323 (−6.50 %) | 52,382,331 → 52,382,329 (−0.00 %) | 89,276,321 → 86,188,216 (−3.46 %) |
-| `rfft_f32_2048` | 2,294,360,259 → 2,244,317,934 (−2.18 %) | 111,278,416 → 108,030,219 (−2.92 %) | 115,465,626 → 108,470,414 (−6.06 %) | 54,858,120 → 54,858,158 (+0.00 %) | 102,784,096 → 100,091,803 (−2.62 %) |
+| `rfft_f32_512` | 1,864,929,141 → 1,814,303,702 (−2.71 %) | 97,138,544 → 92,575,609 (−4.70 %) | 100,945,841 → 92,979,212 (−7.89 %) | 52,382,331 → 52,382,329 (−0.00 %) | 89,276,321 → 83,933,381 (−5.98 %) |
+| `rfft_f32_2048` | 2,294,360,259 → 2,243,212,021 (−2.23 %) | 111,278,416 → 106,282,752 (−4.49 %) | 115,465,626 → 106,773,786 (−7.53 %) | 54,858,120 → 54,858,158 (+0.00 %) | 102,784,096 → 97,602,563 (−5.04 %) |
 
 The float baselines on the four portable-engine keys are re-recorded to
-these counts (four of the eight moved beyond the −3 % band, and every
+these counts (six of the eight moved beyond the −3 % band, and every
 checksum changed with the output bits); the fixed-point scenarios measured
 +0.49 … +1.15 % against theirs with no change to that code and are not
 re-recorded. Against CMSIS-DSP on the M55 the portable engine now executes
-1.65× (N = 512) / 1.82× (N = 2048) the instructions (the port 1.70× /
+1.60× (N = 512) / 1.78× (N = 2048) the instructions (the port 1.70× /
 1.87×). How the engine got there is in "The floating engine (srdif)".
 
 **Post-pass re-derivation (2026-09-26; local, not a CI run).** Same
@@ -1921,8 +1923,33 @@ the kernel is arranged around that:
   leaves held in registers through every remaining level. The run-time
   recursion handles l ≥ 128 only, and its groups run two per loop step so
   the eight row pointers serve both.
-- **The permutation** is a precomputed list of swap pairs (i, bitrev i),
-  i < bitrev i (the table method of Karp's 1996 survey), as offsets.
+- **The permutation** keeps no index table: a bit-reversed counter walks
+  beside the natural index (the reverse-carry increment of Gold and Rader,
+  *Digital Processing of Signals*, 1969: adding one flips an index's
+  trailing ones and the zero above them, so the reversed counter flips the
+  mirror image of those bits), and splitting the index into its two end bit
+  pairs and its middle (one of the arrangements Karp's 1996 survey
+  describes) lets one counter step over the middle serve sixteen indices:
+  with M = 2^b and i = A·M/4 + 4y + B (A, B < 4), rev(i) = rev₂(B)·M/4 +
+  4·rev′(y) + rev₂(A), so the six (A, B) with A < rev₂(B) swap whatever y
+  is, the four with A = rev₂(B) swap when y < rev′(y), and the other six are
+  their partners. Below M = 16 the counter walks every index. Until the
+  fix pass for review A of #42 this was a precomputed list of swap pairs
+  (M uint32 words of heap); the counter costs fewer instructions on every
+  key (below) and, alone, is 1.7–2.4× faster on x86-64 from N = 65536 up
+  (the list, 2 bytes per sample, streamed through the cache beside the
+  data).
+- **No SLP vectorization under GCC.** A `#pragma GCC optimize
+  ("no-tree-slp-vectorize")` around the class: GCC's basic-block
+  vectorizer packs the (re, im) halves into vector registers and pays a
+  lane shuffle for every multiplication by i and every complex product.
+  That was the host double slowdown review A of #42 measured (double forward
+  at N = 512: 1,416 ns with it, 1,228 ns without, same session, `-O3`; 1,438
+  and 1,126 ns at `-march=native`) and 1.9–2.3 % of the M55 float scenario's
+  instructions; the M4, M4F and M33 have no vector unit and compile the same
+  code either way. Clang's SLP vectorizer helps on this code and is left on.
+  Nothing reassociates, so the output bits are the same with and without
+  (the fingerprints match).
 - **Out-of-line transforms.** `forward_inplace` / `inverse_inplace` are
   `noinline` (a performance attribute only): inlined into a caller's loop,
   the permutation and the post-pass lost their registers to the caller's
@@ -1936,12 +1963,20 @@ exact 128-bit product of k and ⌊2π·2⁶¹⌋, Horner's rule over the Maclaur
 coefficients ⌊2⁶⁴/n!⌋ (cos to 20!, sin to 19!), 1 − cos as θ²·(1 − cos)/θ² so
 small angles keep their relative precision — rounded once to the profile
 (ties to even on the 64-bit mantissa), and taken to the other octants by
-exact symmetry. Measured against libquadmath over every k of every
-2^L ≤ 2^18 and 200,000 random k per L = 19 … 30: the mantissa is within
-12.7 units of 2⁻⁶⁴ relative; **every float entry is the correctly rounded
-value** (no exact value lies within 2.2·10⁴ such units of a float tie);
-every double entry is within 0.5 + 2^−7.3 ulp, and 0.08 % of them are the
-neighbour of the correctly rounded double.
+exact symmetry. Against libquadmath, exhaustive over every k of every
+2^L, L = 3 … 30 (every angle any N ≤ 2^30 builds; review A of #42 ran
+it, 2.7·10⁸ angles × four quantities): the mantissa is within 13.44 units
+of 2⁻⁶⁴ relative (1 − cos at L = 30; 12.34 at L = 19, 13.07 at L = 24);
+**every float entry is the correctly rounded value**, with no misrounding
+at any L ≤ 30 (the nearest exact value to a float tie is 547 such units
+away, first at L = 25; 21,970 up to L = 24); every double entry is within
+0.5 + 13.44/2048 = 0.5 + 2^−7.25 ulp (0.5052 ulp measured), and 0.04–0.17 %
+of them, by function, are the neighbour of the correctly rounded double
+(0.08 % of the 2^20 post table). Only the post table is evaluated: the
+kernel and block twiddles are read out of its imaginary parts (cos θₖ/2 for
+every k < N/4, doubled exactly), which gives the bits a table evaluated at
+their own resolution would hold, since `srdif_trig` computes the same thing
+at (k, L) and (2k, L + 1).
 
 The point is host identity. A table from `std::cos` / `std::sin` is only as
 portable as the last bit of each libm, and the engine this one replaced
@@ -1950,38 +1985,64 @@ table is a function of (k, L), the arithmetic is IEEE operations in a fixed
 order, and with fp-contraction off the output bits are a function of the
 source alone: `tests/test_fft_srdif_fingerprint.cpp` pins FNV-1a-64 of the
 forward and inverse output at every power of two 4 … 65536, both profiles,
-and **one row** matched x86-64 Linux (g++ 13.3 and clang++ 18.1, glibc 2.39
-under either libm dispatch) and all four QEMU legs (soft-float M4, M4F, M33,
-M55, newlib; N ≤ 4096 there). CI runs the linux check twice, the second
-time under glibc's SSE2 dispatch, as the evidence that no libm reaches the
-output; Windows (MSVC, no contraction by default) and macOS arm64 (the
-srdif engine named explicitly, AppleClang at `-ffp-contract=off`) are
-expected to match the same row and run only in CI — a mismatch there is a
-finding, not a row to add. A side effect on the Cortex-M legs: the float
+and **one row** matched every compiler and target CI runs: x86-64 Linux
+(g++ 13.3 and clang++ 18.1, glibc 2.39 under either libm dispatch), all
+four QEMU legs (soft-float M4, M4F, M33, M55, newlib; N ≤ 4096 there), and,
+in CI, Windows x64 (MSVC, no contraction by default) and macOS arm64
+(AppleClang at `-ffp-contract=off`, the srdif engine named explicitly);
+review A of #42 read those logs, and compared the table bytes themselves
+across g++ `-O0` / `-O3` / `-march=native`, clang++ and the four legs. CI
+runs the linux check twice, the second time under glibc's SSE2 dispatch, as
+the evidence that no libm reaches the output. A mismatch is a finding, not
+a row to add. The claim's scope is those builds: the test asserts
+`FLT_EVAL_METHOD == 0` (an x87 build evaluates in extended precision), the
+no-contraction flags cover GNU, Clang, AppleClang and IntelLLVM (the last
+also at `-fp-model=precise`, since icx defaults to `-fp-model=fast`), MSVC
+on ARM64 has no leg and is unverified, and a consumer's `-ffast-math` or
+flush-to-zero mode is outside it. A side effect on the Cortex-M legs: the float
 profile links no libm `sin` / `cos` at all, and the MinSizeRel float probe's
-`.text` fell by 10–21 kB (below).
+`.text` fell by 11–22 kB (below).
 
-Construction evaluates about 3N/16 angles (the kernel table's first
-octant and the post-pass table's), each a few hundred instructions of
-32 × 32 → 64 multiplies on a Cortex-M4; the tables are built once, in the
-constructor.
+Construction evaluates N/8 angles (the post-pass table's), each a few
+hundred instructions of 32 × 32 → 64 multiplies on a Cortex-M4: 52 k
+instructions for the whole constructor at N = 512 and 204 k at 2048 on the
+M4F (103 k and 396 k before the fix pass, which evaluated the kernel
+table's octant separately and built the swap list). The size precondition
+is checked (`assert`) before any table is sized from N. At N = 2^30 (float,
+x86-64, the engine alone) construction takes 12.8 s at a 3.67 GB peak,
+against 39.3 s and 5.77 GB before (the swap list was built bit by bit,
+O(M log M)).
 
 ### Memory
 
-Heap per object: 12·(M/16 − 1) Samples of kernel twiddles (M ≥ 32), 12 + 36
-Samples for the compile-time blocks, N/2 Samples of post-pass coefficients,
-and M − 2^⌈log₂M/2⌉ uint32 swap offsets. Measured (x86-64, libstdc++;
-`sizeof` 104 B, 112 B for `basic_real_fft`):
+One heap allocation per object, sized once and built in place (no
+temporary at construction): N/2 Samples of post-pass coefficients, the
+compile-time blocks' twiddles (12 Samples at N = 64, 48 from N = 128) and
+the run-time pass's (12·(N/32 − 1) Samples from N = 256), i.e.
 
-| N | float heap | double heap | engine it replaced (float / double, total incl. `sizeof`) |
-|---:|---:|---:|---:|
-| 512 | 2,896 B | 4,832 B | 1,172 / 2,196 B |
-| 2048 | 11,280 B | 18,592 B | 4,308 / 8,404 B |
-| 65536 | 359,568 B | 589,088 B | 131,880 / 262,952 B |
+  heap = sizeof(Sample) × (N/2 for N ≤ 32; 44 at N = 64; 112 at N = 128;
+  7N/8 + 36 from N = 256) bytes
 
-2.6 – 2.8 times the predecessor: the price of the sequential swap list, the
-pre-rounded post-pass coefficients and the fused pass's twelve-value
-entries. No temporary heap outlives construction.
+(`srdif_rdft::heap_bytes`; fft.h states it beside the size range, and
+`fft_rt_srdif.*HeapIsOneAllocationOfTheStatedSize` pins the count and the
+bytes). `sizeof` is 32 B for the engine and 40 B for `basic_real_fft`
+on LP64 (72 B before #42, 112 B before the fix pass). Measured (x86-64,
+libstdc++):
+
+| N | float heap | double heap | engine it replaced (float / double) | ratio (float / double) |
+|---:|---:|---:|---:|---:|
+| 512 | 1,936 B | 3,872 B | 1,100 / 2,124 B | 1.76 / 1.82 |
+| 2048 | 7,312 B | 14,624 B | 4,236 / 8,332 B | 1.73 / 1.76 |
+| 65536 | 229,520 B | 459,040 B | 131,808 / 262,880 B | 1.74 / 1.75 |
+
+1.73–1.82 times the predecessor, the price of the pre-rounded post-pass
+coefficients and the fused pass's twelve-value entries (whose values are
+also in the post table; reading them from there would save 3N/8 Samples
+and cost the pass its contiguous entries). Before the fix pass for review A
+of #42 the object also held the swap list (M uint32 words) and made nine
+allocations, five of them temporaries interleaved with the four kept
+tables: 2,896 / 4,832 B at N = 512, 2.2 (double) to 2.8 (float) times the
+predecessor.
 
 ### Accuracy against a quad-precision reference
 
@@ -2044,13 +2105,18 @@ lower from N = 128 up, and at most 4 % higher below that (float round trip
 at N = 64). The max targets (1.25× the predecessor) are met in every noise
 cell but two: the float round trip at N = 64 (3.01e-7 vs 2.04e-7, 1.47×)
 and the double round trip at N = 128 (5.62e-16 vs 4.46e-16, 1.26×). Both
-are the maximum over one draw of eight trials, a statistic with a wide
-spread: over 100 draws of eight trials (800 seeds) the srdif engine's
-N = 64 float round-trip maximum has p10 1.88e-7, median 2.41e-7, p90
-2.75e-7, and its N = 128 double one p10 4.46e-16, median 4.51e-16, p90
-5.57e-16. The predecessor's single values sit at the low end of those
-distributions and the srdif engine's fixed-seed values at the high end; the
-predecessor's distribution cannot be measured any more.
+are the maximum over one draw of eight trials, and review A of #42
+settled them with a paired A/B (its measurement, not this note's: the
+targets harness run on both trees, the same inputs to both engines, a
+`__float128` radix-2 reference; 400 trials at N = 64, 128, 256, 512 and
+4096, 60 at 65536 (240 for the off-bin tone); noise, random-frequency on-
+and off-bin tones, random-position impulses). Every (profile, N, signal,
+direction) cell has a new/old mean-error ratio ≤ 1.00 for rms, and ≤ 1.04
+for max (0.98 after 240 more trials at 65536); the srdif engine is worse on
+0–35 % of paired trials in almost every cell, 52 % at most (the float
+impulse round trip at N = 64, equal means). The two misses are draws: the
+float round-trip max at N = 64 has mean ratio 0.93 (p95 0.89), the double
+one at N = 128 0.95 (p95 0.86).
 
 Deterministic signals (on-bin tone, off-bin tone, impulse at x[1],
 constant; one realization each): the constant is bit-exact against the
@@ -2066,27 +2132,50 @@ round-trip maximum on the zero-valued samples, 4e-9 vs 1.1e-9 in float and
 7.8e-18 vs 2.1e-18 in double at N = 65536, while the impulse round-trip rms
 is 6–8 % lower from N = 16384 up). A single realization's error is a draw from the same
 rounding statistics the noise rows average, which is why the targets'
-headline is the pooled noise.
+headline is the pooled noise. Review A's paired sweeps say the same of the
+deterministic cells: at N = 128 the on-bin tone at k0 = 13 (the sheet's
+⌊N/10⌋ + 1, the normalized frequency of its N = 256 and 512 cells) is the
+srdif engine's single worst of the 62 bins, 1.68× rms and 2.78× max, with a
+mean over all bins of 0.93×; at N = 4096, over 2046 bins, the float forward
+rms is 1.5× worse at no bin and 1.5× better at 56 (double: 2 and 34); the
+impulse round-trip maximum's growth is specific to x[1] (over random
+positions at 65536 the mean ratio is 0.65). Under `-march=native` (FMA
+contraction) the noise and tone rms ratios are 0.83–0.96, and contraction
+moves the srdif engine's own rms by −1 to −7 %.
 
 ### Instruction counts and `.text`
 
 `scripts/icount.py` as `bench.yml` runs it (fresh Release build per key,
 arm-none-eabi-gcc 13.2.1, qemu-system-arm 8.2.2, the pinned plugin
-header), 2026-09-26. The gate was "every float scenario on every key that
-runs this engine at or below its baseline":
+header), 2026-09-27, the tree after the fix pass for review A of #42. The
+gate was "every float scenario on every key that runs this engine at or
+below its baseline":
 
 | key | `rfft_f32_512`: baseline → srdif | Δ | `rfft_f32_2048`: baseline → srdif | Δ |
 |---|---:|---:|---:|---:|
-| `m4-softfp` | 1,864,929,141 → 1,815,063,718 | −2.67 % | 2,294,360,259 → 2,244,317,934 | −2.18 % |
-| `m4f` | 97,138,544 → 94,003,130 | −3.23 % | 111,278,416 → 108,030,219 | −2.92 % |
-| `m33` | 100,945,841 → 94,382,323 | −6.50 % | 115,465,626 → 108,470,414 | −6.06 % |
-| `m55-ooura` | 89,276,321 → 86,188,216 | −3.46 % | 102,784,096 → 100,091,803 | −2.62 % |
+| `m4-softfp` | 1,864,929,141 → 1,814,303,702 | −2.71 % | 2,294,360,259 → 2,243,212,021 | −2.23 % |
+| `m4f` | 97,138,544 → 92,575,609 | −4.70 % | 111,278,416 → 106,282,752 | −4.49 % |
+| `m33` | 100,945,841 → 92,979,212 | −7.89 % | 115,465,626 → 106,773,786 | −7.53 % |
+| `m55-ooura` | 89,276,321 → 83,933,381 | −5.98 % | 102,784,096 → 97,602,563 | −5.04 % |
 | `m55` (CMSIS, unchanged) | 52,382,331 → 52,382,329 | −0.00 % | 54,858,120 → 54,858,158 | +0.00 % |
+
+The fix pass moved only the float scenarios of the four portable-engine
+keys, all down, from the first srdif record (512 / 2048): `m4-softfp`
+1,815,063,718 / 2,244,317,934 (−0.04 / −0.05 %), `m4f` 94,003,130 /
+108,030,219 (−1.52 / −1.62 %), `m33` 94,382,323 / 108,470,414 (−1.49 /
+−1.56 %), `m55-ooura` 86,188,216 / 100,091,803 (−2.62 / −2.49 %). Of that,
+construction (half the angles, no swap list) is −0.05 / −0.18 % on the M4F
+(51 k / 192 k instructions), SLP off is −1.9 … −2.3 % on the M55 and
+nothing elsewhere, and the permutation without an index table the rest,
+about −1.5 % on the M4F and M33 (a first version that split off one end
+bit per side instead of two measured +2.0 … +2.7 % there, and one that
+addressed the sixteen indices through eight row pointers −0.8 … −1.0 %;
+both were replaced).
 
 The float baselines are re-recorded to these counts (`bench/README.md`);
 the fixed-point scenarios measure +0.49 … +1.15 % against theirs with no
 change to that code, inside the band, and are not. Against CMSIS-DSP on the
-M55 the srdif engine now executes 1.65× (N = 512) / 1.82× (N = 2048) the
+M55 the srdif engine now executes 1.60× (N = 512) / 1.78× (N = 2048) the
 instructions (the predecessor 1.70× / 1.87×).
 
 How the engine got there (development measurements on the `m4f` key, N =
@@ -2111,42 +2200,72 @@ its baseline from the leaves step on, because the operation count is the
 split-radix minimum from the first version.
 
 `.text` of the MinSizeRel float probe (`tap_dsp_size_probe_rfft_f32_512`,
-`size -A`): `m4-softfp` 32,201 B (53,289 before), `m4f` 30,033 (44,601),
-`m33` 29,417 (44,001), `m55-ooura` 29,297 (39,281); the libm double
-`sin` / `cos` the predecessor's tables linked are gone. The four float
-ceilings are re-recorded to measured + 3 % (33,216 / 30,976 / 30,336 /
-30,208); the Q15 / Q31 probes and the `m55` CMSIS probe are unchanged.
+`size -A`): `m4-softfp` 31,081 B (53,289 before), `m4f` 28,921 (44,601),
+`m33` 28,305 (44,001), `m55-ooura` 28,161 (39,281); the libm double
+`sin` / `cos` the predecessor's tables linked are gone (the fix pass took
+another 1.1 kB, the swap-list builder and three table vectors). The four
+float ceilings are re-recorded to measured + 3 % (32,064 / 29,824 / 29,184 /
+29,056); the Q15 / Q31 probes and the `m55` CMSIS probe are unchanged.
 
 ### Host timings (informational)
 
-`bench/bench_fft.cpp`'s workload over five sizes (the targets sheet's
-`hostbench.cpp`), median of six processes' median reps / fastest rep, ns per
-transform; x86-64 Xeon 2.1 GHz, g++ 13.3.0 `-O3`, no `-march`, load
-average ≈ 1 (the predecessor's figures in parentheses were measured at load
-10–15, so the comparison flatters it):
+A same-machine A/B of the targets sheet's `hostbench.cpp` (`bench/bench_fft.cpp`'s
+workload over five sizes: out-of-place `forward()`, scaled `inverse()`,
+batches of 2^20 samples), built `g++ 13.3 -std=c++20 -O3 -DNDEBUG` with and
+without `-march=native` (Xeon 2.1 GHz with AVX-512 and FMA), pinned to one
+core, 11 runs, the median of the per-run medians in ns per transform. The
+predecessor's medians are review A of #42's (it ran both trees; this tree
+cannot build the predecessor); this engine's were measured the same way on
+the same machine the next day, alternating each run with review A's own
+binary of the previous srdif tree, whose medians came out within 2 % of
+review A's for it (so the two sessions compare). Predecessor → srdif:
+
+`-O3`:
 
 | N | float forward | float inverse | double forward | double inverse |
 |---:|---:|---:|---:|---:|
-| 256 | 624 / 601 (582 / 493) | 666 / 633 (608 / 526) | 593 / 576 (540 / 448) | 650 / 624 (612 / 532) |
-| 512 | 1,354 / 1,323 (1,297 / 1,137) | 1,405 / 1,367 (1,344 / 1,178) | 1,423 / 1,385 (1,252 / 1,087) | 1,505 / 1,452 (1,418 / 1,232) |
-| 1024 | 3,010 / 2,932 (2,907 / 2,451) | 3,113 / 3,043 (3,026 / 2,457) | 3,066 / 3,002 (2,626 / 2,368) | 3,102 / 3,024 (2,899 / 2,609) |
-| 2048 | 6,512 / 6,400 (6,042 / 5,450) | 6,676 / 6,521 (6,328 / 5,664) | 7,028 / 6,720 (5,847 / 5,410) | 7,008 / 6,823 (6,459 / 5,990) |
-| 4096 | 14,131 / 13,698 (13,453 / 12,078) | 14,458 / 14,023 (13,930 / 12,062) | 15,096 / 14,103 (12,617 / 11,462) | 15,505 / 14,281 (13,789 / 12,575) |
+| 256 | 597 → 602 (+0.8 %) | 628 → 650 (+3.5 %) | 541 → 549 (+1.5 %) | 616 → 606 (−1.6 %) |
+| 512 | 1,276 → 1,349 (+5.7 %) | 1,337 → 1,416 (+5.9 %) | 1,227 → 1,228 (+0.1 %) | 1,395 → 1,348 (−3.4 %) |
+| 1024 | 2,900 → 2,927 (+0.9 %) | 2,988 → 3,064 (+2.6 %) | 2,671 → 2,734 (+2.4 %) | 2,932 → 2,881 (−1.7 %) |
+| 2048 | 6,160 → 6,458 (+4.9 %) | 6,390 → 6,653 (+4.1 %) | 5,980 → 6,071 (+1.5 %) | 6,540 → 6,355 (−2.8 %) |
+| 4096 | 13,746 → 13,819 (+0.5 %) | 14,035 → 14,307 (+1.9 %) | 12,925 → 13,386 (+3.6 %) | 14,161 → 14,302 (+1.0 %) |
 
-On x86-64 the srdif engine is 3–10 % slower than its predecessor in float
-(medians) and 6–20 % slower in double, the double gap growing with N. The
-engine was tuned for the Cortex-M instruction count, which is the gate;
-x86-64 without `-march` has sixteen vector registers against the M4F's
-thirty-two single-precision ones, and the 16-point register leaves were
-sized for the latter (not investigated further). Not a gate; recorded so
-no host speed claim is made.
+`-O3 -march=native`:
+
+| N | float forward | float inverse | double forward | double inverse |
+|---:|---:|---:|---:|---:|
+| 256 | 532 → 461 (−13.4 %) | 570 → 466 (−18.1 %) | 497 → 500 (+0.4 %) | 538 → 510 (−5.3 %) |
+| 512 | 1,161 → 1,039 (−10.6 %) | 1,233 → 1,053 (−14.6 %) | 1,128 → 1,126 (−0.2 %) | 1,198 → 1,138 (−5.0 %) |
+| 1024 | 2,464 → 2,242 (−9.0 %) | 2,651 → 2,263 (−14.7 %) | 2,413 → 2,456 (+1.8 %) | 2,630 → 2,434 (−7.5 %) |
+| 2048 | 5,808 → 5,042 (−13.2 %) | 6,111 → 5,061 (−17.2 %) | 5,265 → 5,411 (+2.8 %) | 5,755 → 5,407 (−6.0 %) |
+| 4096 | 11,983 → 10,762 (−10.2 %) | 12,631 → 10,796 (−14.5 %) | 11,527 → 11,928 (+3.5 %) | 12,391 → 12,119 (−2.2 %) |
+
+The double forward, the golden model's slowest cell, is +0.1 … +3.6 % at
+`-O3` and −0.2 … +3.5 % at `-march=native`. Review A measured the previous
+srdif tree at +9 … +18 % and +26 … +28 % there; the difference is GCC's SLP
+vectorizer ("Structure, and why"), whose shuffles cost both directions
+alike (same session, N = 512 double: forward 1,416 → 1,228 ns, inverse 1,514
+→ 1,348 at `-O3`; 1,438 → 1,126 and 1,386 → 1,138 at `-march=native`). Why
+it looked like a forward problem: the predecessor's double forward was
+12 % cheaper than its own inverse (1,227 vs 1,395 ns at N = 512), while
+this engine's two directions run the same kernel, conjugated, and cost the
+same to within 10 %; the same slowdown therefore showed as twice the loss
+against the forward. Float at `-O3` stays 0.5–5.9 % slower (16 SSE
+registers against the M4F's 32 single-precision ones, for which the
+register leaves are sized). Not a gate; recorded so no host speed claim is
+made.
 
 ### Tests changed for the engine
 
 - `tests/test_fft_srdif_fingerprint.cpp` + `tests/support/srdif_fingerprints.h`
   (new): the output fingerprints above, their own target at
-  `-ffp-contract=off`; `ci.yml` runs them verbosely and requires the one row
-  under both glibc dispatches.
+  `-ffp-contract=off` (IntelLLVM also at `-fp-model=precise`), asserting
+  `FLT_EVAL_METHOD == 0`; `ci.yml` runs them verbosely and requires the one
+  row ("every compiler and target CI runs") under both glibc dispatches.
+- `tests/test_fft_rt.cpp`: the allocation guard also sums the bytes
+  requested, and `fft_rt_srdif.{Float,Double}HeapIsOneAllocationOfTheStatedSize`
+  pin the heap formula at N = 4 … 4096: one allocation of exactly
+  `heap_bytes(N)` per constructed engine.
 - `tests/test_fft_srdif.cpp` (new): the integer trigonometry against libm to
   the last bits (1 / 2 / 4 / 6 ulp pins on 0 / 1 / 2 / 3 measured on glibc;
   1 − cos 4 on newlib), exact octant endpoints, the leaf literals equal to
