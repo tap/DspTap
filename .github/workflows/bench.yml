@@ -11,6 +11,8 @@ name: Bench
 #   m55        Cortex-M55, Helium            (mps3-an547)  CMSIS-DSP (deployed profile)
 #   m55-ooura  Cortex-M55, TAP_DSP_FFT_CMSIS=OFF (mps3-an547)  srdif float32 fallback
 #              (the key's name is historical; baselines are keyed on it)
+#   hexagon    Hexagon v68 + HVX-128, clang 19 (qemu-hexagon user mode)  srdif float32
+#              and double (a hosted target, so rfft_f64_512 is built and gated too)
 #
 # Every key measures what ships through tap::dsp::basic_real_fft: the srdif
 # engine (fft/srdif.h), or CMSIS-DSP behind the same class on the `m55` key,
@@ -53,7 +55,7 @@ on:
 permissions:
   contents: read
 
-# The expensive workflow: five QEMU jobs. One run per ref at a time.
+# The expensive workflow: six QEMU jobs. One run per ref at a time.
 concurrency:
   group: bench-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -115,6 +117,20 @@ jobs:
             text_ceiling_f32: 29056
             text_ceiling_q15: 27968
             text_ceiling_q31: 27392
+          # Hexagon: MuTap's third target (its Hexagon CI leg and ratchet use
+          # this toolchain, these flags and this QEMU), added when the srdif
+          # engine was found to cost more instructions there than the engine
+          # it replaced, which no key here measured (bench/README.md).
+          # clang, not GCC; hosted (static musl) under qemu-hexagon, which
+          # the job builds with plugin support. The size probes are measured
+          # with the toolchain's llvm-size.
+          - key: hexagon
+            arch: hexagon
+            toolchain: cmake/hexagon-linux-musl.cmake
+            flags: ""
+            text_ceiling_f32: 0
+            text_ceiling_q15: 0
+            text_ceiling_q31: 0
     env:
       # Commit the tag pointed at when pinned (tags are movable; commit SHAs
       # are not); the header's digest is verified on download. This SHA is
@@ -125,6 +141,12 @@ jobs:
       # that is never shipped (tools/qemu_insn_plugin/insn_count.c).
       QEMU_PLUGIN_HEADER_URL: https://raw.githubusercontent.com/qemu/qemu/11aa0b1ff115b86160c4d37e7c37e6a6b13b77ea/include/qemu/qemu-plugin.h
       QEMU_PLUGIN_HEADER_SHA256: "c53a2af163e80e3f4bc6c60dbdfc84003db329d757e37cd8a16a77e1d82606ff"
+      # The hexagon key only: the QEMU release its qemu-hexagon is built
+      # from (digest-verified, the plugin header's release) and the
+      # CodeLinaro toolchain (MuTap's pins).
+      QEMU_SRC_URL: https://download.qemu.org/qemu-8.2.2.tar.xz
+      QEMU_SRC_SHA256: 847346c1b82c1a54b2c38f6edbd85549edeb17430b7d4d3da12620e2962bc4f3
+      HEXAGON_TOOLCHAIN: clang+llvm-19.1.5-cross-hexagon-unknown-linux-musl
       PLUGIN: /tmp/libinsncount.so
       BUILD_DIR: build-${{ matrix.key }}
       SIZE_DIR: build-${{ matrix.key }}-minsizerel
@@ -133,18 +155,72 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Arm toolchain and QEMU
+        if: matrix.arch != 'hexagon'
         run: >
           sudo apt-get update -q &&
           sudo apt-get install -y -q gcc-arm-none-eabi qemu-system-arm
           libglib2.0-dev pkg-config
+
+      # Neither Debian's nor CodeLinaro's qemu-hexagon enables TCG plugins,
+      # so the hexagon key builds its own from the pinned release (the same
+      # pin and digest as MuTap's hexagon job, cached on the digest).
+      - name: Install Hexagon build dependencies
+        if: matrix.arch == 'hexagon'
+        run: >
+          sudo apt-get update -q &&
+          sudo apt-get install -y -q libglib2.0-dev pkg-config ninja-build flex bison zstd
+
+      - name: Cache plugin-enabled qemu-hexagon
+        if: matrix.arch == 'hexagon'
+        id: qemu-hex
+        uses: actions/cache@v4
+        with:
+          path: ~/qemu-hexagon-plugins
+          key: qemu-hexagon-plugins-${{ env.QEMU_SRC_SHA256 }}-1
+
+      - name: Build plugin-enabled qemu-hexagon
+        if: matrix.arch == 'hexagon' && steps.qemu-hex.outputs.cache-hit != 'true'
+        run: |
+          curl -sfLo /tmp/qemu-src.tar.xz "$QEMU_SRC_URL"
+          actual=$(sha256sum /tmp/qemu-src.tar.xz | cut -d' ' -f1)
+          if [ "$actual" != "$QEMU_SRC_SHA256" ]; then
+            echo "::error::qemu source checksum mismatch"; exit 1
+          fi
+          tar -xJf /tmp/qemu-src.tar.xz -C /tmp
+          cd /tmp/qemu-*/
+          ./configure --target-list=hexagon-linux-user --enable-plugins \
+            --disable-docs --disable-tools --disable-system
+          ninja -C build qemu-hexagon
+          mkdir -p ~/qemu-hexagon-plugins
+          cp build/qemu-hexagon ~/qemu-hexagon-plugins/
+
+      - name: Download the Hexagon toolchain
+        if: matrix.arch == 'hexagon'
+        run: |
+          mkdir -p "$RUNNER_TEMP/hexagon-toolchain"
+          curl -fsSL "https://artifacts.codelinaro.org/artifactory/codelinaro-toolchain-for-hexagon/19.1.5/${HEXAGON_TOOLCHAIN}.tar.zst" \
+            | tar --zstd -x -C "$RUNNER_TEMP/hexagon-toolchain"
+          cxx=$(find "$RUNNER_TEMP/hexagon-toolchain" -maxdepth 5 \( -type f -o -type l \) \
+                  -name 'hexagon-unknown-linux-musl-clang++' | sort | head -1)
+          test -n "$cxx" || { echo "::error::no hexagon clang++ in the toolchain archive"; exit 1; }
+          echo "HEXAGON_TOOLCHAIN_ROOT=$(dirname "$(dirname "$cxx")")" >> "$GITHUB_ENV"
+          echo "$HOME/qemu-hexagon-plugins" >> "$GITHUB_PATH"
+          if "$HOME/qemu-hexagon-plugins/qemu-hexagon" -plugin help 2>&1 | grep -q "unknown option"; then
+            echo "::error::built qemu-hexagon lacks plugin support"; exit 1
+          fi
 
       # These versions go into bench/README.md next to the numbers when a key
       # is seeded or re-recorded; the counts are only comparable within a
       # toolchain/QEMU pair.
       - name: Toolchain versions
         run: |
-          arm-none-eabi-gcc --version | head -1
-          qemu-system-arm --version | head -1
+          if [ "${{ matrix.arch }}" = hexagon ]; then
+            "$HEXAGON_TOOLCHAIN_ROOT/bin/hexagon-unknown-linux-musl-clang++" --version | head -1
+            qemu-hexagon --version | head -1
+          else
+            arm-none-eabi-gcc --version | head -1
+            qemu-system-arm --version | head -1
+          fi
           cmake --version | head -1
 
       - name: Build counting plugin
@@ -187,6 +263,8 @@ jobs:
           CEILING_Q31: ${{ matrix.text_ceiling_q31 }}
         run: |
           set -eo pipefail
+          SIZE_TOOL=arm-none-eabi-size
+          if [ "${{ matrix.arch }}" = hexagon ]; then SIZE_TOOL="$HEXAGON_TOOLCHAIN_ROOT/bin/llvm-size"; fi
           cmake -S . -B "$SIZE_DIR" \
             -DCMAKE_BUILD_TYPE=MinSizeRel \
             -DCMAKE_TOOLCHAIN_FILE=${{ matrix.toolchain }} \
@@ -198,7 +276,7 @@ jobs:
             profile=${entry%%:*}
             ceiling=${entry#*:}
             probe="$SIZE_DIR/bench/tap_dsp_size_probe_rfft_${profile}_512"
-            arm-none-eabi-size -A "$probe" | tee "size-$profile.txt"
+            $SIZE_TOOL -A "$probe" | tee "size-$profile.txt"
             text=$(awk '$1 == ".text" { print $2 }' "size-$profile.txt")
             case "$text" in
               ''|*[!0-9]*) echo "::error::$KEY: $profile probe .text unavailable (no numeric .text row in size-$profile.txt: '$text')"; exit 1 ;;
@@ -289,7 +367,7 @@ jobs:
   # Folds the per-key seeding artifacts (each has one key filled in) into the
   # single file the seeding commit copies to bench/baselines.json. Fails when
   # any icount job failed, so a partial seed from a half-red run can never be
-  # merged. NEVER a required check: the five `icount <key>` jobs are the
+  # merged. NEVER a required check: the six `icount <key>` jobs are the
   # required checks once seeded (bench/README.md).
   seed-summary:
     name: Merge seeding artifacts (never a required check)

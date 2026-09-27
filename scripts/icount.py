@@ -8,7 +8,7 @@ Runs every tap_dsp_icount_* binary in a build directory under QEMU with the
 instruction-counting plugin (tools/qemu_insn_plugin), then compares against
 bench/baselines.json.
 
-  icount.py --target {m4-softfp,m4f,m33,m55,m55-ooura} --build-dir DIR
+  icount.py --target {m4-softfp,m4f,m33,m55,m55-ooura,hexagon} --build-dir DIR
             --plugin LIB [--update] [--record FILE]
             [--baselines bench/baselines.json] [--tolerance 0.03]
   icount.py --merge FILE [FILE ...] [--baselines bench/baselines.json]
@@ -62,6 +62,10 @@ MACHINES = {
     "m33": "mps2-an505",
     "m55": "mps3-an547",
     "m55-ooura": "mps3-an547",
+    # Not a system model: Hexagon runs hosted (hexagon-unknown-linux-musl,
+    # static) under qemu-hexagon user-mode emulation, built with plugin
+    # support (bench.yml; cmake/hexagon-linux-musl.cmake).
+    "hexagon": None,
 }
 PREFIX = "tap_dsp_icount_"
 DONE_MARKER = "TAP_DSP_ICOUNT_DONE ok=1"
@@ -72,9 +76,11 @@ DONE_RE = re.compile(r"TAP_DSP_ICOUNT_DONE ok=1 (.*)")
 def qemu_cmd(target: str, plugin: str, binary: str) -> list[str]:
     # "-d plugin" routes qemu_plugin_outs() to stderr; without it the count
     # line is silently dropped.
-    machine = MACHINES.get(target)
-    if machine is None:
+    if target not in MACHINES:
         raise SystemExit(f"unknown target {target}")
+    if target == "hexagon":
+        return ["qemu-hexagon", "-d", "plugin", "-plugin", plugin, binary]
+    machine = MACHINES[target]
     return ["qemu-system-arm", "-M", machine, "-nographic", "-semihosting",
             "-d", "plugin", "-plugin", plugin, "-kernel", binary]
 
