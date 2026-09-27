@@ -117,12 +117,13 @@ endfunction()
 # Everything else — every float32 suite, the double real_fft contract suite,
 # every float-tracks-double oracle check, the FFT engine suites
 # (test_fft_backend.cpp, typed over the engines the leg can build: the
-# split-radix engine everywhere and CMSIS-DSP Helium beside it on the M55;
+# srdif engine everywhere and CMSIS-DSP Helium beside it on the M55;
 # test_fft_engine.cpp, the Stage 4 engine-parameter contract — default
-# selection, ABI tag, per-engine size ranges, shareability) and the routing
-# proof (test_fft_routing.cpp: basic_real_fft is its engine byte for byte,
-# for the split-radix engine named explicitly on every leg and for the
-# selected default), fir_kernels over float/Q15/Q31, decimate,
+# selection, ABI tag, per-engine size ranges, shareability; test_fft_srdif.cpp,
+# the srdif engine's integer trigonometry) and the routing proof
+# (test_fft_routing.cpp: basic_real_fft is its engine byte for byte, for the
+# srdif engine named explicitly on every leg and for the selected default),
+# fir_kernels over float/Q15/Q31, decimate,
 # sample_traits, quantize, the cheap Kaiser tests, SineAnalysis, and whatever
 # a later PR appends — runs on target.
 # ------------------------------------------------------------------------------
@@ -136,6 +137,7 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_fft_engine.cpp
         test_fft_fixed.cpp
         test_fft_routing.cpp
+        test_fft_srdif.cpp
         test_fir_kernels.cpp
         test_kaiser.cpp
         test_log_mel.cpp
@@ -156,10 +158,10 @@ target_link_libraries(tap_dsp_tests PRIVATE
 # ==============================================================================
 # BEGIN Stage 2a additions (docs/audit-fft-and-code-smells.md, Part 9): the
 # independent oracle and the real-time guard join the main executable. The
-# Ooura bit-identity gate that also lived in this block (its own targets, the
-# reference C under tests/reference/ooura/, and an informational default-flags
-# twin) was retired at Decision D6; its promise is held by the pinned
-# fingerprints of the split-radix engine below.
+# bit-identity gate against a vendored C reference that also lived in this
+# block was retired at Decision D6; the pinned output fingerprints of the
+# srdif engine below hold the engine's bits since it replaced the port that
+# gate certified.
 # ==============================================================================
 
 # Largest transform the FFT test sweeps run. Hosted, the default covers every
@@ -169,7 +171,7 @@ target_link_libraries(tap_dsp_tests PRIVATE
 # a plain cache set here never overrides theirs or a -D on the command line.
 # Read by the oracle's closed-form sweep (test_fft_oracle.cpp), the
 # fixed-point battery (test_fft_fixed.cpp), the Stage 4 engine-range test
-# (test_fft_engine.cpp) and the split-radix fingerprints; a size above it is
+# (test_fft_engine.cpp) and the srdif fingerprints; a size above it is
 # compiled or looped out, never GTEST_SKIP'ped (a skip is rc=1 on the target).
 # Named TAP_DSP_PARITY_MAX_N until D6, when the parity sweep it was introduced
 # for went.
@@ -193,23 +195,31 @@ target_compile_definitions(tap_dsp_tests PRIVATE TAP_DSP_TEST_MAX_FFT_N=${TAP_DS
 # contracts within a statement (Part 4, "fp-contraction policy"). MSVC:
 # nothing is passed; its default /fp:precise has not contracted since VS 2022
 # 17.0 made /fp:contract opt-in (earlier x64 /arch:AVX2 and ARM64 builds did
-# contract under /fp:precise; windows-latest is well past 17.0).
-set(_tap_dsp_nocontract_cxx "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>")
+# contract under /fp:precise; windows-latest is well past 17.0; MSVC on ARM64
+# has no leg and is unverified). IntelLLVM (icx) defaults to -fp-model=fast,
+# which licenses reassociation as well: -fp-model=precise first, then
+# -ffp-contract=off, since clang-based precise still contracts in a statement
+# (no CI leg builds with icx, so the IntelLLVM flags are untested).
+set(_tap_dsp_nocontract_cxx
+    "$<$<CXX_COMPILER_ID:IntelLLVM>:-fp-model=precise>"
+    "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang,IntelLLVM>:-ffp-contract=off>")
 
-# THE SPLIT-RADIX FINGERPRINTS (Decision D6/D10): FNV-1a-64 over the IEEE bit
-# patterns of detail::split_radix_rdft's double and float outputs, forward
-# and inverse, at every power of two from 4 to TAP_DSP_TEST_MAX_FFT_N (65536
-# at most), pinned to the values the vendored C produced (measured beside
-# the C at 6f6f77f, the last main that carried it, and by the gate's C-side
-# cross-check on every CI leg in the PR that retired it). Own target so it
-# owns -ffp-contract=off. Runs whole on the QEMU legs (no MAIN_FILTER): at
-# N <= 4096 it is milliseconds.
-tap_dsp_add_gtest_executable(tap_dsp_fft_split_radix_fingerprint
-    SOURCES test_fft_split_radix_fingerprint.cpp)
-target_compile_options(tap_dsp_fft_split_radix_fingerprint PRIVATE ${_tap_dsp_nocontract_cxx})
-target_compile_definitions(tap_dsp_fft_split_radix_fingerprint PRIVATE
-    TAP_DSP_TEST_MAX_FFT_N=${TAP_DSP_TEST_MAX_FFT_N})
-target_link_libraries(tap_dsp_fft_split_radix_fingerprint PRIVATE
+# The floating engine's output fingerprints (test_fft_srdif_fingerprint.cpp,
+# pins in support/srdif_fingerprints.h): FNV-1a-64 of the srdif engine's
+# forward and inverse output bits at every power of two 4 … 65536 (capped by
+# TAP_DSP_TEST_MAX_FFT_N), both profiles, the engine named explicitly so the
+# macOS and M55 legs pin it beside their accelerated float default. Its own
+# target so it can carry -ffp-contract=off: the engine's tables come from
+# integer arithmetic (no libm), so without contraction its output bits are a
+# function of the source and one row of pins is expected for every compiler
+# and target CI runs; a leg that needs a second row is a finding (the test's
+# file comment, which also states the scope). CI runs it verbosely as its own step (ci.yml), so every value is
+# in the log; the battery step excludes it by name (-E srdif_fingerprint).
+tap_dsp_add_gtest_executable(tap_dsp_srdif_fingerprint
+    SOURCES test_fft_srdif_fingerprint.cpp)
+target_compile_options(tap_dsp_srdif_fingerprint PRIVATE ${_tap_dsp_nocontract_cxx})
+target_compile_definitions(tap_dsp_srdif_fingerprint PRIVATE TAP_DSP_TEST_MAX_FFT_N=${TAP_DSP_TEST_MAX_FFT_N})
+target_link_libraries(tap_dsp_srdif_fingerprint PRIVATE
     tap::dsp
     tap_dsp_warnings)
 
@@ -337,7 +347,7 @@ endif()
 # BEGIN Stage 4 addition (docs/audit-fft-and-code-smells.md, D4; audit F4): the
 # two-image test of the ABI tag. One translation unit, tests/abi/abi_tag_image.cpp,
 # built into two loadable modules — image A with the configured build's own
-# defines (tap::dsp: fft_split_radix on linux, fft_vdsp on macOS), image B
+# defines (tap::dsp: fft_srdif on linux, fft_vdsp on macOS), image B
 # with TAP_DSP_FFT_CMSIS and tests/abi/stub/ first on the include path, so
 # fft.h selects a stub engine with a different object layout (tag fft_cmsis)
 # — and a gtest host (test_fft_abi_tag.cpp) that dlopens both with

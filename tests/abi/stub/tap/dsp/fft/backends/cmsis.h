@@ -7,7 +7,7 @@
 // tests/abi/abi_tag_image.cpp, when tests/CMakeLists.txt builds its second
 // image with TAP_DSP_FFT_CMSIS defined and this directory first on the
 // include path. It is not CMSIS and computes nothing CMSIS computes: it is
-// the split-radix engine behind a deliberately different object layout
+// the srdif engine behind a deliberately different object layout
 // (a 96-byte pad and a call counter), so that the second image's
 // basic_real_fft<float> — and everything that embeds one by value — has a
 // different layout from the first image's, which is the precondition of
@@ -19,7 +19,7 @@
 
 #include <cstddef>
 
-#include "tap/dsp/fft/split_radix.h"
+#include "tap/dsp/fft/srdif.h"
 
 namespace tap::dsp::detail {
 
@@ -44,9 +44,9 @@ namespace tap::dsp::detail {
         }
 
       private:
-        [[maybe_unused]] char   m_pad[96]{}; ///< the layout difference, on purpose (unread, by design)
-        split_radix_rdft<float> m_inner;
-        int                     m_calls = 0;
+        [[maybe_unused]] char m_pad[96]{}; ///< the layout difference, on purpose (unread, by design)
+        srdif_rdft<float>     m_inner;
+        int                   m_calls = 0;
     };
 
 } // namespace tap::dsp::detail

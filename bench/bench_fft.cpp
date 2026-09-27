@@ -13,10 +13,9 @@
 // rfft_f32_2048, rfft_f64_512. Each rep runs a batch of out-of-place
 // forward() calls and, separately, a batch of inverse() calls (the class's
 // scaled inverse), and the minimum over reps is reported per transform.
-// What is timed is basic_real_fft as built (the split-radix engine since
-// Stage 2b, or the platform backend behind it); the vendored C it replaced
-// left the shipping tree at Stage 2c, so the recorded C numbers in
-// docs/fft-design.md are the comparison from here on.
+// What is timed is basic_real_fft as built (the srdif engine, or the
+// platform backend behind it); the numbers recorded in docs/fft-design.md
+// for the engines that preceded it are the comparison.
 #include <chrono>
 #include <cstddef>
 #include <cstdint>

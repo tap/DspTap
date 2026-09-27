@@ -1,5 +1,5 @@
 /// @file cmsis.h
-/// @brief CMSIS-DSP Helium float32 real FFT engine, re-presenting the split-radix contract.
+/// @brief CMSIS-DSP Helium float32 real FFT engine, re-presenting the library's floating contract.
 // SPDX-License-Identifier: MIT
 // Copyright 2025-2026 Timothy Place and the DspTap contributors.
 //
@@ -26,17 +26,17 @@
 
 namespace tap::dsp::detail {
 
-    /// Wraps CMSIS-DSP's radix-4/8 Helium real FFT to reproduce the
-    /// split-radix engine's exact float32 contract (Ooura's). CMSIS uses the
+    /// Wraps CMSIS-DSP's radix-4/8 Helium real FFT to reproduce the srdif
+    /// engine's exact float32 contract (fft.h). CMSIS uses the
     /// engineering convention exp(-i2*pi/N) and a 1/N-normalized inverse;
     /// the contract is exp(+i2*pi/N) and an unnormalized inverse (caller
     /// applies 2/N). Reconciled by conjugating the imaginary bins on every
     /// transform and scaling the inverse by N/2. The pre-Stage-4 de-risk
     /// measurement of the reconciliation was <2e-7 relative error at N = 512
     /// and 2048; what the battery PINS on the Cortex-M55 QEMU leg is
-    /// 5e-6 x peak per bin against the split-radix engine and a 2e-5
-    /// absolute round trip, at the certified geometries
-    /// (`fft_backend_parity/cmsis.ForwardMatchesOoura`,
+    /// 5e-6 x peak per bin against the srdif engine (set against the engine
+    /// that preceded it) and a 2e-5 absolute round trip, at the certified
+    /// geometries (`fft_backend_parity/cmsis.ForwardMatchesTheReferenceEngine`,
     /// `RoundTripReproducesInput`, tests/test_fft_backend.cpp), plus
     /// bit-stability across buffer addresses and tonal accuracy at 512 /
     /// 2048 / 4096.

@@ -132,7 +132,7 @@ namespace tap::dsp {
         /// The engine-independent half of the precondition: every field in
         /// range, fft_size a power of two >= 4. NOT sufficient on its own:
         /// the FFT engine a profile runs has its own size range (fft.h:
-        /// split-radix 4 … 2^30, vDSP 4 … 2^20, CMSIS-DSP 32 … 4096 on the
+        /// srdif 4 … 2^30, vDSP 4 … 2^20, CMSIS-DSP 32 … 4096 on the
         /// M55), and a geometry that is valid() but outside it is undefined
         /// behaviour in a release build — measured on the M55 under QEMU:
         /// log_mel32 at fft_size 16 and 8192 returns wrong features with no
@@ -189,10 +189,10 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
         /// supports_size, applied to this class): g.valid() and the FFT
         /// engine's own size predicate, fft_type::supports_size(g.fft_size).
         /// On every engine but CMSIS-DSP the two differ only above the
-        /// engine's upper bound (2^30 split-radix, 2^20 vDSP); under
+        /// engine's upper bound (2^30 srdif, 2^20 vDSP); under
         /// TAP_DSP_FFT_CMSIS the float profile also rejects every fft_size
         /// outside 32 … 4096 that valid() accepts (4, 8, 16, 8192, …), while
-        /// the double profile (split-radix on every build) does not.
+        /// the double profile (srdif on every build) does not.
         static bool supports_geometry(const log_mel_geometry& g) noexcept {
             return g.valid() && fft_type::supports_size(g.fft_size);
         }

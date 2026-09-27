@@ -21,9 +21,10 @@
 // The QEMU plugin counts the whole run including construction, so the loop
 // is sized so the transforms dominate: k_total_samples samples pass through
 // forward + inverse per scenario (2048 iterations at N = 512, 512 at
-// N = 2048), against a one-time table build of O(N) trig calls — under 0.2 %
-// of the total at either size on the host (bench/README.md has the
-// callgrind figures, including the share of the count that is not the
+// N = 2048), against a one-time table build: 0.11 % / 0.37 % of the total
+// on the Cortex-M4F for the srdif engine's integer-trigonometry tables
+// (fft/srdif.h; bench/README.md has the host callgrind figures of the
+// engines before it, including the share of the count that is not the
 // transform: the class's out-of-place copies, the 2/N scaling loop and the
 // checksum fold, a constant dilution the ratchet's percentages sit on top
 // of). The input is a small xorshift corpus generated once and cycled, so

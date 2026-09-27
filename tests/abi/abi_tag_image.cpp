@@ -5,7 +5,7 @@
 // tests/CMakeLists.txt (hosted, non-Windows):
 //
 //   image A  the configured build: tap::dsp's own defines, so the tag is
-//            fft_split_radix on linux and fft_vdsp on the macOS leg;
+//            fft_srdif on linux and fft_vdsp on the macOS leg;
 //   image B  -DTAP_DSP_FFT_CMSIS with tests/abi/stub/ first on the include
 //            path, so fft.h selects a stub "CMSIS" engine with a different
 //            object layout and the tag is fft_cmsis.

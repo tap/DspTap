@@ -4,45 +4,43 @@
 // Parity oracle for the float32 FFT engines, typed over the engines this
 // host can build (Stage 4 of docs/audit-fft-and-code-smells.md: the engine
 // is a template parameter of basic_real_fft, so an accelerated engine and
-// the split-radix engine are instantiated side by side in ONE binary and
+// the srdif engine are instantiated side by side in ONE binary and
 // compared there, rather than parity being a property of the CI matrix):
 //
-//   - detail::split_radix_rdft<float>       everywhere (the port-vs-port row,
-//                                           trivially exact, a live guard that
-//                                           the class adds nothing);
+//   - detail::srdif_rdft<float>             everywhere (the engine-vs-itself
+//                                           row, trivially exact, a live guard
+//                                           that the class adds nothing);
 //   - detail::accelerate_real_fft_f32       on the macOS leg (TAP_DSP_FFT_ACCELERATE),
 //                                           the same-binary comparison the plan
 //                                           asked for;
 //   - detail::cmsis_real_fft_f32            on the Cortex-M55 QEMU leg
 //                                           (TAP_DSP_FFT_CMSIS), where the
-//                                           CMSIS-vs-split-radix rows have run
+//                                           CMSIS-vs-reference rows have run
 //                                           under emulation since that leg
 //                                           landed (main's version compared
 //                                           basic_real_fft<float> — CMSIS under
 //                                           the define — to the reference);
 //                                           since Stage 4 they are typed rows
-//                                           beside the split-radix ones in one
+//                                           beside the srdif ones in one
 //                                           binary. Never on a host and never on
 //                                           hardware: recorded, not closed.
 //
 // Each row pins basic_real_fft<float, Engine> to the reference float engine —
-// detail::split_radix_rdft<float> called directly, the C++20 transliteration
-// of Ooura's rdft_f that is bit-identical to the C it replaced (the Stage 2a
-// parity gate until D6 deleted the C; tests/test_fft_split_radix_fingerprint.cpp
-// pins it since) — bin-for-bin at the two certified geometries
-// (512-pt canceller, 2048-pt suppressor analysis), and holds it to the
-// alignment-stability and tonal-accuracy gates below at 512 / 2048 / 4096.
-// A static_assert pins that the build's DEFAULT float engine is one of the
-// rows, so real_fft32 is always covered.
+// detail::srdif_rdft<float> called directly, whose output bits
+// tests/test_fft_srdif_fingerprint.cpp pins — bin-for-bin at the two
+// certified geometries (512-pt canceller, 2048-pt suppressor analysis), and
+// holds it to the alignment-stability and tonal-accuracy gates below at
+// 512 / 2048 / 4096. A static_assert pins that the build's DEFAULT float
+// engine is one of the rows, so real_fft32 is always covered.
 //
-// Before Stage 2b the reference here was the raw rdft_f of the then-vendored
-// fftsg_float.c; 2b re-pointed it at the ported engine (a change of oracle
-// only, because the Stage 2a gate holds the engine bit-identical to the C);
-// since 2c the C is not in the shipping tree (Decision D6) and this file
-// needs nothing from it.
+// The reference here has changed engine without changing contract: until
+// the floating engine was replaced (docs/fft-design.md, "The floating
+// engine (srdif)") it was a port of a third-party split-radix engine, and
+// before that the vendored C it was ported from. The tolerances below were
+// set against those references and are kept as they were.
 //
 // The reconciliation under test: both accelerated engines use the
-// engineering convention exp(-i2*pi/N), while the contract is Ooura's
+// engineering convention exp(-i2*pi/N), while the contract is the library's
 // exp(+i2*pi/N) with an unnormalized inverse. Each wrapper conjugates the
 // imaginary bins and rescales so every intermediate spectrum matches the
 // reference; if that ever drifts, the bin-for-bin comparison below fails
@@ -63,17 +61,17 @@
 
 #include "support/signals.h"
 #include "tap/dsp/fft.h"
-#include "tap/dsp/fft/split_radix.h"
+#include "tap/dsp/fft/srdif.h"
 
 namespace {
 
-    using split_radix_f = tap::dsp::detail::split_radix_rdft<float>;
+    using srdif_f = tap::dsp::detail::srdif_rdft<float>;
 
-    /// The engines this translation unit can instantiate: the split-radix
-    /// engine always, plus the accelerated engine the build selected (its
+    /// The engines this translation unit can instantiate: the srdif engine
+    /// always, plus the accelerated engine the build selected (its
     /// header is included by fft.h under the define, and its library is on
     /// the link line only then).
-    using host_engines = ::testing::Types<split_radix_f
+    using host_engines = ::testing::Types<srdif_f
 #if defined(TAP_DSP_FFT_ACCELERATE)
                                           ,
                                           tap::dsp::detail::accelerate_real_fft_f32
@@ -95,8 +93,8 @@ namespace {
     struct engine_names {
         template <typename Engine>
         static std::string GetName(int) { // NOLINT(readability-identifier-naming): gtest's required spelling
-            if constexpr (std::is_same_v<Engine, split_radix_f>) {
-                return "split_radix";
+            if constexpr (std::is_same_v<Engine, srdif_f>) {
+                return "srdif";
             }
 #if defined(TAP_DSP_FFT_ACCELERATE)
             else if constexpr (std::is_same_v<Engine, tap::dsp::detail::accelerate_real_fft_f32>) {
@@ -114,11 +112,10 @@ namespace {
     };
 
     // The float reference, independent of the class and of any engine
-    // parameter: the split-radix engine called directly. Bit-identical to
-    // the rdft_f this struct called before the Stage 2b flip.
-    struct ooura_ref {
-        split_radix_f m_engine;
-        explicit ooura_ref(int n)
+    // parameter: the srdif engine called directly.
+    struct reference_engine {
+        srdif_f m_engine;
+        explicit reference_engine(int n)
             : m_engine(static_cast<size_t>(n)) {}
         void forward(float* a) { m_engine.forward_inplace(a); }
     };
@@ -140,14 +137,13 @@ namespace {
     TYPED_TEST_SUITE(fft_backend_parity, host_engines, engine_names);
 
     // Forward transform of the class over this engine must match the
-    // split-radix reference to single-precision rounding, in the packed
-    // layout and sign convention the whole DSP chain assumes. The test keeps
-    // its name: the reference is Ooura's transform, bit for bit.
-    TYPED_TEST(fft_backend_parity, ForwardMatchesOoura) {
+    // reference engine to single-precision rounding, in the packed layout
+    // and sign convention the whole DSP chain assumes.
+    TYPED_TEST(fft_backend_parity, ForwardMatchesTheReferenceEngine) {
         for (const int n : k_certified_geometries) {
             const auto         x   = broadband(n, 0x9E3779B9u);
             std::vector<float> ref = x;
-            ooura_ref          oref(n);
+            reference_engine   oref(n);
             oref.forward(ref.data());
 
             tap::dsp::basic_real_fft<float, TypeParam> fft(static_cast<size_t>(n));
@@ -194,7 +190,7 @@ namespace {
 
     // THE GATE fft_backend_parity CANNOT BE. Parity builds one engine, in one
     // process, at whatever address the allocator happened to pick, and compares
-    // it to Ooura once — so an engine that returns DIFFERENT bits depending on
+    // it to the reference once — so an engine that returns DIFFERENT bits depending on
     // where its scratch buffers land passes it every time, by comparing an
     // arbitrary draw.
     //
@@ -282,8 +278,8 @@ namespace {
     // — and require the engine to track a double-precision reference through
     // the empty ones. That is the material where the two vDSP kernels diverge:
     // 64-byte-aligned buffers put the MEDIAN bin 65% away from truth at N=2048,
-    // while the skewed placement the wrapper uses, and Ooura, both track it to
-    // float epsilon (~1e-07).
+    // while the skewed placement the wrapper uses, and the reference engine,
+    // both track it to float epsilon (~1e-07).
     //
     // Asserting on the MEDIAN is the point. Max error is useless here — divide
     // any float32 noise by a numerically empty bin and it saturates, for every
@@ -325,8 +321,8 @@ namespace {
             std::sort(rel.begin(), rel.end());
             const double median = rel[rel.size() / 2];
 
-            // Measured ~1.1e-07..1.9e-07 on every good engine (Ooura, and vDSP at
-            // the skewed placement); 0.65 and worse on the 64-byte-aligned vDSP
+            // Measured ~1.1e-07..1.9e-07 on every good engine (the reference
+            // engines, and vDSP at the skewed placement); 0.65 and worse on the 64-byte-aligned vDSP
             // kernel. 1e-5 sits ~50x above the good case and orders below the bad
             // one, so it discriminates without being brittle.
             EXPECT_LT(median, 1e-5)

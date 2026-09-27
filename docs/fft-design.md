@@ -5,32 +5,39 @@ role `kaiser.h`'s design note plays for the FIR substrate. It is filled in
 stage by stage; every entry that still depends on a measurement is marked
 `TODO(stage …)` and names the stage whose PR supplies the number. Landed so
 far: Stage 2a (the port beside the C, tap/DspTap#28), Stage 3b (the Q15 / Q31
-profiles, tap/DspTap#27; its design record, formerly `docs/fft-fixed-point.md`,
-is folded in below as "The fixed-point profiles"), Stage 2b (the routing
-flip, tap/DspTap#31), Stage 2c (the C leaves the shipping tree, tap/DspTap#32)
-and Stage 4 (the engine parameter and the ABI tag, tap/DspTap#35; "Stage 4"
-below). Until every stage has landed, the plan of record is
+profiles, tap/DspTap#27; its design record, formerly
+`docs/fft-fixed-point.md`, is folded in below as "The fixed-point profiles"),
+Stage 2b (the routing flip, tap/DspTap#31), Stage 2c (the C leaves the
+shipping tree, tap/DspTap#32), Stage 4 (the engine parameter and the ABI tag,
+tap/DspTap#35; "Stage 4" below), and the replacement of the floating engine
+(tap/DspTap#42: the port of Stage 2a gave way to `fft/srdif.h`, written
+clean-room; "The floating engine (srdif)"). Sections written before #42
+describe the port where they describe the floating engine at all, and say so;
+the contract table and the fp-contraction policy state the tree after #42.
+Until every stage has landed, the plan of record is
 [`audit-fft-and-code-smells.md`](audit-fft-and-code-smells.md) (parts are
 cited as "audit Part N" below), and each PR links its stage.*
 
 ## Purpose and scope
 
-`tap::dsp::basic_real_fft<Sample, Policy = detail::default_real_fft_policy_t<Sample>>`
-(`include/tap/dsp/fft.h`) is a four-profile real-FFT contract — `double` (the
-golden model) and `float` (the embedded profile) on an engine that is the
-second template argument since Stage 4
-(the C++20 split-radix engine by default; vDSP or CMSIS-Helium where the
-build selects them for `float`), and the Q15 / Q31 fixed-point profiles from
-`sample_traits.h` on an int32 radix-4 kernel. The contract is the packing, the
-sign convention, the scaling, and the numbers in the table below; the engine
-behind it changed (the vendored C until Stage 2b, the port of the same
-split-radix algorithm since, bit-identical to it; the radix-4 int32 kernel for
-fixed point) and the contract did not. Consumers hold
-the transform by value and depend on exactly the surface audit Part 1
-enumerates: `basic_real_fft(size_t)`, `forward_inplace`, `inverse_inplace`,
-`forward`, `inverse` (out-of-place, `2/N` applied), `size()` / `num_bins()`,
-copyability, the packing, `exp(+i)`, the unnormalized in-place inverse, and the
-aliases `real_fft` / `real_fft32`.
+`tap::dsp::basic_real_fft<Sample, Policy =
+detail::default_real_fft_policy_t<Sample>>` (`include/tap/dsp/fft.h`) is a
+four-profile real-FFT contract — `double` (the golden model) and `float` (the
+embedded profile) on an engine that is the second template argument since
+Stage 4 (the srdif engine, `detail::srdif_rdft`, by default; vDSP or
+CMSIS-Helium where the build selects them for `float`), and the Q15 / Q31
+fixed-point profiles from `sample_traits.h` on an int32 radix-4 kernel. The
+contract is the packing, the sign convention, the scaling, and the numbers in
+the table below; the engine behind it changed twice (the vendored Ooura C
+until Stage 2b; the C++20 port of the same split-radix algorithm,
+bit-identical to it, from Stage 2b, tap/DspTap#31, until tap/DspTap#42; the
+srdif engine since, which moved every floating output bit at the error level
+of either engine) and the contract did not; the radix-4 int32 kernel carries
+fixed point. Consumers hold the transform by value and depend on exactly the
+surface audit Part 1 enumerates: `basic_real_fft(size_t)`, `forward_inplace`,
+`inverse_inplace`, `forward`, `inverse` (out-of-place, `2/N` applied),
+`size()` / `num_bins()`, copyability, the packing, `exp(+i)`, the unnormalized
+in-place inverse, and the aliases `real_fft` / `real_fft32`.
 
 Out of scope here: the complex transform (`cdft`), the DCT/DST family, and any
 consumer-side spectrum arithmetic (that is the Stage 5 packed-spectrum view).
@@ -39,55 +46,79 @@ consumer-side spectrum arithmetic (that is the Stage 5 packed-spectrum view).
 
 The header owns these numbers and the tests pin them; this table is the
 cross-reference, and an entry that names a test is pinned by it. Floating-point
-rows are the shipping `fft.h` since the Stage 2b flip (tap/DspTap#31: the
-split-radix engine, whose outputs are bit-identical to the vendored C's at
-`5ca3b1c`, so no floating number moved); fixed-point rows are the Stage 3b
+rows are the shipping `fft.h` since tap/DspTap#42 (the srdif engine, which
+moved every floating output bit; before it, from the Stage 2b flip,
+tap/DspTap#31, the port, whose outputs were bit-identical to the vendored
+C's at `5ca3b1c`, set several of the pins below, and each is kept where the
+srdif engine measures lower); fixed-point rows are the Stage 3b
 kernel as merged in tap/DspTap#27, with the measurements in "The fixed-point
 profiles" below.
 
 | Contract point | `double` (`real_fft`) | `float` (`real_fft32`) | Q15 (`real_fft_q15`, `real_fft_q15_bfp`) | Q31 (`real_fft_q31`, `real_fft_q31_bfp`) |
 |---|---|---|---|---|
-| Engine | `detail::split_radix_rdft<double>` (`fft/split_radix.h`) by default (`default_real_fft_engine_t<double>`); since Stage 4 the second template argument, so any `real_fft_engine` can be named | `detail::split_radix_rdft<float>` by default, or `detail::cmsis_real_fft_f32` (`fft/backends/cmsis.h`) / `detail::accelerate_real_fft_f32` (`fft/backends/accelerate.h`) when `TAP_DSP_FFT_CMSIS` / `TAP_DSP_FFT_ACCELERATE` is on; `test_fft_backend.cpp` is typed over the engines the leg can build and pins each to the split-radix engine at float epsilon in one binary; `test_fft_routing.cpp` pins the class to the named split-radix engine byte for byte on every leg and to the selected default | `detail::fixed_point_rdft<std::int16_t, Scaling>` (`fft/fixed_point.h`); the second argument is the Scaling policy on the fixed-point profiles | `detail::fixed_point_rdft<std::int32_t, Scaling>` |
-| Size range (`k_min_size` … `k_max_size`, `supports_size(n)`; Stage 4) | 4 … 2^30 (the int-indexing bound; bit identity gated to 2^20, oracle to 65536) | split-radix 4 … 2^30; vDSP 4 … 2^20; **CMSIS 32 … 4096** (`arm_rfft_fast_init_f32`'s table; status checked since Stage 4) — `EngineRangesAreTheStatedNumbers` as static_asserts in `test_fft_engine.cpp`, `ConstructsAtTheRangeBounds` | 4 … 65536 | 4 … 65536 |
+| Engine | `detail::srdif_rdft<double>` (`fft/srdif.h`) by default (`default_real_fft_engine_t<double>`; `detail::split_radix_rdft<double>`, the port, from #31 until #42); since Stage 4 the second template argument, so any `real_fft_engine` can be named | `detail::srdif_rdft<float>` by default (the port from #31 until #42), or `detail::cmsis_real_fft_f32` (`fft/backends/cmsis.h`) / `detail::accelerate_real_fft_f32` (`fft/backends/accelerate.h`) when `TAP_DSP_FFT_CMSIS` / `TAP_DSP_FFT_ACCELERATE` is on; `test_fft_backend.cpp` is typed over the engines the leg can build and pins each to the srdif engine at float epsilon in one binary; `test_fft_routing.cpp` pins the class to the named srdif engine byte for byte on every leg and to the selected default | `detail::fixed_point_rdft<std::int16_t, Scaling>` (`fft/fixed_point.h`); the second argument is the Scaling policy on the fixed-point profiles | `detail::fixed_point_rdft<std::int32_t, Scaling>` |
+| Size range (`k_min_size` … `k_max_size`, `supports_size(n)`; Stage 4) | 4 … 2^30 (the srdif engine's uint32 swap offsets reach 2^30 − 2; output fingerprinted 4 … 65536, oracle to 65536, the battery constructs to 2^20; the port's bound, the same number, was its `int` indexing) | srdif 4 … 2^30; vDSP 4 … 2^20; **CMSIS 32 … 4096** (`arm_rfft_fast_init_f32`'s table; status checked since Stage 4) — `EngineRangesAreTheStatedNumbers` as static_asserts in `test_fft_engine.cpp`, `ConstructsAtTheRangeBounds` | 4 … 65536 | 4 … 65536 |
 | Packing | `data[0]` = DC, `data[1]` = Nyquist, `data[2k]` / `data[2k+1]` = bin *k* re / im, `1 ≤ k < N/2`; `N/2 + 1` bins | same | same (`ImpulseHasFlatSpectrum`, `DcAndNyquistPacking`, the oracle's closed forms) | same |
 | Sign | `W = exp(+2πi/N)`; imaginary parts conjugated vs the engineering DFT | same | same (`SignConventionIsPlusI`, `OnBinSineIsPlusHalfNInTheImaginarySlot`) | same |
 | Forward scale | 1 (`A[k] = Σ a[j] W^(jk)`, unnormalized) | 1 | `fixed`: exactly `X / N` in Q0.15, `e = log2 N` (`FixedForwardScaleIsExactlyXOverN`); `block_floating`: `X · 2^-e`, `0 ≤ e ≤ log2 N` returned (`BfpExponentIsWithinRange`) | `fixed`: exactly `X / 2N` in Q0.31, `e = log2 N + 1` — the one-bit input pre-shift (`FixedForwardScaleIsExactlyXOverTwoN`); `block_floating`: `X · 2^-e`, `0 ≤ e ≤ log2 N + 1` |
 | Inverse scale | `inverse_inplace` unnormalized (caller applies `2/N`); `inverse()` applies `2/N` | same | the unnormalized inverse over `2^e`, same constant `e` under `fixed` (`FixedInverseCarriesTheSameExponent`); `inverse()` applies no `2/N`; round trip `x == out · 2^(e_fwd + e_inv + 1 − log2 N)` (`RoundTripReconstructsInputPerPolicy`) | same |
 | Round-trip identity | `x` reproduced to `1e-12` abs at N = 1024 (`RoundTripReproducesInput`) | `2e-5` abs at N = 1024 (`RoundTripReproducesInput`) | 0.51 reconstructed LSB at N = 1024 (fixed; the output narrowing's half LSB), pinned 1.02 (`RoundTripReproducesInput`) | 3.34 reconstructed LSB at N = 1024 (fixed), pinned 6.7; 41.5 under block floating point (the DC bias), pinned 83 |
 | Saturation-free input | n/a (floating point) | n/a | full scale ±1: input placed with 2 guard bits (`<< 14`, not 16); the int32 kernel performs no saturating operation for any input; the output narrowing clamps only at the rail itself (0.5 LSB, the full-scale Nyquist alternation); worst case vs the golden model 0.50 / 0.75 LSB (fixed / BFP), pinned 1.0 / 1.5 (`SaturationFreeWorstCaseDoesNotWrap`) | `fixed`: one input pre-shift (−6 dB); `block_floating`: full scale, the headroom rule; worst case 4.25 / 15.99 LSB at index 0 (fixed / BFP), pinned 8.5 / 32 |
-| Noise floor | 1.85e-16 relative 2-norm error of the forward vs the compensated-DFT oracle on full-scale uniform noise at N = 256, measured 2026-09-23 on x86-64 Linux (GCC 13.3.0 and Clang 18.1.3 -O3, glibc 2.39; both print the same value), pinned at 4× for the libm and fp-contraction spread across hosts (`fft_oracle_floor.DoubleForwardTracksCompensatedDft`); the spread the pin exists for is in the CI logs of tap/DspTap#31 (run 35847675386): 1.8928e-16 on `cortex-m4-softfp` / `cortex-m4f` / `cortex-m33` (jobs 107137662986 / 107137663129 / 107137662923) and 1.6643e-16 on `cortex-m55` (107137663056), newlib's libm and each leg's contraction; the hosted legs run ctest non-verbose and print no value. The Higham correctness envelope the oracle sweeps to N = 65536 is separate (`test_fft_oracle.cpp`) | 1.12e-7 relative 2-norm error vs `double` at N = 512 on the engine itself, so the same *engine* is measured on the M55 / macOS backend legs (where `basic_real_fft<float>` is CMSIS / vDSP), measured as above, pinned at 2× (`RealFftCrossPrecision.FloatEngineTracksDoubleAtN512`); the value moves in the last bits with libm and fp-contraction (D9), not the engine: 1.1236e-7 on x86-64 and the soft-float `cortex-m4-softfp` leg, 1.1650e-7 on the VFMA legs `cortex-m4f` / `cortex-m33` / `cortex-m55` (same run and jobs), all inside the pin — the audit's Part 6 N2 probe value was 1.105e-7 on other material; and `< 1e-6` at N = 1024 through `basic_real_fft` (`FloatTracksDouble`) | fixed: 0.29 LSB rms (the narrow's own rounding) at every N and level; per-bin SNR 69.1 / 66.5 / 60.2 dB at 0 dBFS, N = 256 / 512 / 2048; BFP 87 – 91 dB at 0 dBFS (`NoiseFloorTracksWelchModel`; the full table in "The fixed-point profiles" §5) | fixed: 0.67 – 0.75 LSB rms, level-independent; 152.0 / 149.4 / 142.8 dB at 0 dBFS; BFP 157 – 161 dB |
+| Noise floor | 1.60e-16 (1.6043e-16) relative 2-norm error of the forward vs the compensated-DFT oracle on full-scale uniform noise at N = 256, measured 2026-09-26 on the srdif engine on x86-64 Linux (g++ 13.3.0 -O3), 1.6972e-16 on the `cortex-m4-softfp` / `cortex-m4f` / `cortex-m33` QEMU legs and 1.4856e-16 on `cortex-m55` (arm-none-eabi-gcc 13.2.1, MinSizeRel; local runs), pinned at 7.4e-16 (`fft_oracle_floor.DoubleForwardTracksCompensatedDft`). The pin was set at 4× the port's value for the libm and fp-contraction spread across hosts, and is kept (the srdif tables are host-independent, contraction is not): the port measured 1.85e-16 (2026-09-23, x86-64 Linux, GCC 13.3.0 and Clang 18.1.3 -O3, glibc 2.39) and, in the CI logs of tap/DspTap#31 (run 35847675386), 1.8928e-16 on `cortex-m4-softfp` / `cortex-m4f` / `cortex-m33` (jobs 107137662986 / 107137663129 / 107137662923) and 1.6643e-16 on `cortex-m55` (107137663056). The Higham correctness envelope the oracle sweeps to N = 65536 is separate (`test_fft_oracle.cpp`; worst measured ratio 0.25 on the srdif engine) | 9.73e-8 (9.7312e-8) relative 2-norm error vs `double` at N = 512 on the srdif engine itself, so the same *engine* is measured on the M55 / macOS backend legs (where `basic_real_fft<float>` is CMSIS / vDSP), measured 2026-09-26 on x86-64 Linux (g++ 13.3.0 -O3, no FMA) and the soft-float `cortex-m4-softfp` leg, 1.0459e-7 on the VFMA legs `cortex-m4f` / `cortex-m33` / `cortex-m55` (local runs); the value moves in the last bits with fp-contraction (D9), no longer with libm. Pinned at 2.25e-7 (`RealFftCrossPrecision.FloatEngineTracksDoubleAtN512`), set at 2× the port's 1.1236e-7 (x86-64, soft-float M4) / 1.1650e-7 (VFMA legs, #31's CI run) and kept; and `< 1e-6` at N = 1024 through `basic_real_fft` (`FloatTracksDouble`). Against a quad-precision reference the srdif engine's float rms is 1.06e-7 / 1.17e-7 / 1.43e-7 at N = 512 / 2048 / 65536 ("The floating engine (srdif)") | fixed: 0.29 LSB rms (the narrow's own rounding) at every N and level; per-bin SNR 69.1 / 66.5 / 60.2 dB at 0 dBFS, N = 256 / 512 / 2048; BFP 87 – 91 dB at 0 dBFS (`NoiseFloorTracksWelchModel`; the full table in "The fixed-point profiles" §5) | fixed: 0.67 – 0.75 LSB rms, level-independent; 152.0 / 149.4 / 142.8 dB at 0 dBFS; BFP 157 – 161 dB |
 | Latency | 0 (block transform, no internal delay) | 0 | 0 | 0 |
 | Alignment | none required on `Sample*` | none (vDSP's internal split buffers are placed by the wrapper, not the caller) | none | none |
-| Shareability across threads (`k_is_shareable`, an engine trait re-exported by the class; Stage 4) | **true**: tables built in the constructor, transforms `const noexcept` | **true** on the split-radix engine, **false** on vDSP and CMSIS (per-object scratch); the class's transforms stay non-const on every profile (audit N11) and the trait is the statement; a shareable engine's transforms are `const` and the class `static_assert`s it (`ShareabilityIsTheHeadersNumber` in `test_fft_rt.cpp` and `test_fft_engine.cpp`) | **false**: the in-place int16 API needs the per-object int32 work buffer (a recorded deviation from audit Part 7, which listed both fixed profiles as shareable) | **true**: no mutable state during a transform; the engine's transforms are `const` behind `requires`-constrained overloads since Stage 4 |
+| Shareability across threads (`k_is_shareable`, an engine trait re-exported by the class; Stage 4) | **true**: tables built in the constructor, transforms `const noexcept` | **true** on the srdif engine, **false** on vDSP and CMSIS (per-object scratch); the class's transforms stay non-const on every profile (audit N11) and the trait is the statement; a shareable engine's transforms are `const` and the class `static_assert`s it (`ShareabilityIsTheHeadersNumber` in `test_fft_rt.cpp` and `test_fft_engine.cpp`) | **false**: the in-place int16 API needs the per-object int32 work buffer (a recorded deviation from audit Part 7, which listed both fixed profiles as shareable) | **true**: no mutable state during a transform; the engine's transforms are `const` behind `requires`-constrained overloads since Stage 4 |
 | Real-time safety | transforms `noexcept`, allocation-free (`test_fft_rt.cpp`; no exception since the float-I/O-on-double overloads, `[[deprecated]]` at 2b, were removed at the D5 expiry, tap/DspTap#40) | same | same (`TransformsAreNoexcept`, `*AllocatesNothing`, `CopyProducesBitIdenticalOutput`) | same |
-| NaN / denormals | NaN propagates to every bin; denormal input is slow on x86 without FTZ, and FTZ differs between the split-radix, vDSP and CMSIS builds | same | not applicable / none | not applicable / none |
-| Host identity | not across hosts: libm's `cos` / `sin` last bit differs between glibc, newlib, UCRT and Apple (below) | same | one bit pattern on every host, pinned per profile, policy, direction and N = 64 / 512 / 1024 / 2048 (`OutputFingerprintIsPinned`, `TwiddleTableChecksumIsPinned`) | same |
+| NaN / denormals | NaN propagates to every bin; denormal input is slow on x86 without FTZ, and FTZ differs between the srdif, vDSP and CMSIS builds | same | not applicable / none | not applicable / none |
+| Host identity | **one bit pattern for every compiler and target CI runs at `-ffp-contract=off`** since #42: the srdif engine's tables are integer arithmetic (`srdif_trig`, no libm), pinned as FNV-1a-64 output fingerprints at every power of two 4 … 65536 (4 … 4096 on the QEMU legs), **one row** (`tests/test_fft_srdif_fingerprint.cpp`; matched on x86-64 g++ 13.3 / clang++ 18.1 under both glibc dispatches, on the four QEMU legs, and in CI on Windows x64 MSVC and macOS arm64 AppleClang; scope in "The floating engine (srdif)"); with contraction the last bits move (D9, below). Until #42 not across hosts: the port's tables came from libm, whose last bit differs between glibc, newlib, UCRT and Apple (double pins per C library build, "The bit-identity record after D6") | same (until #42 the float row was already one value everywhere) | one bit pattern on every host, pinned per profile, policy, direction and N = 64 / 512 / 1024 / 2048 (`OutputFingerprintIsPinned`, `TwiddleTableChecksumIsPinned`) | same |
 
 ## Why split-radix for floating point and a radix-4 int32 kernel for fixed point
 
-**Floating point stays on Ooura's split-radix algorithm**, transliterated into
-C++20 (Stage 2a). The reasons are contractual, not aesthetic: every consumer
-float pin in MuTap and DspTap was measured on the vendored C, and the port
-reproduces the C's table semantics for both precisions so that `float` stays
-*bit-identical* (D10). The alternative — computing the float twiddles in double
-"because it is more accurate" — was measured and is a wash (table max absolute
-error 1.19e-7 either way; transform rms relative error at N = 512 is 1.105e-7
-with the C's tables and 1.114e-7 with double-computed ones — the audit's Part 6
-N2 reviewer-probe values; the committed re-measurement at Stage 2b is 1.12e-7
-on the engine as it ships, pinned in the table above), so it was dropped. The `#define double float` build of the C is replaced by a
-`template <std::floating_point Sample>` class whose helpers are private static
-members, which removes the 76 global symbols and the lazy table build.
+**Floating point is split-radix.** From Stage 2a (tap/DspTap#28, routed at
+Stage 2b, #31) until tap/DspTap#42 it was Ooura's split-radix algorithm,
+transliterated into C++20. The reasons then were contractual, not
+aesthetic: every consumer float pin in MuTap and DspTap had been measured on
+the vendored C, and the port reproduced the C's table semantics for both
+precisions so that `float` stayed *bit-identical* (D10). The alternative —
+computing the float twiddles in double "because it is more accurate" — was
+measured and was a wash (table max absolute error 1.19e-7 either way;
+transform rms relative error at N = 512 was 1.105e-7 with the C's tables and
+1.114e-7 with double-computed ones — the audit's Part 6 N2 reviewer-probe
+values; the committed re-measurement at Stage 2b was 1.12e-7 on the port),
+so it was dropped. The `#define double float` build of the C was replaced by
+a `template <std::floating_point Sample>` class whose helpers were private
+static members, which removed the 76 global symbols and the lazy table build.
 
-**Fixed point does not reuse Ooura's code, only its contract** (D2). Audit
-Part 6 established that the split-radix graph survives only as a data-flow
-graph with a different operation order, and that Ooura's first stage
-(`cftf1st`) derives half its twiddles at run time as sums of two cosines up to
-2.0, which no fixed-point twiddle format holds. The fixed-point profiles are
-therefore their own radix-4 decimation-in-frequency complex kernel of length
-N/2 (radix-2 final stage for odd `log2 M`) plus the real post-pass of the
-half-length method (Cooley, Lewis and Welch 1970; Sorensen et al. 1987),
-arranged for the int32 arithmetic (§1), so the packing, the `exp(+i)`
-convention and the DC / Nyquist slots are identical. The design, summarized from audit Part 7:
+Since tap/DspTap#42 the floating profiles run the srdif engine
+(`fft/srdif.h`). The maintainer decided to remove the last code derived from
+Ooura's package from what DspTap ships ("Provenance and licensing", below),
+which retired D10: every floating output bit moved, once, at the error level
+of either engine, and consumers re-measure. The algorithm family stayed
+split-radix, for the operation count — the engine attains the split-radix
+minimum, 2N log₂N − 2N − 2 real operations per forward transform, which is
+the cost on the soft-float Cortex-M4 — and the structure became the
+fixed-point engine's in floating point (N/2 complex values, a
+decimation-in-frequency kernel, bit reversal, #39's real post-pass), from
+the literature (Duhamel and Hollmann 1984; Sorensen, Heideman and Burrus
+1986). The twiddle question is answered differently: every table entry comes
+from integer arithmetic and every float entry is the correctly rounded
+value, so the float-versus-double table choice the port measured no longer
+arises, and no libm reaches the output. "The floating engine (srdif)" has
+the design and its numbers.
+
+**Fixed point does not reuse Ooura's code, only its contract** (D2; from Stage
+3b, #27, until #39 its real post-pass was nonetheless a transcription of the
+package's, re-derived from the literature at #39 — "The fixed-point post-pass,
+re-derived"). Audit Part 6 (at `5ca3b1c`) established that the port's
+split-radix graph would survive only as a data-flow graph with a different
+operation order, and that Ooura's first stage (`cftf1st`) derived half its
+twiddles at run time as sums of two cosines up to 2.0, which no fixed-point
+twiddle format holds. The fixed-point profiles are therefore their own radix-4
+decimation-in-frequency complex kernel of length N/2 (radix-2 final stage for
+odd `log2 M`) plus the real post-pass of the half-length method (Cooley, Lewis
+and Welch 1970; Sorensen et al. 1987), arranged for the int32 arithmetic (§1),
+so the packing, the `exp(+i)` convention and the DC / Nyquist slots are
+identical. The design, summarized from audit Part 7:
 
 - **One kernel, int32 data, two I/O widths.** Q31 is native; Q15 widens on
   input and narrows on output with the substrate's single round-half-up,
@@ -113,12 +144,14 @@ convention and the DC / Nyquist slots are identical. The design, summarized from
   consumers) and `scaling::block_floating` (a `clz` scan per stage shifts only
   as much as growth requires and returns one exponent per transform; for
   round-trip consumers that would otherwise lose `log2 N` bits twice).
-- **The inverse has its own scaling.** Ooura's unnormalized inverse has
-  structural gain N/2 and saturates on the first stage if run unscaled in fixed
-  point. Under `fixed` the inverse halves per stage and the round-trip factor
-  is a fixed power of two; under `block_floating` the round trip returns
-  `x · 2^-(e_fwd + e_inv)`. Whether the output convention matches CMSIS-DSP's
-  *documented* q15 / q31 scaling is a compatibility decision made in 3b.
+- **The inverse has its own scaling.** The contract's unnormalized inverse
+  (the convention of the vendored Ooura C, DspTap ≤ `5ca3b1c`, which every
+  engine since keeps) has structural gain N/2 and saturates on the first stage
+  if run unscaled in fixed point. Under `fixed` the inverse halves per stage
+  and the round-trip factor is a fixed power of two; under `block_floating`
+  the round trip returns `x · 2^-(e_fwd + e_inv)`. Whether the output
+  convention matches CMSIS-DSP's *documented* q15 / q31 scaling is a
+  compatibility decision made in 3b.
 
 The literature this is implemented from, per the house IP policy (published
 sources only; no shipping product's behaviour is reverse-engineered):
@@ -141,8 +174,14 @@ sources only; no shipping product's behaviour is reverse-engineered):
   fast Fourier transform algorithms," *IEEE Transactions on Acoustics,
   Speech, and Signal Processing*, vol. ASSP-35, no. 6, pp. 849–863, June 1987
   (the same half-length method and its inverse).
-- Ooura's own references for the split-radix algorithm are listed in
-  `third_party/ooura/readme.txt` (Nussbaumer 1982; Burrus, *Notes on the FFT*).
+- For the floating engine: P. Duhamel and H. Hollmann, "Split radix FFT
+  algorithm," *Electronics Letters*, vol. 20, no. 1, pp. 14–16, 1984; H. V.
+  Sorensen, M. T. Heideman and C. S. Burrus, "On computing the split-radix
+  FFT," *IEEE Transactions on Acoustics, Speech, and Signal Processing*,
+  vol. ASSP-34, no. 1, pp. 152–156, 1986; the full list is in
+  `fft/srdif.h`. (The port the srdif engine replaced at tap/DspTap#42 cited
+  Ooura's own references, listed in `third_party/ooura/readme.txt`: Nussbaumer
+  1982; Burrus, *Notes on the FFT*.)
 
 ## The fixed-point profiles: design record (Stage 3b, tap/DspTap#27)
 
@@ -302,7 +341,8 @@ a time per object. Q15 is not shareable across threads, because the in-place
 int16 API needs the per-object int32 work buffer; Q31 touches no object
 state during a transform (the caller's buffer and the three const tables
 only), but its transforms are declared non-const in this stage to match the
-floating engine's shape (the split-radix port's transforms are const). Stage
+floating engine's shape (the split-radix port's transforms were const, as
+the srdif engine's are since #42). Stage
 4 states shareability as an engine trait (Q31 true, Q15 false) and decides
 transform constness across the two wave-2 engines; nothing is restructured
 in 3b. Every transform returns the exponent and is `[[nodiscard]]`: under
@@ -332,8 +372,8 @@ sample's Q format. The inverse pre-pass takes the pre-shift and its own bit
 before the pre-pass; the kernel then halves per stage as in the
 forward; the inverse exponent is the same constant. With G the double golden
 model on the same input read as fractions, `G.forward == data · 2^e` and
-`G.inverse_inplace (unnormalized) == data · 2^e`. Since Ooura's unnormalized
-round trip has gain N/2, a fixed-point round trip reconstructs
+`G.inverse_inplace (unnormalized) == data · 2^e`. Since the contract's
+unnormalized round trip has gain N/2, a fixed-point round trip reconstructs
 
     x == out · 2^(e_fwd + e_inv + 1 − log2 N),
 
@@ -744,9 +784,10 @@ table lists the same widened format with no upscaling. The decision:
 - The **Q31 fixed forward is X / 2N**, one bit below CMSIS's documented
   scale; the bit is the input pre-shift `fft_arith.h` requires because Q0.31
   has no guard bits, and it is stated as a number rather than hidden.
-- The **inverse is not CMSIS's**: it is Ooura's unnormalized inverse over
-  2^e, i.e. (1/N) Σ X W^-jk divided by 2 (Q15) or 4 (Q31) under fixed
-  scaling. The round-trip identity above is the contract.
+- The **inverse is not CMSIS's**: it is the floating contract's unnormalized
+  inverse (the convention of the vendored C the library started from, kept by
+  every engine since) over 2^e, i.e. (1/N) Σ X W^-jk divided by 2 (Q15) or 4
+  (Q31) under fixed scaling. The round-trip identity above is the contract.
 - **Block floating point has no CMSIS analogue.**
 
 The exponent returned by every transform, not a fixed Q format per N, is the
@@ -767,7 +808,27 @@ documentation was read; nothing of its behaviour was measured or reproduced.
 
 ## The fp-contraction policy
 
-A contract point, not a build detail (D9). Measured on the audit's baseline:
+A contract point, not a build detail (D9).
+
+**Since tap/DspTap#42** the policy is unchanged — `tap::dsp` exports no
+contraction setting, and bit identity across builds is claimed at
+`-ffp-contract=off` only (`fft.h`) — and its evidence is the srdif engine's.
+Built without contraction, the engine's output bits are a function of the
+source alone (its tables are integer arithmetic, its statements IEEE
+operations in a fixed order): one fingerprint row on x86-64 g++ 13.3 and
+clang++ 18.1 under both glibc dispatches and on the four QEMU legs
+(`tests/test_fft_srdif_fingerprint.cpp`, its own target at
+`-ffp-contract=off`; Windows and macOS in CI). With contraction the last
+bits move per build and the error statistics do not: the float-vs-double
+relative error at N = 512 is 9.7312e-8 on x86-64 without FMA and on the
+soft-float M4 leg, 1.0459e-7 on the VFMA legs (M4F, M33, M55), measured
+2026-09-26. Everything below, from Stage 2a to tap/DspTap#41, was measured
+on the port and the vendored C and is kept as the record; the engine-vs-C
+identity it observed at default flags (every statement textually identical
+on both sides) has no counterpart now, because there is no second
+implementation to compare with.
+
+Measured on the audit's baseline:
 `gcc -std=c17` does not contract floating-point expressions into FMAs;
 `gcc -std=gnu17` does; `g++` contracts in both `c++20` and `gnu++20`; clang
 contracts in every mode, statement-scoped. Neither DspTap nor its consumers set
@@ -780,8 +841,9 @@ VFMA, any x86 built with `-march`). Therefore:
    `float`, forward and inverse, at every power of two from 4 to 65536 plus one
    run at 2^20, same binary and same libm on each host. It ran from Stage 2a
    through Stage 4 and was retired with the reference C at D6; the pinned
-   fingerprints that replaced it (`tests/test_fft_split_radix_fingerprint.cpp`,
-   "The bit-identity record after D6" below) are built at
+   fingerprints that replaced it (`tests/test_fft_split_radix_fingerprint.cpp`
+   from D6 until #42, "The bit-identity record after D6" below;
+   `tests/test_fft_srdif_fingerprint.cpp` since) were, and are, built at
    `-ffp-contract=off` for the same reason.
 2. The default-flags run was informational and pinned at a *measured* bound
    (its target went with the gate at D6; the table stays as the record) —
@@ -804,7 +866,7 @@ VFMA, any x86 built with `-march`). Therefore:
    | local, this port's development host | g++ 13.3.0 and clang++ 18.1.3, x86-64 without `-march` | 4 … 65536, 2^20 | 0 | 0 |
    | local, at tap/DspTap#31 (2b review) | g++ 13.3.0 `-O3 -march=haswell` (FMA, GCC contracts across statements after inlining) | 4 … 65536, 2^20 | 0 | **> 0 at N = 1024, 4096, 16384, 65536, 2^20** (0 at 2048, 8192, 32768); the informational target's per-value ulp distance reaches 256 / 4 (fwd / inv) at 1024 and 16384 / 65536 at 2^20 on bins near zero; the review's independent harness on `basic_real_fft<float>` vs the C: 56 of 1200 blocks differ at N ≥ 1024, max \|Δ\| / max \|ref\| = 3.6e-7 |
    | local, at tap/DspTap#31 (2b review) | clang++ 18.1.3 `-O3 -march=haswell` (FMA, per-statement contraction) | 4 … 65536, 2^20 | 0 | 0 |
-   | local, at tap/DspTap#34 (Stage 6 reviews; #34 touches neither `fft.h` nor `fft/`) | g++ `-O3 -march=x86-64-v3`, default `-ffp-contract=fast` | pvoc's float output through `basic_real_fft<float>` | codegen moved (float `cftrec4` 194 → 168 `vfmadd`, double 224 → 254) | **float output bits moved with an edit to unrelated code in the same TU** (log_mel.h's constructor), every pvoc function instruction-identical; ~30 unrelated lines appended to the TU made the outputs identical again — the output depends on TU context, not only on flags |
+   | local, at tap/DspTap#34 (Stage 6 reviews; #34 touches neither `fft.h` nor `fft/`) | g++ `-O3 -march=x86-64-v3`, default `-ffp-contract=fast` | pvoc's float output through `basic_real_fft<float>` | codegen moved (the engine's fused multiply-add count changed in both precisions) | **float output bits moved with an edit to unrelated code in the same TU** (log_mel.h's constructor), every pvoc function instruction-identical; ~30 unrelated lines appended to the TU made the outputs identical again — the output depends on TU context, not only on flags |
 
    Zero everywhere, including the four FMA-capable legs (macOS arm64, M4F,
    M33, M55): because every statement is textually identical on the two
@@ -826,8 +888,8 @@ VFMA, any x86 built with `-march`). Therefore:
    compilers at `-march=haswell`. The Stage 6 reviews (tap/DspTap#34, last
    row) sharpened this: under GCC's cross-statement contraction on an FMA
    target the engine's output depends on **translation-unit context** —
-   what else the TU inlines decides how `cftmdl2` is inlined into `cftrec4`
-   / `cftleaf`, and with it which products fuse — so an edit to code that
+   what else the TU inlines decides how the engine's inner routines are
+    inlined into one another, and with it which products fuse — so an edit to code that
    never touches the FFT can move a consumer's float bits, and the double
    codegen moved in the same experiment even though no double bit was seen
    to move; "double is identical under g++ with FMA" is therefore an
@@ -856,7 +918,9 @@ VFMA, any x86 built with `-march`). Therefore:
    translation unit that includes `fft.h` and would pessimize the VFMA / FMA
    targets the float profile exists for (the M55, Apple arm64) across all of
    that code, in exchange for a cross-compiler bit reproducibility that libm's
-   last-bit `cos` / `sin` differences already deny across hosts. What the
+   last-bit `cos` / `sin` differences already denied across hosts (true of
+   the port; since #42 the tables are libm-free, and the reason stands on the
+   pessimization alone). What the
    header promises is therefore the observation, not a guarantee: the identity
    held at default flags on these compilers on these statements; g++ on
    x86-64 with `-march` is measured to move the float profile's last bits
@@ -864,36 +928,45 @@ VFMA, any x86 built with `-march`). Therefore:
    A consumer that needs bit reproducibility across its own compilers sets the
    flag on its own targets.
 
-A related, separate fact: libm `cos` / `sin` differ in the last bit between
-glibc, newlib, UCRT and Apple, so *double* outputs are not identical across
-hosts today either; a platform-independent table is a Stage 3b candidate (the
-fixed-point twiddle generator lands there) and otherwise out of scope.
+A related, separate fact, until #42: libm `cos` / `sin` differ in the last
+bit between glibc, newlib, UCRT and Apple, so the port's *double* outputs
+were not identical across hosts either (the per-libm double rows of "The
+bit-identity record after D6"); a platform-independent table was a Stage 3b
+candidate (the fixed-point twiddle generator landed there). tap/DspTap#42
+closed it for the floating profiles: the srdif engine's tables come from
+`srdif_trig`, integer arithmetic, and its fingerprint has one row for every
+host.
 
-## Transliteration rules for the port
+## Transliteration rules for the port (Stage 2a until tap/DspTap#42; history)
 
-These live in the engine header (`include/tap/dsp/fft/split_radix.h`) so the
-next person does not undo them; they are recorded here because they are what
-the bit identity depends on (held by the parity gate from Stage 2a until D6,
-by the pinned fingerprints since).
+The port and its header were deleted at tap/DspTap#42 (hand-off commit
+`17db855`), and the srdif engine that replaced it is not a transliteration
+of anything: its own constraints (statement order under D9, the integer
+table generator, the register leaves) are stated in `fft/srdif.h`. The rules
+below applied to the port from Stage 2a (tap/DspTap#28) to #42. They lived
+in the engine header (`include/tap/dsp/fft/split_radix.h`) so the next person
+would not undo them, and are recorded here because they were what the bit
+identity depended on (held by the parity gate from Stage 2a until D6, by the
+pinned fingerprints from D6 until #42).
 
-- **Statement fidelity.** Every Ooura statement stays textually intact. Clang
+- **Statement fidelity.** Every Ooura statement stayed textually intact. Clang
   contracts FMAs within a statement only; GCC contracts across statements after
   inlining. Refactoring `wk1r * x0r - wk1i * x0i` into a `cmul` helper, a
-  lambda, or a policy call changes which products fuse and silently breaks bit
-  identity on one compiler or the other.
+  lambda, or a policy call would have changed which products fuse and
+  silently broken bit identity on one compiler or the other.
 - **Explicit `static_cast<double>` on every libm call.** In C, `cos(delta * j)`
   with a float `delta` calls the double `cos`; in C++ `std::cos` of a float
   calls `cosf`, and the tables then differ from the C. The parity test at an N
-  where `makewt` takes its `nwh > 4` branch catches this, but only because the
-  port keeps the C's table semantics.
-- **Tables are built once in the constructor**, with the same precision
-  semantics the C uses for each instantiation (float-typed locals for the
+  where `makewt` takes its `nwh > 4` branch caught this, but only because the
+  port kept the C's table semantics.
+- **Tables were built once in the constructor**, with the same precision
+  semantics the C used for each instantiation (float-typed locals for the
   float instantiation).
-- **Index types may widen to `std::size_t`** (every loop bound is a `< m` /
-  `> 0` form over non-negative values); `-Wconversion` stays on to catch a
+- **Index types could widen to `std::size_t`** (every loop bound is a `< m` /
+  `> 0` form over non-negative values); `-Wconversion` stayed on to catch a
   missed cast.
-- **Load `m_w.data()` into a local once per transform** so aliasing analysis
-  matches the C, which receives `w` by parameter.
+- **`m_w.data()` was loaded into a local once per transform** so aliasing
+  analysis matched the C, which receives `w` by parameter.
 - Scope: `rdft` and the ~2,580 lines it reaches (`makewt`, `makeipt`,
   `makect`, the `bitrv2*` family, `cftfsub` / `cftbsub` and the `cft*` leaves,
   `rftfsub`, `rftbsub`). Not ported: the DCT/DST family, `cdft`, the thread
@@ -959,10 +1032,29 @@ one second per optimized TU that instantiates both profiles, consistent
 with the audit's "1.3 s as C++ for the whole file"; D8 stands unless
 MuTap's build shows a regression these numbers do not predict.
 
+At tap/DspTap#42 `fft.h` includes `fft/srdif.h` (929 lines) in place of the
+port's 2,582. Measured 2026-09-26 on the same kind of container (Intel Xeon
+@ 2.10 GHz, 4 vCPUs, g++ 13.3.0, clang++ 18.1.3; min of 5 compiles; load
+average 3–4, so read the differences, not the absolutes), a TU that
+constructs `real_fft` and `real_fft32` at 512 and calls one
+`forward_inplace` each, against the include tree of `7a58ebe` (the base of
+#42): preprocessed 52,082 lines against 53,003; g++ `-O2` 1.01 s against
+1.18 s, `-O0` 0.57 against 0.56; clang++ `-O2` 0.92 against 0.90, `-O0`
+0.52–0.54 against 0.43–0.49 (two sessions, not attributed). A tenth of a
+second at most, in either direction: nothing D8 would have to answer.
+
 ## Stage 4: the engine parameter and the ABI tag (tap/DspTap#35)
 
 Audit F4 and Decision D4. What landed, what was measured, and what it does
 not close.
+
+Since tap/DspTap#42 the floating engine this section calls "the split-radix
+engine" is `detail::srdif_rdft` (`fft/srdif.h`), and the ABI tag
+`fft_split_radix` is `fft_srdif`. Where a passage states current behaviour
+(the spelling table, the ranges, shareability, the test layout) it now names
+the srdif engine, with the #35 value beside it; the evidence — symbol
+listings, the loader test's output, the ratchet counts — is quoted as
+measured at #35 and #41, on the port.
 
 ### The engine parameter
 
@@ -973,24 +1065,24 @@ spelling that did not survive the D4 expiry is rejected by name:
 
 | Spelling | Resolves to | Note |
 |---|---|---|
-| `basic_real_fft<double>`, `real_fft` | `<double, detail::split_radix_rdft<double>>` | always |
-| `basic_real_fft<float>`, `real_fft32` | `<float, default_real_fft_engine_t<float>>` | the split-radix engine, or `detail::cmsis_real_fft_f32` under `TAP_DSP_FFT_CMSIS`, or `detail::accelerate_real_fft_f32` under `TAP_DSP_FFT_ACCELERATE`; selected in exactly one place in `fft.h` |
-| `basic_real_fft<float, detail::split_radix_rdft<float>>` | that engine | new: an engine named explicitly, beside the accelerated default in the same binary |
+| `basic_real_fft<double>`, `real_fft` | `<double, detail::srdif_rdft<double>>` (`detail::split_radix_rdft<double>` from #35 until #42) | always |
+| `basic_real_fft<float>`, `real_fft32` | `<float, default_real_fft_engine_t<float>>` | the srdif engine (the port from #35 until #42), or `detail::cmsis_real_fft_f32` under `TAP_DSP_FFT_CMSIS`, or `detail::accelerate_real_fft_f32` under `TAP_DSP_FFT_ACCELERATE`; selected in exactly one place in `fft.h` |
+| `basic_real_fft<float, detail::srdif_rdft<float>>` (`detail::split_radix_rdft<float>` from #35 until #42) | that engine | new at #35: an engine named explicitly, beside the accelerated default in the same binary |
 | `basic_real_fft<float \| double, scaling::fixed>` | cannot be instantiated | the pre-Stage-4 spelling every profile shared. From #35 until the D4 expiry it resolved to the default engine as a **distinct type** from the one-argument form (same layout and code, different template arguments: +2,949 B x86-64 / +1,995 B M55 of duplicate wrappers when both were instantiated, 35a/F3). **Expired** (tap/DspTap#40): a `static_assert` in the class body whose message names `basic_real_fft<float>` / `basic_real_fft<double>`, and `detail::floating_engine_of` is gone. The template-id can still be named (an alias, a pointer) without error; only instantiating the class fails, so a dead `using` of it survives until something instantiates it. No in-tree writer since the #35 fix pass (the capi's seam uses `detail::default_real_fft_policy_t<Sample>`, so `fft_impl<float>` holds exactly `real_fft32`); none in MuTap or MuTap-Max, which never wrote it |
 | `basic_real_fft<std::int16_t \| std::int32_t, Scaling>` | the fixed-point specialization | unchanged; the second argument is the Scaling policy |
 
 Any other second argument on a floating `Sample` must satisfy the concept
 `tap::dsp::real_fft_engine<Engine, Sample>`: constructible from the size,
-copyable, two `noexcept` in-place transforms, `size()`, and the three
-contract constants `k_min_size`, `k_max_size`, `k_is_shareable`. The four
-engines satisfy it; `int` and `scaling::fixed` do not. Since the D4 expiry
+copyable, two `noexcept` in-place transforms, `size()`, and the three contract
+constants `k_min_size`, `k_max_size`, `k_is_shareable`. The four engines
+satisfy it; `int` and `scaling::fixed` do not. Since the D4 expiry
 (tap/DspTap#40) the class rejects `scaling::fixed`, cv-qualified or not, by
 name, and that is the only diagnostic: for that spelling `engine` falls back
-to the split-radix engine purely as error recovery, so the rest of the class
-body stays well-formed while the unconditional `static_assert` still rejects
-every instantiation. Measured on the compile-fail fixture
-`tests/compile_fail/fft_legacy_spelling.cpp` (`float`, `double` and
-`const scaling::fixed`):
+to the portable engine (the port at #40, srdif since #42) purely as error
+recovery, so the rest of the class body stays well-formed while the
+unconditional `static_assert` still rejects every instantiation. Measured on
+the compile-fail fixture `tests/compile_fail/fft_legacy_spelling.cpp`
+(`float`, `double` and `const scaling::fixed`):
 
 | Compiler | Before the recovery (first cut of #40) | Shipped |
 |---|---|---|
@@ -1027,47 +1119,46 @@ assertion is never the first to fire.
 
 | Engine | Range | Where the number comes from |
 |---|---|---|
-| split-radix (`double`, `float`) | 4 … 2^30 | the int-indexing bound of Ooura's arithmetic (n is an `int`; every index and table offset stays below 2^31). Exercised: bit identity 4 … 65536 and 2^20 (the gate), the oracle 4 … 65536. Above 2^20 the transform is the same statements over larger tables and is not separately measured. 2^30 rather than 2^20 so the precondition does not narrow what a consumer could construct before Stage 4 ("a power of two ≥ 4") |
-| vDSP (`float`, Apple) | 4 … 2^20 | vDSP documents no maximum; 2^20 is the bound the float oracle has always stated for this engine and the size the split-radix gate runs to. Through the class it is swept to 65536 on the macOS leg and pinned bin-for-bin at 512 / 2048; 65536 … 2^20 is inside the range on vDSP's word, not on a measurement here |
+| srdif (`double`, `float`; the port from #35 until #42) | 4 … 2^30 | since #42, the srdif engine's uint32 swap offsets, which reach 2^30 − 2 (`fft/srdif.h`); exercised: output fingerprints 4 … 65536, the oracle 4 … 65536, construction and a round trip at 2^20 (`ConstructsAtTheRangeBounds`). At #35 the same number was the port's int-indexing bound (n an `int`; every index and table offset below 2^31), exercised by bit identity 4 … 65536 and 2^20 (the gate) and the oracle. Above 2^20 the transform is the same statements over larger tables and is not separately measured. 2^30 rather than 2^20 so the precondition does not narrow what a consumer could construct before Stage 4 ("a power of two ≥ 4") |
+| vDSP (`float`, Apple) | 4 … 2^20 | vDSP documents no maximum; 2^20 is the bound the float oracle has always stated for this engine and the size the port's parity gate ran to (Stage 2a until D6). Through the class it is swept to 65536 on the macOS leg and pinned bin-for-bin at 512 / 2048; 65536 … 2^20 is inside the range on vDSP's word, not on a measurement here |
 | CMSIS-DSP (`float`, Cortex-M55) | **32 … 4096** | `arm_rfft_fast_init_f32` dispatches through a `switch` over exactly {32, …, 4096} and returns `ARM_MATH_ARGUMENT_ERROR` otherwise, leaving the instance uninitialized. Until Stage 4 the wrapper ignored that status and fft.h promised "≥ 4" for every profile: N = 4 HardFaulted in the Stage 2a oracle's first QEMU run on the M55 leg (tap/DspTap#24; audit Part 13) — one outcome of undefined behaviour, not a promise (below). The constructor now checks the status (`TAP_EXPECTS`, debug builds) as well as the range |
 | fixed point (Q15, Q31) | 4 … 65536 | as at Stage 3b, now spelled through the same constants |
 
-What construction does out of range: `TAP_EXPECTS` is the house
-precondition (STYLE.md §4, `include/tap/dsp/detail/expects.h`): an
-assertion in a debug build, nothing in a release build, never a throw
-(some Tap consumers build `-fno-exceptions`). Every CI battery is Release /
-MinSizeRel, so in CI the check is the constexpr predicate, pinned as
-`static_assert`s on every leg (N = 16 and 8192 rejected under CMSIS,
-accepted by the split-radix engine named in the same binary; 32 and 4096
-constructed and round-tripped under CMSIS), plus a Debug-only death test
-that runs in a local Debug configure (it passes there). **Release-mode
-behaviour, decided (35a/F1):** a violated precondition in a release build
-is undefined behaviour exactly as the plain `assert` it replaces was, and
-no fault is promised. For the CMSIS engine the instance stays
-zero-initialized, and the final audit (2026-09-26) measured what that does
-under QEMU (mps3-an547) in Release; re-measured for this record in Release
-and MinSizeRel at `ddadb74`, one probe binary per size: N = 16 and 8192
-return a wrong spectrum (max |CMSIS − split-radix| 6.60 at peak 6.52, and
-3593 at peak 3593) and **nothing faults**; N = 4 returns a wrong spectrum
-and corrupts the heap, so a later unrelated call fails — a HardFault after
-the transform in one probe, newlib's `Balloc succeeded` assertion in the
-next `printf` in another. (The HardFault at N = 4 that Stage 2a's oracle
-met is the same undefined behaviour, not a contract.) Real silicon is not
-measured. There is deliberately no defined fallback, because a branch in
-the transforms would cost the hot path on every call for a case the
-precondition excludes and would hand a consumer an object that silently
-transforms nothing. `supports_size` is therefore the *mandatory* gate
-wherever N comes from configuration. The capi's `dsptap_fft_create` applies
-it per profile since the #35 fix pass (before that it hard-coded 4 and the
-fixed-point 65536 and never read the float engines' range, so a vDSP or
-CMSIS build of the capi would have passed 2^21 or 16 straight through);
-the CMSIS wrapper also no longer narrows a size above `k_max_size` into the
-library's `uint16_t` argument (65536 would arrive as 0). MuTap's config path
-is on the bump checklist below. A repo-wide precondition policy remains its
-own plan; `TAP_EXPECTS` is used for fft.h's power-of-two and size-range
-preconditions (and the backends' own) and nothing else.
-`tests/test_fft_oracle.cpp` reads each profile's sweep range from the class
-instead of carrying the CMSIS range under `#if`.
+What construction does out of range: `TAP_EXPECTS` is the house precondition
+(STYLE.md §4, `include/tap/dsp/detail/expects.h`): an assertion in a debug
+build, nothing in a release build, never a throw (some Tap consumers build
+`-fno-exceptions`). Every CI battery is Release / MinSizeRel, so in CI the
+check is the constexpr predicate, pinned as `static_assert`s on every leg (N =
+16 and 8192 rejected under CMSIS, accepted by the portable engine named in the
+same binary (the port at #35, srdif since #42); 32 and 4096 constructed and
+round-tripped under CMSIS), plus a Debug-only death test that runs in a local
+Debug configure (it passes there). **Release-mode behaviour, decided
+(35a/F1):** a violated precondition in a release build is undefined behaviour
+exactly as the plain `assert` it replaces was, and no fault is promised. For
+the CMSIS engine the instance stays zero-initialized, and the final audit
+(2026-09-26) measured what that does under QEMU (mps3-an547) in Release;
+re-measured for this record in Release and MinSizeRel at `ddadb74`, one probe
+binary per size: N = 16 and 8192 return a wrong spectrum (max |CMSIS −
+split-radix| 6.60 at peak 6.52, and 3593 at peak 3593) and **nothing faults**;
+N = 4 returns a wrong spectrum and corrupts the heap, so a later unrelated
+call fails — a HardFault after the transform in one probe, newlib's `Balloc
+succeeded` assertion in the next `printf` in another. (The HardFault at N = 4
+that Stage 2a's oracle met is the same undefined behaviour, not a contract.)
+Real silicon is not measured. There is deliberately no defined fallback,
+because a branch in the transforms would cost the hot path on every call for a
+case the precondition excludes and would hand a consumer an object that
+silently transforms nothing. `supports_size` is therefore the *mandatory* gate
+wherever N comes from configuration. The capi's `dsptap_fft_create` applies it
+per profile since the #35 fix pass (before that it hard-coded 4 and the
+fixed-point 65536 and never read the float engines' range, so a vDSP or CMSIS
+build of the capi would have passed 2^21 or 16 straight through); the CMSIS
+wrapper also no longer narrows a size above `k_max_size` into the library's
+`uint16_t` argument (65536 would arrive as 0). MuTap's config path is on the
+bump checklist below. A repo-wide precondition policy remains its own plan;
+`TAP_EXPECTS` is used for fft.h's power-of-two and size-range preconditions
+(and the backends' own) and nothing else. `tests/test_fft_oracle.cpp` reads
+each profile's sweep range from the class instead of carrying the CMSIS range
+under `#if`.
 
 ### After the final audit: DspTap's own gates, and the CMSIS default
 
@@ -1089,103 +1180,106 @@ CMSIS backend reaching targets it was not written for. Both are closed here
   `constexpr supports_size(n)`, the constructor's `@pre`. Numbers per build:
   log_mel double 4 … 2^30 everywhere, float 32 … 4096 under CMSIS, 4 … 2^20
   under vDSP; pvoc double 64 … 2^28 everywhere, float 64 … 4096 under CMSIS,
-  64 … 2^20 under vDSP, 64 … 2^28 on the split-radix engine. Both classes
-  keep the precondition style they had (a bare `assert`; release builds do
-  not check). The capi's `dsptap_log_mel_create`, its two setters and
-  `dsptap_pvoc_create` gate on those predicates; the capi exposes the
-  double profiles only, whose engine is split-radix on every build, so no
-  host result changes (an `int` `fft_size` never exceeds 2^30). Pinned by
-  `log_mel_test.SupportsGeometryIsValidityAndTheEngineSizeRange` and
+  64 … 2^20 under vDSP, 64 … 2^28 on the portable engine (the port at #41,
+  srdif since #42). Both classes keep the precondition style they had (a bare
+  `assert`; release builds do not check). The capi's `dsptap_log_mel_create`,
+  its two setters and `dsptap_pvoc_create` gate on those predicates; the capi
+  exposes the double profiles only, whose engine is the portable one on every
+  build, so no host result changes (an `int` `fft_size` never exceeds 2^30).
+  Pinned by `log_mel_test.SupportsGeometryIsValidityAndTheEngineSizeRange` and
   `pvoc_test.SupportsSizeIsTheEngineRangeInsideTheClassBounds`, typed over
-  both profiles on every host; the float instantiations run on the four
-  QEMU legs, where the M55 rejects 8192 (and 16, which pvoc's 64 rejects on
-  every build).
+  both profiles on every host; the float instantiations run on the four QEMU
+  legs, where the M55 rejects 8192 (and 16, which pvoc's 64 rejects on every
+  build).
 - **`TAP_DSP_FFT_CMSIS` defaults ON only where the compiler targets
   floating-point Helium.** It was ON for every `CMAKE_SYSTEM_NAME Generic` +
-  `arm` target; DspTap's M4 and M33 toolchains escaped only by pinning it
-  OFF, and a consumer's own M7 toolchain got the CMSIS engine silently
-  (float range 4 … 2^30 → 32 … 4096, tag `fft_split_radix` → `fft_cmsis`).
-  The root CMakeLists.txt now compiles a check on `__ARM_FEATURE_MVE & 2`
-  under the configured flags (a static-library `try_compile`, so it needs no
-  linker script on bare metal, whatever the toolchain file set
-  `CMAKE_TRY_COMPILE_TARGET_TYPE` to). Configure results, before (`ddadb74`)
-  → after, `TAP_DSP_FFT_CMSIS` with no `-D`: M55 (in-tree toolchain) ON → ON;
-  M33, M4 soft-float, M4F OFF → OFF (before: by the toolchain's pin; after:
-  by detection, the pins deleted); synthetic Cortex-M7 (`-mcpu=cortex-m7
-  -mfpu=fpv5-d16 -mfloat-abi=hard`) **ON → OFF**; host x86-64 OFF → OFF;
-  MuTap's own M55 toolchain file (`origin/main`, unedited, consumer-style
-  `add_subdirectory`) ON → ON. Also measured after: `-march=armv8.1-m.main+mve.fp+fp.dp`
-  with `CMAKE_SYSTEM_PROCESSOR cortex-m55` ON, `-mcpu=cortex-m85` ON,
-  `cortex-m55 -mfloat-abi=softfp` ON (`__ARM_FEATURE_MVE` 3, and
-  `tap_dsp_fft` builds — the review's measurement),
-  `cortex-m55+nomve.fp` (integer MVE only) OFF, `cortex-m55 -mfloat-abi=soft`
-  OFF, an M55 toolchain without `CMAKE_TRY_COMPILE_TARGET_TYPE` ON.
-  Bare-metal Cortex-A / R (`Generic` + `arm`) targets move ON → OFF like the
-  M7. What the check sees, stated so nobody reads more into it: the C++
-  compiler with `CMAKE_CXX_FLAGS` only — not `CMAKE_C_FLAGS` (the CMSIS
-  objects compile as C, so keep the CPU flags identical in both, as every
-  toolchain here does), not `CMAKE_CXX_FLAGS_<CONFIG>`, not per-target
-  options, and not the caller's `CMAKE_REQUIRED_*`, which the check resets
-  (`cmake_push_check_state(RESET)`; review repro: a consumer's
-  `CMAKE_REQUIRED_DEFINITIONS -D__ARM_FEATURE_MVE=3` on the M33 toolchain
-  selected CMSIS, and `CMAKE_REQUIRED_FLAGS -mfloat-abi=soft` on the M55
-  deselected it; both now detect from the toolchain). The cached result is
-  cleared before every check, so a re-configure with other flags re-detects
-  (review repro: M55 toolchain, then re-configure with M33
-  `CMAKE_CXX_FLAGS` / `CMAKE_C_FLAGS` — before, the M55 result stayed cached
-  and the Helium status line printed; now detection is 0, and since the
-  option keeps its cached ON the "ON without MVE-F" warning fires). Every
-  blind spot fails safe (OFF, split-radix) or needs deliberately split
-  flags. An
-  explicit `-DTAP_DSP_FFT_CMSIS=ON|OFF` still wins: ON on a 32-bit Arm
-  target without MVE-F configures with a warning (CMSIS-DSP builds its
-  non-Helium C, same 32 … 4096); ON for a target that is not 32-bit Arm —
-  x86, and arm64 / Apple Silicon, which the old `arm|ARM` regex let through
-  — is a configure error. The embedded CI job asserts the detected value per
-  leg (`TAP_DSP_FFT_CMSIS:BOOL=ON` on the M55, `OFF` on the other three), so
-  a broken detection cannot turn the M55 leg into a second split-radix leg
-  unnoticed.
+  `arm` target; DspTap's M4 and M33 toolchains escaped only by pinning it OFF,
+  and a consumer's own M7 toolchain got the CMSIS engine silently (float range
+  4 … 2^30 → 32 … 4096, tag `fft_split_radix` → `fft_cmsis`; the portable tag
+  is `fft_srdif` since #42). The root CMakeLists.txt now compiles a check on
+  `__ARM_FEATURE_MVE & 2` under the configured flags (a static-library
+  `try_compile`, so it needs no linker script on bare metal, whatever the
+  toolchain file set `CMAKE_TRY_COMPILE_TARGET_TYPE` to). Configure results,
+  before (`ddadb74`) → after, `TAP_DSP_FFT_CMSIS` with no `-D`: M55 (in-tree
+  toolchain) ON → ON; M33, M4 soft-float, M4F OFF → OFF (before: by the
+  toolchain's pin; after: by detection, the pins deleted); synthetic Cortex-M7
+  (`-mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard`) **ON → OFF**; host
+  x86-64 OFF → OFF; MuTap's own M55 toolchain file (`origin/main`, unedited,
+  consumer-style `add_subdirectory`) ON → ON. Also measured after:
+  `-march=armv8.1-m.main+mve.fp+fp.dp` with `CMAKE_SYSTEM_PROCESSOR
+  cortex-m55` ON, `-mcpu=cortex-m85` ON, `cortex-m55 -mfloat-abi=softfp` ON
+  (`__ARM_FEATURE_MVE` 3, and `tap_dsp_fft` builds — the review's
+  measurement), `cortex-m55+nomve.fp` (integer MVE only) OFF, `cortex-m55
+  -mfloat-abi=soft` OFF, an M55 toolchain without
+  `CMAKE_TRY_COMPILE_TARGET_TYPE` ON. Bare-metal Cortex-A / R (`Generic` +
+  `arm`) targets move ON → OFF like the M7. What the check sees, stated so
+  nobody reads more into it: the C++ compiler with `CMAKE_CXX_FLAGS` only —
+  not `CMAKE_C_FLAGS` (the CMSIS objects compile as C, so keep the CPU flags
+  identical in both, as every toolchain here does), not
+  `CMAKE_CXX_FLAGS_<CONFIG>`, not per-target options, and not the caller's
+  `CMAKE_REQUIRED_*`, which the check resets (`cmake_push_check_state(RESET)`;
+  review repro: a consumer's `CMAKE_REQUIRED_DEFINITIONS
+  -D__ARM_FEATURE_MVE=3` on the M33 toolchain selected CMSIS, and
+  `CMAKE_REQUIRED_FLAGS -mfloat-abi=soft` on the M55 deselected it; both now
+  detect from the toolchain). The cached result is cleared before every check,
+  so a re-configure with other flags re-detects (review repro: M55 toolchain,
+  then re-configure with M33 `CMAKE_CXX_FLAGS` / `CMAKE_C_FLAGS` — before, the
+  M55 result stayed cached and the Helium status line printed; now detection
+  is 0, and since the option keeps its cached ON the "ON without MVE-F"
+  warning fires). Every blind spot fails safe (OFF, the portable engine) or
+  needs deliberately split flags. An explicit `-DTAP_DSP_FFT_CMSIS=ON|OFF`
+  still wins: ON on a 32-bit Arm target without MVE-F configures with a
+  warning (CMSIS-DSP builds its non-Helium C, same 32 … 4096); ON for a target
+  that is not 32-bit Arm — x86, and arm64 / Apple Silicon, which the old
+  `arm|ARM` regex let through — is a configure error. The embedded CI job
+  asserts the detected value per leg (`TAP_DSP_FFT_CMSIS:BOOL=ON` on the M55,
+  `OFF` on the other three), so a broken detection cannot turn the M55 leg
+  into a second portable-engine leg unnoticed.
 - **Two false statements withdrawn.** The "HardFault" promise (above, and
   in `fft.h` and `fft/backends/cmsis.h`) and "`int` is `std::int32_t` on
   all CI legs" (Shareability, below).
 
 ### Shareability as an engine trait
 
-`k_is_shareable` (the plan's `is_shareable`, under the house `k_` prefix):
-split-radix true, Q31 true, vDSP / CMSIS / Q15 false. Decision on constness
-across engines: **shareable implies const** — a shareable engine's
-transforms are `const`, and the class `static_assert`s it, so that half of
-the trait is what the compiler sees rather than a comment; the converse is
-not asserted (an engine with const transforms over `mutable` scratch that
-says `k_is_shareable = false` is accepted, and honest) and is a convention
-the tests pin: for the six shipped instantiations const and shareable
-coincide (`test_fft_rt.cpp`, `test_fft_engine.cpp`). The Q31 fixed-point
-transforms became `const` behind `requires`-constrained overloads
-(`k_widens` selects the Q15 pair, which goes through the per-object work
-buffer and stays non-const). Also noted (35a/F7), and corrected by the final
-audit and its review: `int` is `std::int32_t` on the three hosted CI legs
-(glibc x86-64, MSVC, Apple arm64) and under clang for arm-none-eabi
-(clang 18.1.3 `--target=arm-none-eabi -mcpu=cortex-m55`: `__INT32_TYPE__` is
-`int`), so there `basic_real_fft<int>` is the Q31 profile. Under
-arm-none-eabi-gcc — all four QEMU legs — `__INT32_TYPE__` is `long int` (the
-compiler's own macro, from GCC's newlib-stdint target configuration, not from
-newlib's headers), `std::int32_t` is `long`, and `basic_real_fft<int>` does not
-compile (the primary template's `static_assert`, measured with
+`k_is_shareable` (the plan's `is_shareable`, under the house `k_` prefix): the
+portable engine true (the port at #35, srdif since #42), Q31 true, vDSP /
+CMSIS / Q15 false. Decision on constness across engines: **shareable implies
+const** — a shareable engine's transforms are `const`, and the class
+`static_assert`s it, so that half of the trait is what the compiler sees
+rather than a comment; the converse is not asserted (an engine with const
+transforms over `mutable` scratch that says `k_is_shareable = false` is
+accepted, and honest) and is a convention the tests pin: for the six shipped
+instantiations const and shareable coincide (`test_fft_rt.cpp`,
+`test_fft_engine.cpp`). The Q31 fixed-point transforms became `const` behind
+`requires`-constrained overloads (`k_widens` selects the Q15 pair, which goes
+through the per-object work buffer and stays non-const). Also noted (35a/F7),
+and corrected by the final audit and its review: `int` is `std::int32_t` on
+the three hosted CI legs (glibc x86-64, MSVC, Apple arm64) and under clang for
+arm-none-eabi (clang 18.1.3 `--target=arm-none-eabi -mcpu=cortex-m55`:
+`__INT32_TYPE__` is `int`), so there `basic_real_fft<int>` is the Q31 profile.
+Under arm-none-eabi-gcc — all four QEMU legs — `__INT32_TYPE__` is `long int`
+(the compiler's own macro, from GCC's newlib-stdint target configuration, not
+from newlib's headers), `std::int32_t` is `long`, and `basic_real_fft<int>`
+does not compile (the primary template's `static_assert`, measured with
 arm-none-eabi-g++ 13.2 for `-mcpu=cortex-m55`, `cortex-m33` and `cortex-m4`;
 `basic_real_fft<long>` is the Q31 profile there).
-`fft_engine.Int32IsLongOnlyUnderArmNoneEabiGcc` pins which on every leg. Spell the profile `std::int32_t`. The class's own transforms stay non-const on every profile
-(audit N11: the public API's constness must not depend on the selected
-engine). The `std::span` overloads Part 9 listed were not added: Stage 4
-added no overload to the transform surface, so there is nothing to equate
+`fft_engine.Int32IsLongOnlyUnderArmNoneEabiGcc` pins which on every leg. Spell
+the profile `std::int32_t`. The class's own transforms stay non-const on every
+profile (audit N11: the public API's constness must not depend on the selected
+engine). The `std::span` overloads Part 9 listed were not added: Stage 4 added
+no overload to the transform surface, so there is nothing to equate
 (`test_fft_rt.cpp` says so where Part 9 expected the assertion).
 
 ### The ABI tag: what it is, the evidence, what it does not change
 
 `fft.h` opens `namespace tap::dsp::inline TAP_DSP_FFT_ABI` around
 `basic_real_fft` and the aliases, with `TAP_DSP_FFT_ABI` one of
-`fft_split_radix` / `fft_cmsis` / `fft_vdsp` from the selection (the plan
-named them `fft_ooura` / `fft_vdsp` / `fft_cmsis`; `fft_ooura` predates 2c,
-when the default became the split-radix engine, and the name is true today).
+`fft_srdif` / `fft_cmsis` / `fft_vdsp` from the selection. At #35 the first
+was `fft_split_radix` (the plan named them `fft_ooura` / `fft_vdsp` /
+`fft_cmsis`, and #35 took `fft_split_radix` because the default had been the
+port since 2b); tap/DspTap#42 renamed it with the engine, because the
+floating layouts changed, so images built against the two engines do not
+coalesce each other's symbols.
 `pvoc.h` and `log_mel.h` define `basic_pvoc` and `basic_log_mel` inside the
 same inline namespace, because they hold a `basic_real_fft<Sample>` by value.
 `k_real_fft_abi_tag` exposes the tag as text.
@@ -1230,8 +1324,11 @@ compiled twice for the Cortex-M55 with arm-none-eabi-g++ 13.2.1 (`-O2`,
   W tap::dsp::basic_real_fft<short, tap::dsp::scaling::fixed>::forward_inplace(short*)
   ```
 
-- At tap/DspTap#35: **0 of 65** weak names are shared (and 0 of all 69
-  lines, the 4 `n` symbols included). The same three read
+- At tap/DspTap#35 (on the port; since #42 the default object's names read
+  `fft_srdif` and `detail::srdif_rdft<float>` where these read
+  `fft_split_radix` and `detail::split_radix_rdft<float>`): **0 of 65** weak
+  names are shared (and 0 of all 69 lines, the 4 `n` symbols included). The
+  same three read
 
   ```
   W tap::dsp::fft_split_radix::basic_pvoc<float>::process(float, float)
@@ -1256,29 +1353,29 @@ compiled twice for the Cortex-M55 with arm-none-eabi-g++ 13.2.1 (`-O2`,
 
   **And the loader half, measured in a process (`tests/test_fft_abi_tag.cpp`,
   linux and macOS; asked for by the 35a review, whose experiment it
-  reproduces).** One translation unit (`tests/abi/abi_tag_image.cpp`) is
-  built into two loadable modules: image A with the configured build's
-  defines (tag `fft_split_radix` on linux, `fft_vdsp` on macOS) and image B
-  with `TAP_DSP_FFT_CMSIS` and a stub engine of a different layout on the
-  include path (tag `fft_cmsis`); the host `dlopen`s A then B with
-  `RTLD_GLOBAL` and asks each image what its embedders see through
-  `extern "C"` probes, the member calls laundered through a volatile
-  pointer so the loader, not the optimizer, decides the target. Measured on
-  linux (g++ 13.3): an embedder of `basic_real_fft<float>` defined in plain
-  `tap::dsp` and instantiated in image B **ran image A's code** — its
-  `which()` returned `fft_split_radix` from inside the `fft_cmsis` image and
-  the bound member saw a layout of 80 bytes against the real 184 — which is
-  F4 live; the identical embedder defined inside `inline namespace
-  TAP_DSP_FFT_ABI` reported its own tag and its own layout in both images,
-  and `pvoc32` / `log_mel32` computed identical, finite checksums in both
-  images with both loaded (`TaggedEmbedderIsImmuneToCrossImageCoalescing`;
-  the untagged outcome is asserted on the linux/GCC host and printed as
-  `[ measured ]` elsewhere, `UntaggedEmbedderIsWhatTheTagExistsFor`). Under
-  `RTLD_LOCAL` on ELF nothing coalesces (the review measured it; the test
-  runs one mode per process because the first `dlopen` decides an image's
+  reproduces).** One translation unit (`tests/abi/abi_tag_image.cpp`) is built
+  into two loadable modules: image A with the configured build's defines (tag
+  `fft_split_radix` on linux at #35, `fft_srdif` since #42; `fft_vdsp` on
+  macOS) and image B with `TAP_DSP_FFT_CMSIS` and a stub engine of a different
+  layout on the include path (tag `fft_cmsis`); the host `dlopen`s A then B
+  with `RTLD_GLOBAL` and asks each image what its embedders see through
+  `extern "C"` probes, the member calls laundered through a volatile pointer
+  so the loader, not the optimizer, decides the target. Measured on linux (g++
+  13.3): an embedder of `basic_real_fft<float>` defined in plain `tap::dsp`
+  and instantiated in image B **ran image A's code** — its `which()` returned
+  `fft_split_radix` from inside the `fft_cmsis` image and the bound member saw
+  a layout of 80 bytes against the real 184 — which is F4 live (as measured at
+  #35); the identical embedder defined inside `inline namespace
+  TAP_DSP_FFT_ABI` reported its own tag and its own layout in both images, and
+  `pvoc32` / `log_mel32` computed identical, finite checksums in both images
+  with both loaded (`TaggedEmbedderIsImmuneToCrossImageCoalescing`; the
+  untagged outcome is asserted on the linux/GCC host and printed as `[
+  measured ]` elsewhere, `UntaggedEmbedderIsWhatTheTagExistsFor`). Under
+  `RTLD_LOCAL` on ELF nothing coalesces (the review measured it; the test runs
+  one mode per process because the first `dlopen` decides an image's
   bindings). The test is hosted, non-Windows: the QEMU legs have no loader,
-  and a Windows image exports nothing without `__declspec`, so the
-  coalescing has no path there.
+  and a Windows image exports nothing without `__declspec`, so the coalescing
+  has no path there.
 
 **The fixed-point profiles are inside the tag, deliberately stated.** A
 partial specialization is the same template as its primary and lives in the
@@ -1310,10 +1407,10 @@ closed for DspTap's own embedders and for `basic_real_fft` itself, and open
 one level up in MuTap exactly as before.
 
 **MuTap bump checklist (the pin that picks up #35):**
-1. Wrap each of the five headers' class definitions in
-   `namespace tap::mu::inline TAP_DSP_FFT_ABI { … }` (a different namespace
-   from `tap::dsp::fft_split_radix`, which is fine: the tag only has to
-   appear in the mangled name; the macro is in scope through
+1. Wrap each of the five headers' class definitions in `namespace
+   tap::mu::inline TAP_DSP_FFT_ABI { … }` (a different namespace from
+   `tap::dsp::fft_srdif` — `fft_split_radix` before #42 — which is fine: the
+   tag only has to appear in the mangled name; the macro is in scope through
    `mutap/fft.h`). postfilter.h holds two of the six classes.
 2. **No forward declaration of any tagged class anywhere** — a later
    `template <typename> class partitioned_fdaf;` in plain `tap::mu` declares
@@ -1340,12 +1437,13 @@ one level up in MuTap exactly as before.
 6. Gate as always: fingerprints byte-identical on every leg.
 
 **Not closed by Stage 4, and not the tag's business:**
-- CMSIS-vs-split-radix parity runs under emulation on the Cortex-M55 QEMU
-  leg, as it has since that leg landed (main's `test_fft_backend.cpp`
+- CMSIS-vs-portable-engine parity runs under emulation on the Cortex-M55
+  QEMU leg, as it has since that leg landed (main's `test_fft_backend.cpp`
   already compared `basic_real_fft<float>` — CMSIS under the define — to
-  the split-radix reference); what #35 adds is that the two engines are
+  the port as reference); what #35 added is that the two engines are
   typed rows in one binary (`fft_backend_parity/cmsis` beside
-  `/split_radix`) and that the named split-radix routing row runs there.
+  `/split_radix`, `/srdif` since #42) and that the named portable-engine
+  routing row runs there.
   The remaining gap: QEMU only, never a host, never hardware.
 - The vDSP same-binary microbenchmark (above, "Host microbenchmark").
 
@@ -1393,32 +1491,55 @@ record. The harness lesson is in audit Part 13.
 
 ### Test layout after Stage 4
 
-- `tests/test_fft_backend.cpp`: typed over `::testing::Types<split_radix_f
-  [, accelerate_real_fft_f32 | cmsis_real_fft_f32]>`; parity at 512 / 2048,
-  alignment stability and tonal accuracy at 512 / 2048 / 4096, per engine,
-  against the split-radix engine called directly; a `static_assert` that
+- `tests/test_fft_backend.cpp`: typed over `::testing::Types<srdif_f
+  [, accelerate_real_fft_f32 | cmsis_real_fft_f32]>` (`split_radix_f` from
+  #35 until #42); parity at 512 / 2048, alignment stability and tonal
+  accuracy at 512 / 2048 / 4096, per engine, against the srdif engine called
+  directly; a `static_assert` that
   the default float engine is one of the rows.
 - `tests/test_fft_engine.cpp` (new): the engine-parameter contract as
   compile-time facts on every leg (above).
-- `tests/test_fft_routing.cpp`: memcmp class-vs-engine for `double`, for
-  the named split-radix float engine on every leg, and for the selected
-  float default.
+- `tests/test_fft_routing.cpp`: memcmp class-vs-engine for `double`, for the
+  named srdif float engine on every leg (the port until #42), and for the
+  selected float default.
 - `tests/test_fft_rt.cpp`: `ShareabilityIsTheHeadersNumber` per
   instantiation, with the compiler-checked half.
-- `tests/test_fft_parity_ooura.cpp`: untouched, green on every leg — the
-  proof that no float or double bit moved through the refactor (deleted at
-  D6 with the reference C; "The bit-identity record after D6" below).
+- `tests/test_fft_parity_ooura.cpp`: untouched at #35, green on every leg —
+  the proof that no float or double bit moved through the refactor (deleted
+  at D6, tap/DspTap#36, with the reference C; "The bit-identity record after
+  D6" below).
 - `tests/test_fft_abi_tag.cpp` + `tests/abi/` (hosted, non-Windows): the
   two-image loader test of the tag (above).
+- Since #42, beside these: `tests/test_fft_srdif_fingerprint.cpp` and
+  `tests/test_fft_srdif.cpp` ("The floating engine (srdif)", "Tests changed
+  for the engine").
 
 ## Size and instruction counts, per target
 
 Seeded by the Stage 1b ratchet from the vendored C, then re-measured at 2b
-(port), 3b (fixed point) and 4 (engine parameter). Numbers here carry the
-SHA, toolchain and QEMU versions; the gate itself lives in
-`bench/baselines.json` and the CI job, never in this file.
+(port), 3b (fixed point), 4 (engine parameter) and tap/DspTap#42 (the srdif
+engine). Numbers here carry the SHA, toolchain and QEMU versions; the gate
+itself lives in `bench/baselines.json` and the CI job, never in this file.
+The bench key `m55-ooura` (the Cortex-M55 with `TAP_DSP_FFT_CMSIS=OFF`, i.e.
+the portable float engine on the M55) keeps the name it was seeded under,
+because the baselines are keyed on it; it has measured the port since 2b and
+the srdif engine since #42. Every float-engine figure below the #42 entries
+is the port's (or the vendored C's, where the table says so).
 
 ### `.text` per profile at N = 512
+
+**The srdif engine (tap/DspTap#42; 2026-09-26, local, not yet a CI run).**
+MinSizeRel float probe (`tap_dsp_size_probe_rfft_f32_512`, `size -A`
+`.text`), arm-none-eabi-gcc 13.2.1 (15:13.2.rel1-2), 2026-09-27 (the tree
+after the fix pass for review A of #42), the port's Stage 2c figure in
+parentheses: `m4-softfp` 31,081 (53,289), `m4f` 28,921 (44,601), `m33`
+28,305 (44,001), `m55-ooura` 28,161 (39,281). The float profile no
+longer links libm's double `sin` / `cos` (the tables are integer
+arithmetic), which is most of the 11–22 kB. Ceilings re-recorded to
+measured + 3 %, rounded up to 64 bytes: 32,064 / 29,824 / 29,184 / 29,056 (from
+54,912 / 45,952 / 45,376 / 40,512). The Q15 / Q31 probes and the `m55`
+(CMSIS) probe are unchanged. The confirming CI run is pending
+(`bench/README.md`, "Sizes").
 
 **Post-pass re-derivation (2026-09-26; local, not a CI run).** The
 fixed-point post-pass / pre-pass re-derived from the literature (§1),
@@ -1516,6 +1637,24 @@ rdft-reachable text, `--gc-sections`): float 15.7 KB at `-Os`, 19.9 KB at
 
 ### Instructions per scenario
 
+**The srdif engine (tap/DspTap#42; 2026-09-27, local, not yet a CI run; the
+tree after the fix pass for review A of #42).**
+`scripts/icount.py` as `bench.yml` runs it; the port's baselines → the
+srdif engine's counts:
+
+| Scenario | `m4-softfp` | `m4f` | `m33` | `m55` (CMSIS, unchanged) | `m55-ooura` |
+|---|---|---|---|---|---|
+| `rfft_f32_512` | 1,864,929,141 → 1,814,303,702 (−2.71 %) | 97,138,544 → 92,575,609 (−4.70 %) | 100,945,841 → 92,979,212 (−7.89 %) | 52,382,331 → 52,382,329 (−0.00 %) | 89,276,321 → 83,933,381 (−5.98 %) |
+| `rfft_f32_2048` | 2,294,360,259 → 2,243,212,021 (−2.23 %) | 111,278,416 → 106,282,752 (−4.49 %) | 115,465,626 → 106,773,786 (−7.53 %) | 54,858,120 → 54,858,158 (+0.00 %) | 102,784,096 → 97,602,563 (−5.04 %) |
+
+The float baselines on the four portable-engine keys are re-recorded to
+these counts (six of the eight moved beyond the −3 % band, and every
+checksum changed with the output bits); the fixed-point scenarios measured
++0.49 … +1.15 % against theirs with no change to that code and are not
+re-recorded. Against CMSIS-DSP on the M55 the portable engine now executes
+1.60× (N = 512) / 1.78× (N = 2048) the instructions (the port 1.70× /
+1.87×). How the engine got there is in "The floating engine (srdif)".
+
 **Post-pass re-derivation (2026-09-26; local, not a CI run).** Same
 toolchain and QEMU as the sizes above, the counting plugin built as
 `bench.yml` builds it, `scripts/icount.py` in compare mode against
@@ -1573,8 +1712,8 @@ shipping tree — it remained under `tests/reference/ooura/` as the parity oracl
 until D6 deleted it — and the shipping path did not move), the three
 fixed-point scenarios recorded as new baselines (`bench/README.md`, one row
 per key and scenario). Executed guest instructions for the whole scenario
-binary, as for the float rows: 2^20 samples per direction through `forward()`
-+ `inverse()` with the exponent folded after each block, construction and the
+binary, as for the float rows: 2^20 samples per direction through
+`forward()` + `inverse()` with the exponent folded after each block, construction and the
 checksum.
 
 | Scenario | `m4-softfp` | `m4f` | `m33` | `m55` | `m55-ooura` |
@@ -1673,6 +1812,13 @@ what `tap::dsp` links, so this is startup and layout, not the transform.
 
 ### Host microbenchmark (`bench/bench_fft.cpp`, informational)
 
+The srdif engine's host timings, against the port's, are in "The floating
+engine (srdif)", "Host timings (informational)" (tap/DspTap#42, a same-machine
+A/B on x86-64: at `-O3` float 0.5–5.9 % slower and double −3.4 … +3.6 %; at
+`-O3 -march=native` float 9–18 % faster and double −7.5 … +3.5 %). What
+follows is the
+port against the vendored C.
+
 Measured at Stage 2b (2026-09-23) on the development container: Intel Xeon
 @ 2.10 GHz (4 vCPUs, a shared cloud VM), Ubuntu 24.04, g++ 13.3.0, Release
 (`-O3 -DNDEBUG`, no `-march`), `tap_dsp_bench_fft` min of 25 reps of 2^20
@@ -1693,10 +1839,11 @@ is a few percent faster, the double forward a few tenths of a percent
 slower: the same statements, one compiler, differently inlined), which is
 what the instruction counts on the Cortex-M keys also say. Both binaries
 print the same output checksums (`f32=-4753.16699`, `f64=-1903.0533955268113`).
-`TODO(after stage 4, needs a Mac)`: split-radix vs vDSP same-binary
+`TODO(after stage 4, needs a Mac)`: portable engine vs vDSP same-binary
 *microbenchmark* on Apple Silicon. Stage 4 made the same-binary comparison
-possible (`basic_real_fft<float, detail::split_radix_rdft<float>>` beside
-the vDSP default in one binary, which is how `test_fft_backend.cpp` now runs
+possible (`basic_real_fft<float, detail::srdif_rdft<float>>` since #42,
+`detail::split_radix_rdft<float>` before, beside the vDSP default in one
+binary, which is how `test_fft_backend.cpp` now runs
 parity on the macOS leg), but the number itself is a wall-clock measurement
 on a Mac that this repo's linux development environment cannot make. Of the
 consumers' "~3× faster / ~3× fewer instructions vs autovectorized Ooura"
@@ -1706,6 +1853,443 @@ Apple one is stated there as what it is, MuTap's transform-only measurement
 on the vendored C (tap/MuTap#31), and is not re-measured in this repo until
 someone runs `tap_dsp_bench_fft` twice on a Mac (`-DTAP_DSP_FFT_ACCELERATE`
 ON and OFF) and records the machine.
+
+## The floating engine (srdif)
+
+`include/tap/dsp/fft/srdif.h`, `detail::srdif_rdft<Sample>`: the engine
+`basic_real_fft<double>` runs on every build and `basic_real_fft<float>` runs
+wherever no accelerated backend is selected. It replaced, at the same
+contract (tap/DspTap#42), the port of Ooura's `rdft` (`fft/split_radix.h`)
+that the floating profiles ran from Stage 2b (#31). It was written under a
+clean-room procedure: from the published literature the header cites and
+from DspTap's own fixed-point engine (`fft/fixed_point.h`, `fft/tables.h`),
+without reference to the engine it replaced, to the package that engine
+came from, or to any other FFT library ("Provenance and licensing", "The
+floating engine, replaced clean-room", records the procedure and what it
+did not cover). The contract table and the fp-contraction policy above state
+the tree after #42; the Stage 4 record and the size and instruction-count
+tables keep their dated measurements of the port, with the #42 values added
+beside them.
+
+### Structure, and why
+
+The maintainer's decision was to generalize the fixed-point engine's
+structure to floating point, and the engine does exactly that: the N real
+samples as M = N/2 complex values, a decimation-in-frequency complex kernel
+of length M, the bit-reversal permutation, and the real post-pass /
+inverse pre-pass of Cooley, Lewis and Welch (1970) and Sorensen, Jones,
+Heideman and Burrus (1987) in the arrangement tap/DspTap#39 derived for the
+fixed-point engine (`fixed_point_rdft::real_post_pass`), with the scaling
+removed: per bin pair (k, M − k), `G = C_k (u − v)`, `X[k] = u − G`,
+`X[M − k] = conj(v + G)` with `C_k = (1 + i W_N^k) / 2`; `X[0], X[M] =
+Re Z[0] ± Im Z[0]`; bin N/4 untouched; the inverse the same statements with
+`conj C_k`, and its DC / Nyquist pair halved.
+
+The complex kernel is split-radix rather than the fixed-point engine's
+radix-4, for the operation count. On the soft-float Cortex-M4 every
+floating operation is a library call of 40–60 instructions and the count is
+the cost; split-radix (Duhamel and Hollmann 1984; the decimation-in-frequency
+program and its count in Sorensen, Heideman and Burrus 1986) needs
+4M log₂M − 6M + 8 real operations for the kernel, and the engine attains that
+count exactly (measured through an instrumented sample type): with the
+post-pass's 12 per bin pair, 2N log₂N − 2N − 2 per forward transform
+(8,190 at N = 512, 40,958 at 2048) and two more per inverse.
+
+On the FPU cores the count is loads and stores as much as arithmetic, and
+the kernel is arranged around that:
+
+- **The fused two-level pass.** The split-radix step on a block of length l
+  computes, for j < l/4, the butterfly on x[j], x[j + l/4], x[j + l/2],
+  x[j + 3l/4]; its two sums are the inputs of the half-length block. The
+  half-length block's own butterfly at j (quarter l/8) reads x[j],
+  x[j + l/8], x[j + l/4], x[j + 3l/8] — exactly the half-block outputs of the
+  level-l butterflies at j and j + l/8. So one group of eight values
+  x[j + r·l/8], r = 0 … 7, runs two levels between one load and one store:
+  three butterflies per 16 loads and 16 stores instead of 48 of each. Each
+  block of l ≥ 32 is processed that way and recurses on the five blocks the
+  two levels leave (l/4, l/8, l/8, l/4, l/4). This is the index map of the
+  split-radix decomposition (Duhamel and Vetterli 1990 give the general
+  form), read two levels at a time.
+- **Special butterflies** where the twiddle is trivial: j = 0 (additions
+  only) and j = l/8 (the eighth turn, two multiplications per product
+  instead of four), the two cases Sorensen et al. count; inside a group the
+  level-l/2 butterfly at j = l/16 is its own eighth-turn case and the level-l
+  twiddles there are W₁₆¹, W₁₆³, W₁₆³ and W₁₆⁹, spelled as literals.
+- **Twiddle pairing.** W^(l/4 − j) = i·conj(W^j) and W^(3(l/4 − j)) =
+  −i·conj(W^(3j)): the group l/8 − j uses the six twiddles of the group j
+  with cos and sin exchanged and signs flipped (exact), so the table holds
+  j < l/16 only and the second half of each pass walks it backwards.
+- **Compile-time blocks and register leaves.** Blocks of 32 and 64 run
+  with every offset a constant (one pointer, immediate addressing, fully
+  unrolled groups) from their own small tables; blocks of 16 and fewer are
+  leaves held in registers through every remaining level. The run-time
+  recursion handles l ≥ 128 only, and its groups run two per loop step so
+  the eight row pointers serve both.
+- **The permutation** keeps no index table: a bit-reversed counter walks
+  beside the natural index (the reverse-carry increment of Gold and Rader,
+  *Digital Processing of Signals*, 1969: adding one flips an index's
+  trailing ones and the zero above them, so the reversed counter flips the
+  mirror image of those bits), and splitting the index into its two end bit
+  pairs and its middle (one of the arrangements Karp's 1996 survey
+  describes) lets one counter step over the middle serve sixteen indices:
+  with M = 2^b and i = A·M/4 + 4y + B (A, B < 4), rev(i) = rev₂(B)·M/4 +
+  4·rev′(y) + rev₂(A), so the six (A, B) with A < rev₂(B) swap whatever y
+  is, the four with A = rev₂(B) swap when y < rev′(y), and the other six are
+  their partners. Below M = 16 the counter walks every index. Until the
+  fix pass for review A of #42 this was a precomputed list of swap pairs
+  (M uint32 words of heap); the counter costs fewer instructions on every
+  key (below) and, alone, is 1.7–2.4× faster on x86-64 from N = 65536 up
+  (the list, 2 bytes per sample, streamed through the cache beside the
+  data).
+- **No SLP vectorization under GCC.** A `#pragma GCC optimize
+  ("no-tree-slp-vectorize")` around the class: GCC's basic-block
+  vectorizer packs the (re, im) halves into vector registers and pays a
+  lane shuffle for every multiplication by i and every complex product.
+  That was the host double slowdown review A of #42 measured (double forward
+  at N = 512: 1,416 ns with it, 1,228 ns without, same session, `-O3`; 1,438
+  and 1,126 ns at `-march=native`) and 1.9–2.3 % of the M55 float scenario's
+  instructions; the M4, M4F and M33 have no vector unit and compile the same
+  code either way. Clang's SLP vectorizer helps on this code and is left on.
+  Nothing reassociates, so the output bits are the same with and without
+  (the fingerprints match).
+- **Out-of-line transforms.** `forward_inplace` / `inverse_inplace` are
+  `noinline` (a performance attribute only): inlined into a caller's loop,
+  the permutation and the post-pass lost their registers to the caller's
+  live values (+1.4 % on the M4F scenario, measured).
+
+### The tables: integer trigonometry, no libm
+
+Every table value comes from `srdif_trig`: cos, sin, 1 − cos and 1 − sin of
+2πk/2^L for the first octant, in unsigned 64-bit fixed point — θ as the
+exact 128-bit product of k and ⌊2π·2⁶¹⌋, Horner's rule over the Maclaurin
+coefficients ⌊2⁶⁴/n!⌋ (cos to 20!, sin to 19!), 1 − cos as θ²·(1 − cos)/θ² so
+small angles keep their relative precision — rounded once to the profile
+(ties to even on the 64-bit mantissa), and taken to the other octants by
+exact symmetry. Against libquadmath, exhaustive over every k of every
+2^L, L = 3 … 30 (every angle any N ≤ 2^30 builds; review A of #42 ran
+it, 2.7·10⁸ angles × four quantities): the mantissa is within 13.44 units
+of 2⁻⁶⁴ relative (1 − cos at L = 30; 12.34 at L = 19, 13.07 at L = 24);
+**every float entry is the correctly rounded value**, with no misrounding
+at any L ≤ 30 (the nearest exact value to a float tie is 547 such units
+away, first at L = 25; 21,970 up to L = 24); every double entry is within
+0.5 + 13.44/2048 = 0.5 + 2^−7.25 ulp (0.5052 ulp measured), and 0.04–0.17 %
+of them, by function, are the neighbour of the correctly rounded double
+(0.08 % of the 2^20 post table). Only the post table is evaluated: the
+kernel and block twiddles are read out of its imaginary parts (cos θₖ/2 for
+every k < N/4, doubled exactly), which gives the bits a table evaluated at
+their own resolution would hold, since `srdif_trig` computes the same thing
+at (k, L) and (2k, L + 1).
+
+The point is host identity. A table from `std::cos` / `std::sin` is only as
+portable as the last bit of each libm, and the engine this one replaced
+needed its output pins per C library and per glibc CPU dispatch. Here the
+table is a function of (k, L), the arithmetic is IEEE operations in a fixed
+order, and with fp-contraction off the output bits are a function of the
+source alone: `tests/test_fft_srdif_fingerprint.cpp` pins FNV-1a-64 of the
+forward and inverse output at every power of two 4 … 65536, both profiles,
+and **one row** matched every compiler and target CI runs: x86-64 Linux
+(g++ 13.3 and clang++ 18.1, glibc 2.39 under either libm dispatch), all
+four QEMU legs (soft-float M4, M4F, M33, M55, newlib; N ≤ 4096 there), and,
+in CI, Windows x64 (MSVC, no contraction by default) and macOS arm64
+(AppleClang at `-ffp-contract=off`, the srdif engine named explicitly);
+review A of #42 read those logs, and compared the table bytes themselves
+across g++ `-O0` / `-O3` / `-march=native`, clang++ and the four legs. CI
+runs the linux check twice, the second time under glibc's SSE2 dispatch, as
+the evidence that no libm reaches the output. A mismatch is a finding, not
+a row to add. The claim's scope is those builds: the test asserts
+`FLT_EVAL_METHOD == 0` (an x87 build evaluates in extended precision), the
+no-contraction flags cover GNU, Clang, AppleClang and IntelLLVM (the last
+also at `-fp-model=precise`, since icx defaults to `-fp-model=fast`; no CI
+leg builds with icx, so that flag is untested), MSVC
+on ARM64 has no leg and is unverified, and a consumer's `-ffast-math` or
+flush-to-zero mode is outside it. A side effect on the Cortex-M legs: the float
+profile links no libm `sin` / `cos` at all, and the MinSizeRel float probe's
+`.text` fell by 11–22 kB (below).
+
+Construction evaluates N/8 angles (the post-pass table's), each a few
+hundred instructions of 32 × 32 → 64 multiplies on a Cortex-M4: 52 k
+instructions for the whole constructor at N = 512 and 204 k at 2048 on the
+M4F (103 k and 396 k before the fix pass, which evaluated the kernel
+table's octant separately and built the swap list). The size precondition
+is checked (`assert`) before any table is sized from N. At N = 2^30 (float,
+x86-64, the engine alone) construction takes 12.8 s at a 3.67 GB peak,
+against 39.3 s and 5.77 GB before (the swap list was built bit by bit,
+O(M log M)).
+
+### Memory
+
+One heap allocation per object, sized once and built in place (no
+temporary at construction): N/2 Samples of post-pass coefficients, the
+compile-time blocks' twiddles (12 Samples at N = 64, 48 from N = 128) and
+the run-time pass's (12·(N/32 − 1) Samples from N = 256), i.e.
+
+  heap = sizeof(Sample) × (N/2 for N ≤ 32; 44 at N = 64; 112 at N = 128;
+  7N/8 + 36 from N = 256) bytes
+
+(`srdif_rdft::heap_bytes`; fft.h states it beside the size range, and
+`fft_rt_srdif.*HeapIsOneAllocationOfTheStatedSize` pins the count and the
+bytes). `sizeof` is 32 B for the engine and 40 B for `basic_real_fft`
+on LP64 (72 B before #42, 112 B before the fix pass). Measured (x86-64,
+libstdc++):
+
+| N | float heap | double heap | engine it replaced (float / double) | ratio (float / double) |
+|---:|---:|---:|---:|---:|
+| 512 | 1,936 B | 3,872 B | 1,100 / 2,124 B | 1.76 / 1.82 |
+| 2048 | 7,312 B | 14,624 B | 4,236 / 8,332 B | 1.73 / 1.76 |
+| 65536 | 229,520 B | 459,040 B | 131,808 / 262,880 B | 1.74 / 1.75 |
+
+1.73–1.82 times the predecessor, the price of the pre-rounded post-pass
+coefficients and the fused pass's twelve-value entries (whose values are
+also in the post table; reading them from there would save 3N/8 Samples
+and cost the pass its contiguous entries). Before the fix pass for review A
+of #42 the object also held the swap list (M uint32 words) and made nine
+allocations, five of them temporaries interleaved with the four kept
+tables: 2,896 / 4,832 B at N = 512, 2.2 (double) to 2.8 (float) times the
+predecessor.
+
+### Accuracy against a quad-precision reference
+
+The maintainer's targets sheet's method, with its harness (a program over
+the public `basic_real_fft` API only, kept outside the tree with the sheet):
+`__float128` reference (O(N²) DFT for N ≤ 8192, an independent radix-2
+FFT above), full-scale input rounded once to the profile; *rms* =
+‖y − ref‖₂ / ‖ref‖₂ over the N packed words, *max* = max|y − ref| / max|ref|;
+white noise pooled over eight trials (seeds 0x5EED0001 … 8), max over the
+worst trial; forward, unnormalized inverse of the exact spectrum rounded to
+the profile, and the round trip through `inverse()`. x86-64, g++ 13.3.0
+`-std=gnu++20 -O3 -DNDEBUG`, no `-march` (no FMA), 2026-09-26. The last
+two columns are this engine over its predecessor on the same trials.
+
+White noise, float:
+
+| N | ref | fwd rms | fwd max | inv rms | inv max | rt rms | rt max | rms ratio fwd/inv/rt | max ratio fwd/inv/rt |
+|---:|:---:|---:|---:|---:|---:|---:|---:|---|---|
+| 4 | DFT | 4.16e-08 | 7.71e-08 | 3.11e-08 | 6.11e-08 | 4.79e-08 | 7.47e-08 | 1.00/0.92/0.93 | 1.00/1.00/1.00 |
+| 8 | DFT | 5.47e-08 | 7.63e-08 | 4.57e-08 | 7.32e-08 | 7.59e-08 | 1.39e-07 | 1.00/0.94/1.01 | 1.00/1.00/1.00 |
+| 16 | DFT | 6.82e-08 | 1.09e-07 | 6.98e-08 | 1.10e-07 | 8.81e-08 | 1.57e-07 | 1.00/0.97/1.02 | 1.00/1.00/1.00 |
+| 32 | DFT | 7.05e-08 | 1.10e-07 | 7.61e-08 | 1.62e-07 | 1.04e-07 | 1.96e-07 | 0.97/0.97/1.00 | 1.00/1.14/0.95 |
+| 64 | DFT | 8.75e-08 | 1.36e-07 | 8.00e-08 | 1.36e-07 | 1.20e-07 | 3.01e-07 | 0.94/0.90/1.04 | 0.90/0.68/1.47 |
+| 128 | DFT | 9.08e-08 | 1.44e-07 | 8.87e-08 | 2.01e-07 | 1.20e-07 | 2.99e-07 | 0.93/0.95/0.90 | 1.06/0.83/1.00 |
+| 256 | DFT | 9.71e-08 | 1.44e-07 | 9.71e-08 | 2.17e-07 | 1.34e-07 | 2.98e-07 | 0.91/0.89/0.86 | 0.78/0.93/0.70 |
+| 512 | DFT | 1.06e-07 | 1.74e-07 | 1.02e-07 | 2.04e-07 | 1.44e-07 | 3.58e-07 | 0.92/0.89/0.90 | 1.17/0.81/1.00 |
+| 1024 | DFT | 1.12e-07 | 1.52e-07 | 1.10e-07 | 2.59e-07 | 1.54e-07 | 3.58e-07 | 0.93/0.94/0.94 | 1.03/0.86/1.00 |
+| 2048 | DFT | 1.17e-07 | 1.87e-07 | 1.16e-07 | 2.75e-07 | 1.62e-07 | 4.17e-07 | 0.91/0.91/0.91 | 1.06/0.80/0.87 |
+| 4096 | DFT | 1.23e-07 | 1.58e-07 | 1.22e-07 | 2.96e-07 | 1.71e-07 | 4.17e-07 | 0.90/0.90/0.88 | 0.62/0.79/0.82 |
+| 8192 | DFT | 1.29e-07 | 2.02e-07 | 1.28e-07 | 3.29e-07 | 1.80e-07 | 4.77e-07 | 0.94/0.93/0.95 | 1.17/0.90/1.00 |
+| 16384 | FFT | 1.33e-07 | 1.77e-07 | 1.33e-07 | 3.55e-07 | 1.86e-07 | 5.36e-07 | 0.91/0.91/0.90 | 0.85/0.92/0.90 |
+| 32768 | FFT | 1.38e-07 | 1.78e-07 | 1.38e-07 | 3.87e-07 | 1.94e-07 | 5.36e-07 | 0.92/0.92/0.93 | 0.87/0.91/0.82 |
+| 65536 | FFT | 1.43e-07 | 1.81e-07 | 1.42e-07 | 4.28e-07 | 2.00e-07 | 6.56e-07 | 0.92/0.92/0.92 | 0.90/0.88/1.10 |
+| 2^20 | FFT | 1.61e-07 | 1.99e-07 | 1.60e-07 | 5.09e-07 | 2.25e-07 | 7.15e-07 | 0.93/0.93/0.94 | 0.93/0.95/0.92 |
+
+White noise, double:
+
+| N | ref | fwd rms | fwd max | inv rms | inv max | rt rms | rt max | rms ratio fwd/inv/rt | max ratio fwd/inv/rt |
+|---:|:---:|---:|---:|---:|---:|---:|---:|---|---|
+| 4 | DFT | 5.54e-17 | 8.41e-17 | 5.32e-17 | 9.73e-17 | 8.50e-17 | 1.30e-16 | 1.00/1.00/1.00 | 1.00/1.00/1.00 |
+| 8 | DFT | 1.02e-16 | 1.49e-16 | 1.01e-16 | 1.65e-16 | 9.99e-17 | 1.52e-16 | 0.98/0.95/0.71 | 1.00/1.00/0.67 |
+| 16 | DFT | 1.30e-16 | 2.09e-16 | 1.28e-16 | 2.74e-16 | 1.59e-16 | 3.04e-16 | 0.94/0.97/0.96 | 0.81/0.83/0.90 |
+| 32 | DFT | 1.36e-16 | 1.89e-16 | 1.20e-16 | 2.19e-16 | 1.84e-16 | 3.34e-16 | 1.00/0.89/0.99 | 1.00/0.76/0.86 |
+| 64 | DFT | 1.52e-16 | 2.28e-16 | 1.39e-16 | 3.72e-16 | 2.03e-16 | 3.41e-16 | 0.93/0.88/0.83 | 1.00/1.17/0.61 |
+| 128 | DFT | 1.68e-16 | 2.65e-16 | 1.68e-16 | 3.53e-16 | 2.19e-16 | 5.62e-16 | 0.93/0.96/0.92 | 1.00/0.99/1.26 |
+| 256 | DFT | 1.81e-16 | 2.47e-16 | 1.82e-16 | 4.50e-16 | 2.41e-16 | 5.64e-16 | 0.92/0.93/0.89 | 0.94/1.06/1.01 |
+| 512 | DFT | 1.89e-16 | 2.26e-16 | 1.89e-16 | 4.46e-16 | 2.61e-16 | 5.70e-16 | 0.91/0.92/0.90 | 0.95/0.78/0.85 |
+| 1024 | DFT | 2.06e-16 | 3.16e-16 | 2.04e-16 | 5.08e-16 | 2.81e-16 | 6.67e-16 | 0.93/0.92/0.93 | 1.00/1.09/0.92 |
+| 2048 | DFT | 2.18e-16 | 2.84e-16 | 2.17e-16 | 5.46e-16 | 3.00e-16 | 7.77e-16 | 0.91/0.92/0.90 | 0.83/0.95/0.78 |
+| 4096 | DFT | 2.28e-16 | 3.04e-16 | 2.25e-16 | 5.49e-16 | 3.17e-16 | 7.78e-16 | 0.92/0.91/0.93 | 0.97/0.83/0.88 |
+| 8192 | DFT | 2.39e-16 | 3.17e-16 | 2.35e-16 | 6.63e-16 | 3.30e-16 | 8.88e-16 | 0.92/0.92/0.93 | 0.91/0.86/1.00 |
+| 16384 | FFT | 2.47e-16 | 3.12e-16 | 2.47e-16 | 6.60e-16 | 3.43e-16 | 9.99e-16 | 0.91/0.91/0.92 | 0.86/0.88/1.00 |
+| 32768 | FFT | 2.57e-16 | 3.04e-16 | 2.54e-16 | 7.83e-16 | 3.56e-16 | 1.11e-15 | 0.91/0.90/0.91 | 0.88/0.98/0.91 |
+| 65536 | FFT | 2.66e-16 | 3.04e-16 | 2.65e-16 | 7.72e-16 | 3.69e-16 | 9.99e-16 | 0.90/0.91/0.91 | 0.77/0.91/0.90 |
+| 2^20 | FFT | 2.99e-16 | 3.59e-16 | 2.98e-16 | 9.00e-16 | 4.17e-16 | 1.33e-15 | 0.91/0.91/0.92 | 0.97/0.80/0.92 |
+
+The rms targets (no worse than the predecessor within 5 % measurement
+noise) are met at every N in both profiles and every direction: 4–14 %
+lower from N = 128 up, and at most 4 % higher below that (float round trip
+at N = 64). The max targets (1.25× the predecessor) are met in every noise
+cell but two: the float round trip at N = 64 (3.01e-7 vs 2.04e-7, 1.47×)
+and the double round trip at N = 128 (5.62e-16 vs 4.46e-16, 1.26×). Both
+are the maximum over one draw of eight trials, and review A of #42
+settled them with a paired A/B (its measurement, not this note's: the
+targets harness run on both trees, the same inputs to both engines, a
+`__float128` radix-2 reference; 400 trials at N = 64, 128, 256, 512 and
+4096, 60 at 65536 (240 for the off-bin tone); noise, random-frequency on-
+and off-bin tones, random-position impulses). Every (profile, N, signal,
+direction) cell has a new/old mean-error ratio ≤ 1.00 for rms, and ≤ 1.04
+for max (0.98 after 240 more trials at 65536); the srdif engine is worse on
+0–35 % of paired trials in almost every cell, 52 % at most (the float
+impulse round trip at N = 64, equal means). The two misses are draws: the
+float round-trip max at N = 64 has mean ratio 0.93 (p95 0.89), the double
+one at N = 128 0.95 (p95 0.86).
+
+Deterministic signals (on-bin tone, off-bin tone, impulse at x[1],
+constant; one realization each): the constant is bit-exact against the
+reference (all errors 0) in both profiles at every N, as it was. Of the
+other three, 516 cells (N = 4 … 65536 × two profiles × three directions ×
+rms / max) with a nonzero predecessor value: the srdif engine is lower in
+310 of them and above the targets' bars (1.05 × rms, 1.25 × max) in 54:
+21 for the on-bin tone (the double forward at N = 128 … 512 is the largest
+rms excess, 1.85e-16 vs 1.10–1.18e-16, where the predecessor happened to
+cancel; at N ≥ 1024 the srdif engine is the lower one, 1.84–2.39e-16 vs
+1.96–2.52e-16), 13 for the off-bin tone, and 20 for the impulse (the
+round-trip maximum on the zero-valued samples, 4e-9 vs 1.1e-9 in float and
+7.8e-18 vs 2.1e-18 in double at N = 65536, while the impulse round-trip rms
+is 6–8 % lower from N = 16384 up). A single realization's error is a draw from the same
+rounding statistics the noise rows average, which is why the targets'
+headline is the pooled noise. Review A's paired sweeps say the same of the
+deterministic cells: at N = 128 the on-bin tone at k0 = 13 (the sheet's
+⌊N/10⌋ + 1, the normalized frequency of its N = 256 and 512 cells) is the
+srdif engine's single worst of the 62 bins, 1.68× rms and 2.78× max, with a
+mean over all bins of 0.93×; at N = 4096, over 2046 bins, the float forward
+rms is 1.5× worse at no bin and 1.5× better at 56 (double: 2 and 34); the
+impulse round-trip maximum's growth is specific to x[1] (over random
+positions at 65536 the mean ratio is 0.65). Under `-march=native` (FMA
+contraction) the noise and tone rms ratios are 0.83–0.96, and contraction
+moves the srdif engine's own rms by −1 to −7 %.
+
+### Instruction counts and `.text`
+
+`scripts/icount.py` as `bench.yml` runs it (fresh Release build per key,
+arm-none-eabi-gcc 13.2.1, qemu-system-arm 8.2.2, the pinned plugin
+header), 2026-09-27, the tree after the fix pass for review A of #42. The
+gate was "every float scenario on every key that runs this engine at or
+below its baseline":
+
+| key | `rfft_f32_512`: baseline → srdif | Δ | `rfft_f32_2048`: baseline → srdif | Δ |
+|---|---:|---:|---:|---:|
+| `m4-softfp` | 1,864,929,141 → 1,814,303,702 | −2.71 % | 2,294,360,259 → 2,243,212,021 | −2.23 % |
+| `m4f` | 97,138,544 → 92,575,609 | −4.70 % | 111,278,416 → 106,282,752 | −4.49 % |
+| `m33` | 100,945,841 → 92,979,212 | −7.89 % | 115,465,626 → 106,773,786 | −7.53 % |
+| `m55-ooura` | 89,276,321 → 83,933,381 | −5.98 % | 102,784,096 → 97,602,563 | −5.04 % |
+| `m55` (CMSIS, unchanged) | 52,382,331 → 52,382,329 | −0.00 % | 54,858,120 → 54,858,158 | +0.00 % |
+
+The fix pass moved only the float scenarios of the four portable-engine
+keys, all down, from the first srdif record (512 / 2048): `m4-softfp`
+1,815,063,718 / 2,244,317,934 (−0.04 / −0.05 %), `m4f` 94,003,130 /
+108,030,219 (−1.52 / −1.62 %), `m33` 94,382,323 / 108,470,414 (−1.49 /
+−1.56 %), `m55-ooura` 86,188,216 / 100,091,803 (−2.62 / −2.49 %). Of that,
+construction (half the angles, no swap list) is −0.05 / −0.18 % on the M4F
+(51 k / 192 k instructions), SLP off is −1.9 … −2.3 % on the M55 and
+nothing elsewhere, and the permutation without an index table the rest,
+about −1.5 % on the M4F and M33 (a first version that split off one end
+bit per side instead of two measured +2.0 … +2.7 % there, and one that
+addressed the sixteen indices through eight row pointers −0.8 … −1.0 %;
+both were replaced).
+
+The float baselines are re-recorded to these counts (`bench/README.md`);
+the fixed-point scenarios measure +0.49 … +1.15 % against theirs with no
+change to that code, inside the band, and are not. Against CMSIS-DSP on the
+M55 the srdif engine now executes 1.60× (N = 512) / 1.78× (N = 2048) the
+instructions (the predecessor 1.70× / 1.87×).
+
+How the engine got there (development measurements on the `m4f` key, N =
+512 / 2048, each a change to the one before; the counts include the
+harness's ~14.6 k instructions per forward + inverse pair):
+
+| step | `m4f` 512 | `m4f` 2048 |
+|---|---:|---:|
+| first version: split-radix recursion to length 2, the post-pass, a swap-list permutation | +29.5 % | +27.4 % |
+| register leaves for blocks ≤ 16 (≈ 300 calls per transform at N = 512 gone) | +13.7 % | +13.8 % |
+| permutation through FP registers (a `memcpy` of the complex pair through stack temporaries had cost 29 instructions per swap) | +7.0 % | +7.8 % |
+| transforms out of line | +5.4 % | +6.4 % |
+| post-pass reads each pair once (the compiler re-loaded the partner after the stores, for aliasing) | +4.4 % | +5.5 % |
+| the fused two-level pass | +1.6 % | +1.7 % |
+| post-pass two bin pairs per step | +0.5 % | +0.8 % |
+| compile-time blocks of 32 and 64 | −2.9 % | −2.1 % |
+| run-time fused pass two groups per step | −2.9 % | −2.7 % |
+
+Tried and not kept: 64-bit integer moves in the permutation (GCC splits
+them into the same four accesses; no change). The soft-float key was below
+its baseline from the leaves step on, because the operation count is the
+split-radix minimum from the first version.
+
+`.text` of the MinSizeRel float probe (`tap_dsp_size_probe_rfft_f32_512`,
+`size -A`): `m4-softfp` 31,081 B (53,289 before), `m4f` 28,921 (44,601),
+`m33` 28,305 (44,001), `m55-ooura` 28,161 (39,281); the libm double
+`sin` / `cos` the predecessor's tables linked are gone (the fix pass took
+another 1.1 kB, the swap-list builder and three table vectors). The four
+float ceilings are re-recorded to measured + 3 % (32,064 / 29,824 / 29,184 /
+29,056); the Q15 / Q31 probes and the `m55` CMSIS probe are unchanged.
+
+### Host timings (informational)
+
+A same-machine A/B of the targets sheet's `hostbench.cpp` (`bench/bench_fft.cpp`'s
+workload over five sizes: out-of-place `forward()`, scaled `inverse()`,
+batches of 2^20 samples), built `g++ 13.3 -std=c++20 -O3 -DNDEBUG` with and
+without `-march=native` (Xeon 2.1 GHz with AVX-512 and FMA), pinned to one
+core, 11 runs, the median of the per-run medians in ns per transform. The
+predecessor's medians are review A of #42's (it ran both trees; this tree
+cannot build the predecessor); this engine's were measured the same way on
+the same machine the next day, alternating each run with review A's own
+binary of the previous srdif tree, whose medians came out within 2 % of
+review A's for it (so the two sessions compare). Predecessor → srdif:
+
+`-O3`:
+
+| N | float forward | float inverse | double forward | double inverse |
+|---:|---:|---:|---:|---:|
+| 256 | 597 → 602 (+0.8 %) | 628 → 650 (+3.5 %) | 541 → 549 (+1.5 %) | 616 → 606 (−1.6 %) |
+| 512 | 1,276 → 1,349 (+5.7 %) | 1,337 → 1,416 (+5.9 %) | 1,227 → 1,228 (+0.1 %) | 1,395 → 1,348 (−3.4 %) |
+| 1024 | 2,900 → 2,927 (+0.9 %) | 2,988 → 3,064 (+2.6 %) | 2,671 → 2,734 (+2.4 %) | 2,932 → 2,881 (−1.7 %) |
+| 2048 | 6,160 → 6,458 (+4.9 %) | 6,390 → 6,653 (+4.1 %) | 5,980 → 6,071 (+1.5 %) | 6,540 → 6,355 (−2.8 %) |
+| 4096 | 13,746 → 13,819 (+0.5 %) | 14,035 → 14,307 (+1.9 %) | 12,925 → 13,386 (+3.6 %) | 14,161 → 14,302 (+1.0 %) |
+
+`-O3 -march=native`:
+
+| N | float forward | float inverse | double forward | double inverse |
+|---:|---:|---:|---:|---:|
+| 256 | 532 → 461 (−13.4 %) | 570 → 466 (−18.1 %) | 497 → 500 (+0.4 %) | 538 → 510 (−5.3 %) |
+| 512 | 1,161 → 1,039 (−10.6 %) | 1,233 → 1,053 (−14.6 %) | 1,128 → 1,126 (−0.2 %) | 1,198 → 1,138 (−5.0 %) |
+| 1024 | 2,464 → 2,242 (−9.0 %) | 2,651 → 2,263 (−14.7 %) | 2,413 → 2,456 (+1.8 %) | 2,630 → 2,434 (−7.5 %) |
+| 2048 | 5,808 → 5,042 (−13.2 %) | 6,111 → 5,061 (−17.2 %) | 5,265 → 5,411 (+2.8 %) | 5,755 → 5,407 (−6.0 %) |
+| 4096 | 11,983 → 10,762 (−10.2 %) | 12,631 → 10,796 (−14.5 %) | 11,527 → 11,928 (+3.5 %) | 12,391 → 12,119 (−2.2 %) |
+
+The double forward, the golden model's slowest cell, is +0.1 … +3.6 % at
+`-O3` and −0.2 … +3.5 % at `-march=native`. Review A measured the previous
+srdif tree at +9 … +18 % and +26 … +28 % there; the difference is GCC's SLP
+vectorizer ("Structure, and why"), whose shuffles cost both directions
+alike (same session, N = 512 double: forward 1,416 → 1,228 ns, inverse 1,514
+→ 1,348 at `-O3`; 1,438 → 1,126 and 1,386 → 1,138 at `-march=native`). Why
+it looked like a forward problem: the predecessor's double forward was
+12 % cheaper than its own inverse (1,227 vs 1,395 ns at N = 512), while
+this engine's two directions run the same kernel, conjugated, and cost the
+same to within 10 %; the same slowdown therefore showed as twice the loss
+against the forward. Float at `-O3` stays 0.5–5.9 % slower (16 SSE
+registers against the M4F's 32 single-precision ones, for which the
+register leaves are sized). Not a gate; recorded so no host speed claim is
+made.
+
+### Tests changed for the engine
+
+- `tests/test_fft_srdif_fingerprint.cpp` + `tests/support/srdif_fingerprints.h`
+  (new): the output fingerprints above, their own target at
+  `-ffp-contract=off` (IntelLLVM also at `-fp-model=precise`), asserting
+  `FLT_EVAL_METHOD == 0`; `ci.yml` runs them verbosely and requires the one
+  row ("every compiler and target CI runs") under both glibc dispatches.
+- `tests/test_fft_rt.cpp`: the allocation guard also sums the bytes
+  requested, and `fft_rt_srdif.{Float,Double}HeapIsOneAllocationOfTheStatedSize`
+  pin the heap formula at N = 4 … 4096: one allocation of exactly
+  `heap_bytes(N)` per constructed engine.
+- `tests/test_fft_srdif.cpp` (new): the integer trigonometry against libm to
+  the last bits (1 / 2 / 4 / 6 ulp pins on 0 / 1 / 2 / 3 measured on glibc;
+  1 − cos 4 on newlib), exact octant endpoints, the leaf literals equal to
+  the generator's values, round-half-to-even in `to_sample`.
+- `tests/test_fft_routing.cpp`: the sizes now cross the engine's code paths
+  (register leaves only at N = 4 … 32, the compile-time blocks at 64 and 128,
+  the run-time pass from 256 up, and the post-pass's single-pair and paired
+  forms).
+- `tests/test_fft_oracle.cpp`: μ is one rounding (≤ 1.02 u) for these tables;
+  the Higham constant (4, i.e. 8u) is kept; worst measured ratio 0.155
+  float / 0.25 double (0.17 / 0.25 before).
+- Renames only (the engine type, the ABI tag `fft_srdif`, the backend string
+  `srdif`) in `test_fft_engine.cpp`, `test_fft_backend.cpp`
+  (`ForwardMatchesOoura` is `ForwardMatchesTheReferenceEngine`),
+  `test_fft_rt.cpp`, `test_fft.cpp`, `test_log_mel.cpp`, the ABI stub and
+  image, and the measured values in comments. **No tolerance and no pin
+  was loosened**; every pin that the predecessor's error set is kept where
+  the srdif engine measures lower (the round-trip pin of
+  `ConstructsAtTheRangeBounds`, 2.86e-6 against 3.28e-7 at 2^20;
+  `FloatEngineTracksDoubleAtN512`, 2.25e-7 against 9.73e-8 / 1.05e-7;
+  `DoubleForwardTracksCompensatedDft`, 7.4e-16 against 1.49–1.70e-16).
 
 ## Provenance and licensing
 
@@ -1726,21 +2310,35 @@ alone and declared to it by `tests/reference/ooura_rdft.h`. D6's condition
 (both MuTap and MuTap-Max pin a tree containing 2c: MuTap `801204d` pins
 DspTap `8350f13`, MuTap-Max `544e756` pins that MuTap) was met after Stage 4,
 and D6 deleted the reference copy, its declaration header and the gate
-(`test_fft_parity_ooura.cpp`, both its targets). What remains of Ooura's
-package in the repo is `readme.txt` at `third_party/ooura/`, permanently, as
-the license record for the derived engine. The bit identity the gate held is
-pinned since by output fingerprints ("The bit-identity record after D6"
-below), beside the routing proof (`test_fft_routing.cpp`) and the
-independent oracle (`test_fft_oracle.cpp`). Provenance stays visible
-through: the port header's attribution banner, `NOTICE.md`, `readme.txt` at
-`third_party/ooura/readme.txt` (D6), the fingerprint pins with the record of
-their equality to the C, and one glossary line in MuTap's
-`docs/itu-compliance.md` mapping "measured on Ooura" to "the vendored C at
-DspTap ≤ `5ca3b1c` and the bit-identical port from the Stage 2b SHA
-onward". Consumer *code* comments drop "Ooura packing"
-in favour of the numeric definition in the Stage 5 view. The engine is named
-for what it is (`detail::split_radix_rdft`, D7), not for its author;
-attribution is carried by the banner and the notices, not the identifier.
+(`test_fft_parity_ooura.cpp`, both its targets). The bit identity the gate
+held was pinned from D6 until #42 by output fingerprints ("The bit-identity
+record after D6" below), beside the routing proof (`test_fft_routing.cpp`)
+and the independent oracle (`test_fft_oracle.cpp`). Provenance was visible,
+while the port shipped, through: the port header's attribution banner,
+`NOTICE.md`, `readme.txt` at `third_party/ooura/readme.txt` (D6), the
+fingerprint pins with the record of their equality to the C, and one
+glossary line in MuTap's `docs/itu-compliance.md` mapping "measured on
+Ooura" to "the vendored C at DspTap ≤ `5ca3b1c` and the bit-identical port
+from the Stage 2b SHA onward". Consumer *code* comments dropped "Ooura
+packing" in favour of the numeric definition in the Stage 5 view. The engine
+was named for what it was (`detail::split_radix_rdft`, D7), not for its
+author; attribution was carried by the banner and the notices, not the
+identifier. `detail::srdif_rdft` follows the same rule (split-radix
+decimation in frequency).
+
+**Since tap/DspTap#42, in the maintainer's judgement (`NOTICE.md`), DspTap
+ships no code derived from the package.** #42 deleted the port and its
+fingerprint pins; the floating profiles run the srdif engine, written
+clean-room ("The floating engine, replaced clean-room" below), and the
+fixed-point engine's post-pass was re-derived at #39 (next subsection). What
+remains of the package in the repo is `readme.txt` at `third_party/ooura/`,
+with `LICENSES/LicenseRef-Ooura.txt`, kept as the license record for the
+trees consumers pinned before #42: from Stage 2a (#28) to #42's base they
+carry the port, from #27 until #39 the fixed-point transcription, before #32
+the C itself, and from #32 to before D6 (#36) the C as a test-only reference
+copy under `tests/reference/ooura/` (`NOTICE.md`, "Which trees carry what").
+The records of the port — this note's transliteration rules, bit-identity
+record, licensing statement and banner below — are kept as history.
 
 ### The fixed-point post-pass, re-derived (tap/DspTap#39)
 
@@ -1838,6 +2436,351 @@ hand-off left in the tree, not obtained blind.
 The maintainer's judgement (`NOTICE.md`): the fixed-point engine is DspTap's
 own and MIT. Not legal advice.
 
+### The floating engine, replaced clean-room (tap/DspTap#42)
+
+From Stage 2b (tap/DspTap#31, `bbfa48d`) until tap/DspTap#42 every floating
+transform a consumer ran was the port of Ooura's `rdft`
+(`include/tap/dsp/fft/split_radix.h`), a derivative work shipped under
+`LicenseRef-Ooura AND MIT` whose redistribution relied on the package's
+modification grant ("The licensing statement", below). On 2026-09-26 the
+maintainer decided to remove the last code derived from the package from
+what DspTap ships rather than rely on that grant for a derivative it does
+not expressly license for distribution — #39 had done the same for the
+fixed-point post-pass — and, with it, not to contact the author ("Draft
+email to the author", below). #42 replaced the port with
+`detail::srdif_rdft` (`fft/srdif.h`) at the same contract. The procedure, as
+#42's description and its hand-off commits state it:
+
+1. **Hand-off** (`17db855` and `05c81f1`, written by the party that had read
+   the port). Removed: `include/tap/dsp/fft/split_radix.h` (2,606 lines);
+   its bit-exact output pins, `tests/support/split_radix_fingerprints.h`
+   and `tests/test_fft_split_radix_fingerprint.cpp` with its CMake target —
+   unlike #39's hand-off, which left the per-N pins in the tree, no per-N
+   oracle of the removed engine remained, but one whole-scenario checksum
+   did: `bench/README.md`'s `rfft_f32_512` line (`0x662dd085b5b88325`, the
+   x86-64 value), which the implementer read and rewrote (`e4b4ede`); the
+   srdif engine's checksum differs from it; and every comment naming the
+   port's internal routines or table recurrences: `test_fft_oracle.cpp`'s
+   account of how the port formed its twiddles and its citation of
+   `fftsg.c`'s statement of the inverse, `test_fft_routing.cpp`'s list of the
+   sizes the port's dispatch branched on, and the routine names in `fft.h`'s
+   and `tools/fingerprint/fingerprint.cpp`'s D9 paragraphs (`17db855`) and
+   in this note's fp-contraction record (`05c81f1`). `<<CLEAN-ROOM>>`
+   markers took their place; the tree did not build at `17db855`.
+2. **Brief.** The implementer, a separate agent, was forbidden: every copy
+   of the removed engine or of the package on the machine (the main clone,
+   the MuTap and MuTap-Max trees and their submodules, MuTap's fingerprint
+   files, other worktrees); git history before the hand-off, and the
+   hand-off diffs themselves; this note's port and provenance sections ("Why
+   split-radix …", "Transliteration rules for the port", "Provenance and
+   licensing"), `NOTICE.md` and the audit doc; and every other FFT library's
+   source, the vendored CMSIS-DSP included. It worked from DspTap's own
+   `fft/fixed_point.h` and `fft/tables.h`, the contract text, the
+   literature the brief named (the split-radix papers, for a half-length
+   DIF kernel, bit reversal and post-pass: the family and pipeline were the
+   brief's choice, written by the party that had read the port, and are
+   also the port's; independence is claimed for the arrangement and the
+   text, not the family) and what it cites itself (the list in
+   `fft/srdif.h`), and a targets sheet of numbers (the port's accuracy
+   against a quad-precision reference, its instruction counts, `.text`,
+   heap and host timings; no code, but its heap formula implies the port's
+   two-table layout, and its deterministic cells and the notebook's error
+   tables are three-digit fingerprints of the port's output).
+3. **Access statement** (the implementer's report, in #42's description).
+   No forbidden item was opened. The near misses it reported: listing this
+   note's section headings (to find the forbidden sections' boundaries);
+   `git log --oneline` subject lines, which include the history before the
+   hand-off; one tree-wide `git grep -c` that printed only a count; and a
+   re-install of the shared pre-commit hook.
+4. **What the hand-off did not remove**, stated so the record is not read
+   as more than it is. In files the brief allowed, the implementer could
+   read:
+   - history prose naming the removed engine and its origin: `fft.h`'s file
+     and class comments (the port as "the C++20 transliteration of Ooura's
+     rdft", bit-identical to the vendored C; its size range as "the
+     int-indexing bound of Ooura's arithmetic"; the vendored C's lazy table
+     build), `README.md` (the engine table's row, the migration note's
+     "instead of Ooura's `ip`/`w` workspace", Provenance and License),
+     `CLAUDE.md`, the root `CMakeLists.txt`, `bench.yml`, `ci.yml`,
+     `bench/README.md` (with the port's whole-scenario checksum, item 1),
+     and `notebooks/fft.ipynb`'s executed output (prose, and per-N error
+     tables of the port);
+   - structural facts at that level: that the port was a split-radix `rdft`
+     (the header's name, the type `detail::split_radix_rdft`); that it built
+     its twiddle tables in the constructor from libm `cos` / `sin` (the
+     contract table's host-identity row, this note's fp-contraction record,
+     `CLAUDE.md`); that its statements were textually the C's and that GCC
+     inlined its inner routines into one another (the fp-contraction
+     record, after `05c81f1` removed the routines' names); the test name
+     `ForwardMatchesOoura` in `test_fft_backend.cpp`; and the port's
+     measured numbers in this note's size and instruction-count tables
+     (numbers the targets sheet also gave); and the fp-contraction record's
+     list of the sizes at which FMA moved the port's output (> 0 at N = 1024,
+     4096, 16384, 65536; 0 at 2048, 8192, 32768), a weak hint of a
+     size-parity dispatch;
+   - the fixed-point engine's real post-pass
+     (`fixed_point_rdft::real_post_pass`), which the brief directed the
+     implementer to generalize, and which #39's record ("What the record
+     supports, and what it does not", above) finds the same as the package's
+     `rftfsub` / `rftbsub` in dataflow, statement order, signs, coefficient
+     values and table layout. The srdif engine's real post-pass and inverse
+     pre-pass are that arrangement in floating point with the scaling
+     removed, so they are — by construction, not by independent derivation
+     — the published half-length method in the arrangement the package's
+     code also takes. The kernel, the permutation and the tables do not come
+     by that path: the fixed-point kernel is radix-4, and the srdif engine's
+     split-radix kernel, permutation (a precomputed swap list until the fix
+     pass for review A, a reverse-carry counter since) and integer table
+     generator were written from the literature its header cites.
+
+   Outside the allowed files:
+   - in files the brief forbade but the worktree still held (this note's
+     port and provenance sections, the audit doc, `NOTICE.md`): the port's
+     routine names, `cftf1st`'s run-time twiddle derivation, a verbatim
+     `cftf161` statement and the size dispatch map; for these the control
+     was the brief and the access statement, not removal;
+   - review A's threads, which the fix pass (`5571445`) worked from: their
+     author had built and measured the port from `main`; they quote no code
+     of it, and what they suggest (a heap formula as a contract number, an
+     O(√M) seed table from Karp's survey in place of the swap list, the
+     kernel twiddles read from the post table's imaginary parts) was taken
+     as the formula in `fft.h`, a reverse-carry counter with no table at
+     all, and that reading.
+5. **Structural comparison.** The hostile provenance review of #42 compared
+   the srdif engine against Ooura's upstream `fftsg.c`, which the reviewer,
+   unlike the implementer, was allowed to read (and the port, which follows
+   it routine for routine). The review read `srdif.h` at `51914d0`; its
+   srdif-side claims were re-checked here against the tree after the fix
+   pass for review A (`5571445`), which changed the permutation and where
+   the kernel twiddles come from (the `srdif.h` line numbers below are this
+   commit's). The two share what the brief and the literature fix:
+   split-radix in decimation in frequency (`fftsg.c`'s own header says
+   "decimation: frequency, radix: split-radix"), a half-length complex
+   kernel followed by the bit-reversal permutation and the
+   Cooley–Lewis–Welch post-pass, the trivial-twiddle butterflies (j = 0, the
+   eighth turn, the W₁₆ constants) and the symmetry W^(l/4 − j) = i·conj W^j
+   that halves a twiddle table. They differ in every implementation choice.
+   - *Passes.* Each of Ooura's passes (`cftf1st`, `cftmdl1`) is one
+     split-radix level plus an untwiddled radix-2 step on the half, whose
+     twiddles it defers into a second block type (`cftmdl2`, `cftf162`,
+     `cftf082`), walked iteratively from the end of the array (`cftrec4` /
+     `cfttree`), with separate inverse routines and a conjugating bit
+     reversal. srdif's pass (`group`, `fused_pass`, `srdif.h:762-842`) is
+     two full split-radix levels on groups of eight values, every block
+     untwiddled, recursing first half first (`kernel`, `:914-946`: l/4,
+     l/8, l/8, l/4, l/4), one butterfly for both directions (`bf`,
+     `:701-754`).
+   - *Leaves.* Ooura's are hand-written 16- and 8-point routines in two
+     variants each (64 points split 16/16/16/16, `cftfx41`); srdif's are one
+     template recursion held in registers (`leaf_blocks`, `:873-901`; 64
+     points split 16/8/8/16/16, `block`, `:847-868`).
+   - *Kernel twiddles.* Ooura's come from libm in per-level sub-tables of
+     (cos θ, sin θ, cos 3θ, −sin 3θ) with secant factors (`makewt`), and
+     `cftf1st` interpolates half of them at run time. srdif's hold twelve
+     values per entry (W^j, W^3j, W^(j+M/8), W^(3j+3M/8), W^2j, W^6j) at the
+     full resolution M, one table strided per level, with separate 32- and
+     64-point tables for the compile-time blocks, nothing derived at run
+     time; since the fix pass they are read at construction out of the post
+     table's imaginary parts (`fill_kernel_table`, `:581-607`: cos θ/2
+     doubled exactly, sin θ as the cosine of the complement, quarter turns
+     by exchange and negation), whose values come from integer Taylor
+     series.
+   - *Post-pass table.* Ooura's (`makect`) is ½cos over the quarter turn,
+     the first octant folded, with ½ − ½sin formed at use; srdif's
+     (`fill_post_table`, `:546-567`) interleaves a once-rounded (1 − sin)/2
+     with cos/2. The second column is the same function as Ooura's `c` (a
+     value any table for this pass holds), formed from integer series rather
+     than libm; reading the kernel twiddles out of it is srdif's own
+     (`makewt` builds Ooura's kernel table apart). Both keep kernel and
+     post-pass values in one array: Ooura's `w` (N/2 words, beside the `ip`
+     seed table), srdif's single allocation (7N/8 + 36 Samples) since the
+     fix pass.
+   - *Permutation.* Ooura's (`bitrv2`, with fixed `bitrv216` / `bitrv208`
+     for the 16- and 8-point cases) enumerates pairs of reversed middle
+     indices from an O(√N) seed table (`makeipt`) in a nested j < k loop,
+     with 16 (or 8) unrolled swaps per pair and a separate diagonal.
+     srdif's (`permute`, `:621-660`) keeps no table: a reverse-carry
+     counter (Gold and Rader) steps over the middle bits and, with the two
+     end bit pairs split off, one step serves sixteen indices — six swaps
+     unconditional, four when y < rev′(y); below M = 16 the counter walks
+     every index. Splitting end bits off the middle so that one step serves
+     several swaps is common to the two and is one of the arrangements
+     Karp's survey describes; the enumeration differs (seed-table pairs
+     against a counter), and srdif has no fixed-size variants.
+
+   No identifier or comment is shared. The one statement-for-statement
+   passage is the real post-pass pair (`post_pair`, `:982-1005`, against
+   `rftfsub` / `rftbsub`: the same eight statements in the same order, one
+   product's operands commuted; srdif's loop takes k = 1 alone and then two
+   pairs per step, Ooura's one per step), which item 4 records as inherited
+   through #39; beyond it, only idioms any implementation writes alike (the
+   complex swap, `swap2`, and the eighth-turn product). The review's
+   side-by-side table, with line numbers at `51914d0`, is on #42; its rows
+   12 (bit reversal) and 16 (kernel twiddle table) describe the tree before
+   the fix pass.
+6. **Result.** Every floating output bit changed, at the error level of
+   either engine: rms error against a quad-precision reference 4–14 % below
+   the port's from N = 128 up, at most 4 % above it below that; two
+   white-noise max-error cells and 54 of 516 single-realization cells above
+   the targets' bars, which review A's paired A/B shows to be sampling
+   draws: no (profile, N, signal, direction) cell is worse in the mean
+   ("The floating engine (srdif)", "Accuracy against a quad-precision
+   reference"). Their acceptance #42 puts to the maintainer. One bit-exact
+   oracle of the port remained, a whole-scenario checksum (item 1); the
+   srdif engine does not match it, and nothing was tuned toward the port's
+   output.
+
+**What the record supports, and what it does not.** The text of
+`fft/srdif.h` — code, table generator, derivations — was written without
+access to the port, the package or any other FFT library's source, from the
+published literature and DspTap's own fixed-point engine. The real
+post-pass is the stated exception: it inherits #39's arrangement, which #39
+records as arithmetically the package's. The access statement is the
+implementer's own report. The maintainer's judgement (`NOTICE.md`): since
+#42 DspTap ships no code derived from the package. Not legal advice.
+
+### Comparison with other FFT libraries (2026-09-27)
+
+Review B compared the srdif engine with Ooura's package. A separate
+provenance audit on #42 (at `e2e04f6`) asked whether DspTap's FFT engines
+copy or closely follow any other well-known FFT implementation. It covered
+`fft/srdif.h`, the Q15 / Q31 engine (`fft/fixed_point.h`, `fft/tables.h`,
+`fft/fft_arith.h`), `fft.h`, `fft/spectrum.h` and the two backend
+wrappers. Its full report, with every score and side-by-side, is on #42.
+It is a statement of fact, not legal advice.
+
+**Sources.** All come from official locations:
+
+- FFTW 3.3.10, the release tarball (sha256 `56c93254…e26467`; its md5
+  equals the published `.md5sum`). The scan covered the generated
+  `dft/scalar/codelets`, `rdft/scalar/r2cf`, `r2cb` and `r2r` codelets
+  (230 files) and the hand-written `kernel/`, `dft/`, `rdft/` and `api/`
+  (179 files).
+- KissFFT, GitHub `mborgerding/kissfft` at `e5e3fac`.
+- pocketfft, GitHub `mreineck/pocketfft`: the C version on `master` at
+  `81d171a` and the C++ header on `cpp` at `c90e55b`.
+- PFFFT, the author's Bitbucket repository at `0aec032`, with the FFTPACK
+  translation it bundles.
+- CMSIS-DSP, the vendored sources plus upstream's cfft / rfft / radix /
+  bit-reversal sources at the pinned `918014f`. The vendored files are
+  byte-identical to upstream.
+
+Numerical Recipes was not downloaded (its licence forbids it). `four1`,
+`realft` and `twofft` were compared as the book describes them, from the
+auditor's knowledge.
+
+**Method.**
+
+- **Signature greps in both directions:** each library's characteristic
+  identifiers, macros, constants and comment phrases.
+- **A MOSS-style token scan:** comments stripped; k-gram coverage and
+  winnowed containment.
+  - *normalized* mode, every identifier and literal replaced, at
+    k = 15 / 20 / 25;
+  - *raw* mode, identifiers kept, at k = 8 / 12.
+- **Calibration of the scan** (coverage at normalized k = 20 / raw k = 12):
+  - Ooura's `fftsg.c` against the port that transliterated it scores
+    96 % / 95 %;
+  - PFFFT against the FFTPACK it rewrote into SIMD macros scores
+    9 % / 8 %;
+  - independent pairs (KissFFT against pocketfft, pocketfft against
+    `fftsg.c`) score 0–3 % / 0 %;
+  - DspTap's non-FFT headers against the FFT files score up to 11 % / 2 %.
+- **A structural side-by-side** of each engine against its closest
+  comparators: decomposition, loops, twiddles, bit reversal, leaves and the
+  real pass.
+
+The scan did not flag the post-pass pair that #42 item 5 records as
+statement-for-statement Ooura's. Its operands are spelled differently. A
+low score therefore rules out copied text, not paraphrase, which is what
+the structural reading is for.
+
+**Results.** Against every comparator, the raw scan covers at most 1.0 %
+of any DspTap FFT file at k = 12, and at most 0.7 % of `srdif.h` and
+`fixed_point.h` at k = 8. That is below the same-author baseline. Three
+normalized hits exceed the baseline, and each was read:
+
+- `fixed_point.h` against PFFFT (22 %) and CMSIS (13 %): runs of
+  `x = f(a, b);`. The trait calls `work::add(…)` normalize like
+  `VADD(…)` and `vaddq(…)`, but the operands differ.
+- `tables.h` against pocketfft C (23 %): the octant symmetry fill (below).
+- `srdif.h` against FFTW codelets (5 %): generic loads and complex
+  products.
+
+No comparator-characteristic identifier occurs in the engines. None of the
+following appears:
+
+- FFTW's `KP…` constants, `FMA` / `FNMS` macros and `E` / `R` types;
+- KissFFT's `C_MUL` and `super_twiddles`;
+- FFTPACK's `ido`, `cc`, `ch` and `wa`;
+- CMSIS's `CoefA` / `CoefB`;
+- Numerical Recipes' `wpr`, `wpi`, `wtemp` and `h1r` … `h2i`.
+
+**Verdict per comparator.**
+
+- **FFTW: not derived.**
+  - FFTW is a planner over genfft-generated straight-line codelets, with
+    halfcomplex or r2c layouts and real Cooley–Tukey steps (`hc2hc`,
+    `hc2c`).
+  - It has no half-length complex transform with a post-pass, and no bit
+    reversal.
+  - Shared are only the multiplication by i through a temporary (srdif
+    `fill_kernel_table`, `kernel/trig.c` `real_cexp`) and the split-radix
+    operation count of a 16-point leaf (144 + 24, the algorithm's).
+- **KissFFT: not derived.**
+  - KissFFT is a mixed-radix decimation-in-time recursion.
+  - Its real pass is `kiss_fftr`'s sum and difference with a halving,
+    not one folded coefficient.
+  - It has different twiddles and no packed DC / Nyquist.
+- **pocketfft: not derived.**
+  - pocketfft uses FFTPACK-style Stockham passes and a native real radix,
+    with no post-pass.
+  - Its twiddles come from a floating minimax polynomial for cos − 1 and a
+    √n table.
+  - The one textual parallel is forced by the mathematics. `tables.h`
+    (`make_twiddle_table`, `:120-124`) and `calc_first_half` both write
+    `table[2k] = table[2j + 1]; table[2k + 1] = table[2j];`: the identity
+    W^(q−k) = i·conj W^k in an interleaved table. The loop control differs.
+- **PFFFT: not derived.** Its scalar path is FFTPACK's real radix; its
+  ordered output layout (DC at [0], Nyquist at [1]) is a convention, not
+  code.
+- **CMSIS-DSP: not derived.** It is the same pipeline family
+  (half-length CFFT, bit reversal, split pass; for Q31, radix-4 DIF with
+  per-stage scaling). The kernels differ:
+  - f32: radix-8 with table bit reversal;
+  - q31: truncating shifts, a twiddle-outer loop and a separate last stage;
+  - the split pass: per bin, with A and B tables and four products per
+    component.
+
+  Two details are forced by the mathematics, not taken from CMSIS:
+  - the radix-2² output placement, which a radix-4 DIF followed by plain
+    bit reversal requires;
+  - the ½(1 − sin θ, ±cos θ) coefficient, the ½-folded twiddle of either
+    sign convention.
+
+  `backends/cmsis.h` and `backends/accelerate.h` wrap the vendor APIs and
+  copy nothing.
+- **Numerical Recipes (knowledge only): not derived, as far as such a
+  comparison reaches.** NR's `four1` is a radix-2 decimation in time with
+  the trigonometric recurrence; `realft` uses the h1 / h2 sum-difference
+  form. Shared are:
+  - the reverse-carry idea behind srdif's small-M permutation, differently
+    expressed (Gold and Rader, cited);
+  - the half-length method;
+  - the output contract (exp(+i), DC / Nyquist in the first pair, N/2
+    round-trip gain), which DspTap kept from the pre-#42 contract.
+
+**What the comparison supports.** No passage in DspTap's FFT engines is
+statement-for-statement close to FFTW, KissFFT, pocketfft, PFFFT, CMSIS-DSP
+or, as far as can be judged without its text, Numerical Recipes. The shared
+elements are textbook-forced formulas and idioms and contract conventions.
+The one statement-for-statement parallel in DspTap's FFT remains the real
+post-pass pair against Ooura's `rftfsub` / `rftbsub` (item 5 above).
+
+**Not covered:** older releases; libraries without public source (vDSP,
+IPP); smaller libraries (FFTS, muFFT, meow_fft, djbfft); and the text of
+Numerical Recipes.
+
 ### Consumer follow-ups
 
 Ride the pin bumps; none is DspTap's to make. Line numbers below were read
@@ -1845,6 +2788,48 @@ from MuTap `origin/main` `0f6a7f0` and MuTap-Max `origin/main` `8850144` on
 2026-09-23 (`git show origin/main:<path>`); re-verify against the tree each
 bump starts from.
 
+- **After tap/DspTap#42 (the srdif engine): MuTap re-measures and rewrites
+  its notices; MuTap-Max follows through MuTap.** Read from MuTap
+  `origin/main` `eb773e9` and MuTap-Max `origin/main` `4cfcca3` on
+  2026-09-26.
+  - Output bits. Every floating output moves (double on every build, float
+    wherever the portable engine runs: MuTap's linux, Windows, macOS — MuTap
+    forces vDSP off — M33, Hexagon and M55 split-radix legs; the M55 CMSIS
+    leg's float path is unchanged, its double path is not). The fingerprint
+    gate (tap/MuTap#64) re-records all nine legs from one CI run with its
+    artifact procedure (`scripts/fingerprints.sh record`, the
+    `fingerprints-<leg>` artifacts); MuTap's own instruction-count baselines
+    on its portable-engine keys move with them. The float numbers
+    `docs/itu-compliance.md` certifies "on Ooura" (its glossary: the
+    vendored C at DspTap ≤ `5ca3b1c` and the bit-identical port from the
+    Stage 2b SHA) are re-measured on the srdif engine, and the glossary gains
+    the bump's DspTap SHA as the point from which they are srdif numbers.
+  - ABI tag and backend string. `.github/workflows/ci.yml` lines 276, 327
+    and 406 assert `backend=split_radix abi=fft_split_radix` in the
+    `m55-split-radix`, `m33` and `hexagon` fingerprint logs; after the bump
+    the harness prints `backend=srdif abi=fft_srdif` (the capi's backend
+    string and `k_real_fft_abi_tag`), so the three lines change with it.
+    `include/mutap/fft.h`'s range `static_assert`s hold unchanged (4 … 2^30
+    for the portable engine); its comments naming `tap/dsp/fft/split_radix.h`
+    and `fft_split_radix` (lines 11, 51, 59, 71, 131), and the same in
+    `fdaf.h:40` and `fd_kalman.h:20`, are re-pointed at `fft/srdif.h` and
+    `fft_srdif`.
+  - Notices and prose. `THIRD_PARTY_NOTICES.md` lines 13–72 name the port as
+    what compiles into every consumer; after the bump nothing derived from
+    the package does, and the section becomes `NOTICE.md`'s history (the
+    port until DspTap #42, the fixed-point transcription #27 … #38, the
+    readme and `LICENSES/LicenseRef-Ooura.txt` kept as the license record
+    for older pins). Likewise `README.md` lines 40–42 and 393–394,
+    `CMakeLists.txt` lines 9–12, `HANDOFF.md:45`, `ci.yml` comments at lines
+    34 and 240, and `docs/optimization.md:16` (as history). MuTap-Max:
+    `THIRD_PARTY_NOTICES.md` lines 16–39 and 169, `README.md` lines 159–174,
+    `CMakeLists.txt:77` and both externals' `CMakeLists.txt:23` describe the
+    port as compiled in; rewritten at its re-pin past MuTap's bump. No code
+    change there: MuTap-Max names no engine (grepped).
+  - Memory. The srdif engine holds 1.73–1.82× the port's heap per object,
+    in one allocation (N = 2048: 7,312 B float, 14,624 B double; the
+    formula is in `fft.h`); a consumer with many FFT objects re-checks its
+    budget. `sizeof(basic_real_fft)` is 40 B on LP64 (72 B before).
 - **After tap/DspTap#40 (D4 expiry, D5): nothing to change.** Neither
   removed API is used by MuTap or MuTap-Max (grepped at MuTap `origin/main`,
   MuTap `edf160e` and MuTap-Max `origin/main`; MuTap builds against the tree
@@ -1973,47 +2958,56 @@ bump starts from.
 
 ### The bit-identity record after D6
 
+History since tap/DspTap#42, which deleted the port together with the pins
+this subsection records (`17db855`). The srdif engine's own pins are
+`tests/test_fft_srdif_fingerprint.cpp` / `tests/support/srdif_fingerprints.h`:
+one row for every compiler and target CI runs, because its tables come from
+integer arithmetic
+("The floating engine (srdif)"). The record is kept because consumers pinned
+the trees it describes (DspTap `0db95b6`, #36, through the base of #42,
+`7a58ebe`), and the pins and the recipe at the end are how anyone re-checks
+such a tree; the files it names are read there with `git show 7a58ebe:<path>`.
+
 The parity gate (`tests/test_fft_parity_ooura.cpp`, with an informational
 default-flags twin) ran from Stage 2a (tap/DspTap#28) through Stage 4
 (tap/DspTap#35) on the three hosts and the four QEMU legs, memcmp identity
 between the engine and the reference C at `-ffp-contract=off`. D6 retired it
-with the C. What holds D10 since is `tests/test_fft_split_radix_fingerprint.cpp`
-(own target, `-ffp-contract=off`, MSVC at its default `/fp:precise`): FNV-1a-64
-folds over the IEEE bit patterns of `detail::split_radix_rdft`'s outputs,
-forward and inverse, for `double` and `float`, at every power of two from 4 to
-65536 (the QEMU legs stop at 4096, `TAP_DSP_TEST_MAX_FFT_N`), over four
-libm-free materials; procedure and pins in
-`tests/support/split_radix_fingerprints.h`. Every power of two, not a sample
-of them: Ooura's dispatch branches on N (`cftf040` / `cftb040` at 8,
+with the C. What held D10 from D6 until #42 was
+`tests/test_fft_split_radix_fingerprint.cpp` (own target, `-ffp-contract=off`,
+MSVC at its default `/fp:precise`): FNV-1a-64 folds over the IEEE bit patterns
+of `detail::split_radix_rdft`'s outputs, forward and inverse, for `double` and
+`float`, at every power of two from 4 to 65536 (the QEMU legs stop at 4096,
+`TAP_DSP_TEST_MAX_FFT_N`), over four libm-free materials; procedure and pins
+in `tests/support/split_radix_fingerprints.h`. Every power of two, not a
+sample of them: Ooura's dispatch branched on N (`cftf040` / `cftb040` at 8,
 `cftf161` and `bitrv216` at 32, `cftfx41` at 64 and 128, the odd-log4 halves
 of `bitrv2` / `bitrv2conj`, `cftleaf`'s 512-point leaf at odd powers ≥ 2048),
-and the first version of this test, at five even powers, left about 480
-lines of the engine unexecuted (gcov) and passed a real rounding change in
-`cftf161` (`y10r = wn4r * (x0r - x0i)` rewritten as
-`wn4r * x0r - wn4r * x0i`) that the full set catches in ten cells (review of
-tap/DspTap#36).
+and the first version of this test, at five even powers, left about 480 lines
+of the engine unexecuted (gcov) and passed a real rounding change in `cftf161`
+(`y10r = wn4r * (x0r - x0i)` rewritten as `wn4r * x0r - wn4r * x0i`) that the
+full set catches in ten cells (review of tap/DspTap#36).
 
-**The invariant: the float row.** `split_radix.h` has no precision-specific
-branch (no `if constexpr`, no `is_same`): every kernel statement is the same
-template code for both precisions. The `float` instantiation rounds each
+**The invariant: the float row.** `split_radix.h` had no precision-specific
+branch (no `if constexpr`, no `is_same`): every kernel statement was the same
+template code for both precisions. The `float` instantiation rounded each
 double libm result to float, and on every configuration measured that
-absorbed the libm differences, so `float` is one value everywhere — glibc
+absorbed the libm differences, so `float` was one value everywhere — glibc
 under both CPU dispatches, newlib with and without a double-precision FPU,
-the UCRT, Apple's libm, g++ and clang. A float pin that moves is therefore
+the UCRT, Apple's libm, g++ and clang. A float pin that moved was therefore
 always a change to the engine's arithmetic. `double` also agrees everywhere
 up to N = 64 — not because those twiddles are exact (only N = 4 reads none;
 N = 16 already reads cos π/4, ½ cos π/8 and ½ sin π/8) but because every libm
 measured rounds them alike; it first differs at N = 128.
 
-**Why the double rows are per C library build.** The engine builds its
+**Why the double rows were per C library build.** The port built its
 tables from libm's `cos` / `sin` / `atan` exactly as `fftsg.c` does (D10), so
 a last-bit libm difference moves the `double` outputs — and moved the C's
 identically. A row identifies a libm *build including its run-time
 dispatch*: x86-64 glibc selects FMA/AVX2 or SSE2 implementations of
 `sin` / `cos` / `atan` by CPU, and the two differ from N = 8192 up, so glibc
 is a pair of rows, not one value (a pre-Haswell machine, or a VM that masks
-AVX2/FMA, takes the SSE2 row). A run passes when every cell equals one row,
-and prints which; the linux CI job runs the test a second time under
+AVX2/FMA, takes the SSE2 row). A run passed when every cell equalled one row,
+and printed which; the linux CI job ran the test a second time under
 `GLIBC_TUNABLES=glibc.cpu.hwcaps=-AVX2,-FMA` and checks that each run matched
 its row, so both are exercised on every run. The rows are keyed on the
 macros that identify the libm (`__GLIBC__` and `__x86_64__`; `__NEWLIB__`,
@@ -2079,8 +3073,9 @@ instantiation made the way `fftsg_float.c` made it, reproduces both glibc
 rows (default and under the tunable above) and the float row at all fifteen
 sizes.
 
-**Re-verifying against upstream, if it is ever needed** (a pin moves, a new
-platform, a doubt):
+**Re-verifying a pre-#42 tree against upstream, if it is ever needed** (a
+consumer pinned to such a tree meets a new platform, or a doubt). Not for
+the srdif engine, which has no upstream:
 
 1. Download `fft.tgz` from Ooura's published page (currently
    `https://www.kurims.kyoto-u.ac.jp/~ooura/fft.tgz`; the 2001 address in the
@@ -2099,7 +3094,8 @@ platform, a doubt):
    function around `#include "fftsg.c"`, as `fftsg_float.c` did (`git show
    6f6f77f:tests/reference/ooura/fftsg_float.c`, blob
    `8640dea39184851d1cb23e0cf298227805c55d33`).
-3. Run `tap::dsp::test::fingerprint_of` (the support header) over a thin
+3. Run `tap::dsp::test::fingerprint_of` (the support header, `git show
+   7a58ebe:tests/support/split_radix_fingerprints.h`) over a thin
    adapter that calls `rdft` / `rdft_f` with `ip[0] = 0` on the first call
    and the workspace geometry `readme.txt` prescribes (the adapter the
    parity gate had: `git show 6f6f77f:tests/test_fft_parity_ooura.cpp`),
@@ -2128,50 +3124,66 @@ modified derivative is not expressly granted.
 Until Stage 2c DspTap shipped one source file of the package, `fftsg.c`, plus
 its `readme.txt`; from 2c until D6 it shipped `readme.txt` and carried
 `fftsg.c` outside the shipping tree, under `tests/reference/ooura/`, for the
-parity gate; since D6 it carries `readme.txt` alone. The reference `fftsg.c`
-was textually identical to the 2006-12-28 `fft.tgz` except for a provenance
-banner Tap added at the top (the upstream file carries no notice of its own;
-the notice lives in `readme.txt`) and stripped trailing whitespace (checked
-at D6 against a fresh download; hashes in "The bit-identity record after
-D6"). That was a partial copy of the original package with the notice
-attached, not a modified transform; the maintainer's reading was that it was
-within the intent of the distribution grant, and the draft email below puts
-the question to the author. With the copy gone, only the derivative question
-below remains.
+parity gate; since D6 it carries `readme.txt` alone (with
+`LICENSES/LicenseRef-Ooura.txt`, the notice in the REUSE layout). The
+reference `fftsg.c` was textually identical to the 2006-12-28 `fft.tgz` except
+for a provenance banner Tap added at the top (the upstream file carries no
+notice of its own; the notice lives in `readme.txt`) and stripped trailing
+whitespace (checked at D6 against a fresh download; hashes in "The
+bit-identity record after D6"). That was a partial copy of the original
+package with the notice attached, not a modified transform; the maintainer's
+reading was that it was within the intent of the distribution grant, and the
+draft email below was to put the question to the author (never sent; below).
+With the copy gone, only the derivative question below remained, until #42
+removed that too.
 
-What ships, the C++20 port of `rdft`, is a **derivative work, not the
-ORIGINAL package**, and its redistribution relies on the **modification grant**
-("modify this code for any purpose"). Precedent exists but is not relied on:
+What shipped from Stage 2b (tap/DspTap#31) until tap/DspTap#42, the C++20
+port of `rdft`, was a **derivative work, not the ORIGINAL package**, and its
+redistribution relied on the **modification grant** ("modify this code for
+any purpose"). Precedent exists but is not relied on:
 WebRTC/Chromium ship a modified `fft4g.c` under
 `common_audio/third_party/ooura/`, and their `LICENSE` quotes a broader
 notice — "You may use, copy, modify and distribute this code for any purpose
 (include commercial use) and without fee. Please refer to this package when
 you modify this code." — that is not in the `fft.tgz` readme. DspTap has not
 traced the origin of that text and does not rely on it; whether it is the
-author's, and applies to `fftsg.c`, is the most useful question the draft
-email asks. None of those projects relicense the derived code, and neither
-does DspTap: the port header carries Ooura's notice verbatim as the governing
+author's, and applies to `fftsg.c`, was the most useful question the draft
+email asked. None of those projects relicense the derived code, and neither
+did DspTap: the port header carried Ooura's notice verbatim as the governing
 terms for the derived portion, with SPDX `LicenseRef-Ooura AND MIT` (MIT only
 for the wrapper and DspTap's additions), and a line stating that it is a
 derivative work with the modifications copyright and date.
 `third_party/ooura/readme.txt` stays at that path permanently as the license
-record for the derived code; `fftsg.c` moved to the test reference tree at
+record for the trees that carried derived code (every DspTap tree from Stage
+2a, #28, to the base of #42, `7a58ebe`; and from #27 until #39 the
+fixed-point transcription too); `fftsg.c` moved to the test reference tree at
 Stage 2c (with `fftsg_float.c`, for the float half of the gate) and was
 deleted at D6. "permissive" and "public" — the words the earlier notice
 used — overstated the grant and are not used.
+
+**Since tap/DspTap#42** the question the grant had to answer does not arise
+for what ships: in the maintainer's judgement (`NOTICE.md`), DspTap ships no
+code derived from the package (the port was deleted at #42, "The floating
+engine, replaced clean-room"; the fixed-point transcription was re-derived
+at #39). The analysis above stays because consumers pinned trees that carry
+the port, and for those trees it is still the statement. The maintainer
+decided on 2026-09-26 to replace the derived code rather than to ask the
+author; the draft email below was never sent.
 
 This is a maintainer judgement call, not legal advice.
 
 ### The port header's banner
 
 Landed verbatim in `include/tap/dsp/fft/split_radix.h` at Stage 2a
-(tap/DspTap#28), plus one line naming the modifications and their date. The
-four house lines come first (STYLE.md §3: `@file`, `@brief`, SPDX,
-copyright), with both copyright holders as lines 4–5, then a `//` prose block
-carrying the notice verbatim and the derivative statement. The prose block is
-a **documented exception** to the three-line house banner; the wave-2 port PR
-tags it as such under "Notes for the reviewer" so its tidy reviewer expects
-it. The banner names no path that changes: `readme.txt`'s path is fixed by D6.
+(tap/DspTap#28), plus one line naming the modifications and their date, and
+deleted with the header at tap/DspTap#42 (`17db855`); recorded here as what
+the trees from #28 to `7a58ebe` carry. The four house lines came first
+(STYLE.md §3: `@file`, `@brief`, SPDX, copyright), with both copyright
+holders as lines 4–5, then a `//` prose block carrying the notice verbatim
+and the derivative statement. The prose block was a **documented exception**
+to the three-line house banner; the wave-2 port PR tagged it as such under
+"Notes for the reviewer" so its tidy reviewer expected it. The banner names
+no path that changes: `readme.txt`'s path is fixed by D6.
 
 ```cpp
 /// @file split_radix.h
@@ -2201,8 +3213,19 @@ it. The banner names no path that changes: `readme.txt`'s path is fixed by D6.
 `Copyright:` block of `third_party/ooura/readme.txt` (lines 140–145), which
 `LICENSES/LicenseRef-Ooura.txt` reproduces verbatim in the REUSE layout so the
 reference resolves to a file; that is also why the readme stays in-tree.
+Since #42 no file DspTap ships carries the identifier; the two files stay as
+the license record for the trees that do (`NOTICE.md`).
 
-### Draft email to the author — for the maintainer to send
+### Draft email to the author (not sent; superseded by the replacement, 2026-09-26)
+
+**Resolution (2026-09-26): not sent.** The maintainer decided to remove the
+derived code instead of asking the author for a statement on derivative
+distribution: #39 re-derived the fixed-point post-pass and tap/DspTap#42
+replaced the port ("The floating engine, replaced clean-room"), so no
+derivative remains in what DspTap ships and the question has no subject.
+Nothing was ever sent, by the maintainer or on the maintainer's behalf. The
+draft stays below as the record of what would have been asked; `NOTICE.md`
+records the resolution.
 
 Per audit Part 5, the maintainer decides whether to ask the author for an
 explicit statement on derivative distribution; the decision and any outcome
@@ -2253,8 +3276,8 @@ the `fft2d` readme), then `ooura@mmm.t.u-tokyo.ac.jp` (the address in the
 > Timothy Place
 > https://github.com/tap/DspTap
 
-**Outcome:** recorded in `NOTICE.md` (sent on / not sent because; reply / no
-reply by date), not here. As of Stage 2c: not yet attempted.
+**Outcome:** not sent; superseded by the replacement of the derived code
+(maintainer decision, 2026-09-26; `NOTICE.md`).
 
 ## Changelog of contract-affecting SHAs
 
@@ -2262,7 +3285,8 @@ Every SHA that moves a documented contract point, per profile, with the
 consumer pins that were re-measured. The port (Stage 2b) was designed to add
 *no* numeric row here for `double` or `float`, and it added none: its row
 records the engine change and the deprecation, with every consumer pin
-byte-identical.
+byte-identical. tap/DspTap#42 is the first row that moves floating output
+bits.
 
 | SHA | Stage | Profile(s) | What moved | Consumer pins re-measured |
 |---|---|---|---|---|
@@ -2274,3 +3298,4 @@ byte-identical.
 | tap/DspTap#41 | final audit A1–A4 | `float` (the CMSIS build); `log_mel`, `pvoc` | **no output bit**. Build: `TAP_DSP_FFT_CMSIS` defaults ON only where the compiler targets MVE-F (`__ARM_FEATURE_MVE & 2`) — for a consumer's non-Helium bare-metal Arm toolchain (Cortex-M7, M33, …, and Cortex-A / R) that previously defaulted ON, the float engine moves from CMSIS-DSP to split-radix: size range 32 … 4096 → 4 … 2^30, ABI tag `fft_cmsis` → `fft_split_radix`; unchanged for every in-tree leg and for MuTap's M55 (measured). Contract points: `basic_log_mel<Sample>::supports_geometry` (valid() AND the engine's size predicate) is the constructor's `@pre`; `basic_pvoc<Sample>`'s range is derived, `[max(64, engine min), min(2^28, engine max)]` (float 64 … 4096 under CMSIS, 64 … 2^20 under vDSP), with `k_min_size` / `k_max_size` / `supports_size`; the capi's `log_mel` / `pvoc` create and setters gate on them. The narrowing is only where release builds were already undefined behaviour. Documentation: no fault is promised out of range (measured wrong output, or heap corruption at N = 4); `int` is Q31 on the hosts and under clang, not under arm-none-eabi-gcc | none needed (MuTap `0385ea9` / MuTap-Max `4cfcca3` read: nothing changes for them; "Consumer follow-ups") |
 | tap/DspTap#36 | D6 | none numerically | **no output bit and no contract point**: the reference C (`tests/reference/ooura/`), its declaration header and the parity gate with its informational twin are deleted; `tests/test_fft_split_radix_fingerprint.cpp` pins the engine's output bits at every power of two from 4 to 65536 (one float row; double per C library build, glibc as an FMA/SSE2 dispatch pair), measured equal to the C's on every leg ("The bit-identity record after D6"); nothing under `include/` changes but comments; the test-only cache variable `TAP_DSP_PARITY_MAX_N` is renamed `TAP_DSP_TEST_MAX_FFT_N` | none needed (no shipping code changed; icount ratchet expected +0.00 % on every key) |
 | tap/DspTap#40 | D4 expiry, D5 | `double`, `float` | **API break, no output bit**: `forward(const float*, float*)` / `inverse(const float*, float*)` on the double engine are deleted (D5; they allocated per call and were not `noexcept`), and `basic_real_fft<float \| double, scaling::fixed>` is a `static_assert` naming the one-argument form (D4 expiry; `detail::floating_engine_of` deleted). Every remaining spelling instantiates the same types as before, so no instruction a consumer can still write changes other than assertion line numbers (`TAP_EXPECTS` `__LINE__` immediates at `-O0` without `NDEBUG`: fft.h's line numbers moved; objects byte-identical to `ddadb74` at `-O2`/`-O3`/`-Os` on g++, clang, M33, M55 and M4, review of #40); the class now fails with the D4 message alone (error-recovery `engine`), pinned by the `fft_compile_fail.*` ctests | **consumers verified unaffected**: no use of either API in MuTap `origin/main`, MuTap `edf160e` (MuTap-Max's pin) or MuTap-Max `origin/main` (`git grep`); MuTap at both SHAs builds against this tree with `-DMUTAP_WERROR=ON`; no pin to re-measure |
+| tap/DspTap#42 | the floating engine replaced | `double`, `float` (the portable engine: every build for `double`; `float` wherever no backend is selected — linux, Windows, the M4 / M4F / M33 legs, the M55 with `TAP_DSP_FFT_CMSIS=OFF`, any build with the backends off); `log_mel`, `pvoc` and every consumer class through them | **output bits change** for `double` and `float` on the portable engine: `detail::split_radix_rdft` (the port of Ooura's `rdft`, `fft/split_radix.h`, deleted) → `detail::srdif_rdft` (`fft/srdif.h`, written clean-room), at the error level of either engine (rms vs a quad-precision reference 4–14 % lower from N = 128; the misses are in "The floating engine (srdif)"). vDSP (macOS) and CMSIS (M55) float paths unchanged. ABI tag `fft_split_radix` → `fft_srdif` (mangled names of `basic_real_fft`, `basic_pvoc`, `basic_log_mel` and every tagged embedder change; images built against the two trees do not coalesce); the capi's `dsptap_fft_backend()` returns `"srdif"` for `"split_radix"`. Unchanged: packing, sign, scale, size range 4 … 2^30, shareability, `noexcept` / allocation-free transforms, the API. Output bits are now one fingerprint row for every compiler and target CI runs at `-ffp-contract=off` (no libm); heap per object 1.73–1.82× in one allocation (`fft.h` states the formula; `sizeof(basic_real_fft)` 72 → 40 B on LP64); float icount −2.2 … −7.9 % on the four portable-engine keys (re-recorded) and MinSizeRel float `.text` −11 … −22 kB (ceilings re-recorded); host x86-64, same-machine A/B (informational): `-O3` float +0.5 … +5.9 %, double −3.4 … +3.6 %; `-march=native` float −9 … −18 %, double −7.5 … +3.5 %. Accuracy: no cell worse in the mean (review A's paired A/B). Provenance: in the maintainer's judgement DspTap ships no code derived from Ooura's package (`NOTICE.md`) | **every consumer re-measures** its floating pins once: MuTap's fingerprint gate (tap/MuTap#64) re-records all nine legs from one CI run with its artifact procedure, its ABI / backend assertions (`backend=split_radix abi=fft_split_radix` → `backend=srdif abi=fft_srdif`) and certified float numbers follow, and its notices drop the port ("Consumer follow-ups"); MuTap-Max via MuTap (notices only) |

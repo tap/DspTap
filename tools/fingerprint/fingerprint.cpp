@@ -42,7 +42,7 @@
 // float lines while pvoc.h's own change, alone, did not. The move depends on
 // the TU's contents: appending ~30 lines that hash raw basic_real_fft output
 // made main and head identical again, and disassembly locates the difference
-// in split_radix_rdft::cftrec4 / cftleaf inlining (float and double codegen
+// in the floating engine's inlining (float and double codegen
 // both moved), not in pvoc. The same A/B was identical on all sixteen lines
 // with linux g++ 13 at its default x86-64 flags (-O3, and -O0), g++ -O2
 // -march=x86-64-v3, g++ -O3 -march=x86-64-v3 -ffp-contract=off, clang++ 18

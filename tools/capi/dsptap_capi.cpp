@@ -250,7 +250,7 @@ namespace {
     // (TAP_EXPECTS, a debug assertion that a noexcept C entry point could not turn into NULL
     // and that evaluates to nothing in a release build), so this call is the release-mode
     // check the header names as mandatory wherever N comes from outside: the floating
-    // profiles' range is the selected engine's (split-radix 4 … 2^30, vDSP 4 … 2^20, CMSIS
+    // profiles' range is the selected engine's (srdif 4 … 2^30, vDSP 4 … 2^20, CMSIS
     // 32 … 4096), the fixed-point profiles' 4 … 65536.
     template <typename Impl>
     dsptap_fft_s* make_fft_if_supported(int size) {
@@ -374,11 +374,11 @@ const char* dsptap_fft_backend(void) DSPTAP_NOEXCEPT {
 #elif defined(TAP_DSP_FFT_CMSIS)
     return "cmsis";
 #else
-    // The C++20 split-radix engine (fft/split_radix.h): what basic_real_fft<float>
-    // runs where no backend is selected. Named "ooura" until Stage 2c, when the
-    // vendored C it is bit-identical to left the shipping tree; the engine
-    // is named for what it is (Decision D7), the notices carry the attribution.
-    return "split_radix";
+    // The srdif engine (fft/srdif.h): what basic_real_fft<float> runs where no
+    // backend is selected. The string names the engine (Decision D7): it was
+    // "split_radix" for the engine srdif replaced (until tap/DspTap#42), and
+    // "ooura" before Stage 2c.
+    return "srdif";
 #endif
 }
 
@@ -555,7 +555,7 @@ int dsptap_psola_process(dsptap_psola h, const double* in, double* out, int n, d
 dsptap_pvoc dsptap_pvoc_create(int fft_size) DSPTAP_NOEXCEPT {
     // pvoc.h's @pre, as the class states it: a power of two in [k_min_size, k_max_size], the
     // class's own [64, 2^28] intersected with its FFT engine's range (for this double profile,
-    // split-radix on every build, the intersection is [64, 2^28]).
+    // srdif on every build, the intersection is [64, 2^28]).
     if (fft_size <= 0 || !tap::dsp::pvoc::supports_size(static_cast<std::size_t>(fft_size))) {
         return nullptr;
     }
@@ -622,7 +622,7 @@ dsptap_log_mel dsptap_log_mel_create(double sample_rate, int frame, int hop, int
     g.window      = sqrt_window != 0 ? tap::dsp::mel_window::sqrt_hann : tap::dsp::mel_window::hann;
     g.preemphasis = preemphasis;
     // log_mel.h's @pre: valid() and the FFT engine's size range (for this double profile,
-    // split-radix on every build, 4 … 2^30).
+    // srdif on every build, 4 … 2^30).
     if (!tap::dsp::log_mel::supports_geometry(g)) {
         return nullptr;
     }

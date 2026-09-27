@@ -48,7 +48,7 @@ namespace {
 
     // The size range is derived from the FFT engine, not stated as a constant:
     // the class's own [64, 2^28] intersected with fft_type's range. Per build:
-    // double 64 … 2^28 everywhere; float 64 … 2^28 on the split-radix engine,
+    // double 64 … 2^28 everywhere; float 64 … 2^28 on the srdif engine,
     // 64 … 2^20 under vDSP (macOS), 64 … 4096 under CMSIS-DSP (the M55 leg,
     // where 8192 — accepted by the pre-change [64, 2^28] — is rejected; 16 is
     // below the class's 64 on every build). supports_size agrees with the

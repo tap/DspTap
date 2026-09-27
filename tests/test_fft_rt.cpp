@@ -22,10 +22,10 @@
 // WHAT THE GUARD SEES AND WHAT IT DOES NOT. It counts C++ allocation
 // functions only. An engine that allocates through malloc/calloc directly, or
 // inside a vendor library (Apple's vDSP on the macOS leg, CMSIS on the M55),
-// is invisible to it. For the split-radix engine (the double profile, and
-// float without a backend, since Stage 2b) the claim is complete: the
-// engine's tables are two std::vectors sized in the constructor, and nothing
-// in a transform touches an allocator. For the backends the guard
+// is invisible to it. For the srdif engine (the double profile, and float
+// without a backend) the claim is complete: the engine's tables are one
+// std::vector built in the constructor, and nothing in a transform touches
+// an allocator. For the backends the guard
 // covers the wrapper's own code and nothing more; a malloc interposer
 // (glibc's __libc_malloc, or DYLD_INTERPOSE) is the tool for the vendor
 // layer and is out of scope here. The self-test CountsAVectorAllocation
@@ -33,8 +33,8 @@
 // that test fails first.
 //
 // The FIRST call after construction is covered as well as a steady-state one:
-// the vendored C built its trig and bit-reversal tables lazily on the first
-// transform (Part 1, item F6), and that initialization had to be
+// the vendored C of the early stages built its trig and bit-reversal tables
+// lazily on the first transform (Part 1, item F6), and that initialization had to be
 // allocation-free too, because the first transform a consumer runs is very
 // often on the audio thread already. The engine builds its tables in the
 // constructor (Part 4; routed at Stage 2b); this test is indifferent to where
@@ -79,7 +79,7 @@
 
 #include "support/signals.h"
 #include "tap/dsp/fft.h"
-#include "tap/dsp/fft/split_radix.h"
+#include "tap/dsp/fft/srdif.h"
 
 // ----------------------------------------------------------------------------
 // Counting replacements for the replaceable global allocation functions
@@ -93,14 +93,17 @@
 namespace {
 
     std::atomic<std::size_t> allocation_count{0};
+    std::atomic<std::size_t> allocated_bytes{0}; // requested, summed
 
     void* counted_malloc(std::size_t n) {
         allocation_count.fetch_add(1, std::memory_order_relaxed);
+        allocated_bytes.fetch_add(n, std::memory_order_relaxed);
         return std::malloc(n == 0 ? 1 : n);
     }
 
     void* counted_aligned_malloc(std::size_t n, std::size_t alignment) {
         allocation_count.fetch_add(1, std::memory_order_relaxed);
+        allocated_bytes.fetch_add(n, std::memory_order_relaxed);
         const std::size_t slack = alignment + sizeof(void*);
         void* const       raw   = std::malloc(n + slack);
         if (raw == nullptr) {
@@ -272,7 +275,7 @@ namespace {
 
     // ------------------------------------------------------------------------
     // k_is_shareable, per instantiation, as the header states it (Stage 4):
-    // the split-radix engine and Q31 true, the two scratch-carrying
+    // the srdif engine and Q31 true, the two scratch-carrying
     // accelerated engines and Q15 false. The float default's value follows
     // the engine the build selected, so it is derived, not spelled.
     // ------------------------------------------------------------------------
@@ -283,7 +286,7 @@ namespace {
             return true;
         }
         else if constexpr (std::is_same_v<sample, float>) {
-            return std::is_same_v<typename Fft::engine, tap::dsp::detail::split_radix_rdft<float>>;
+            return std::is_same_v<typename Fft::engine, tap::dsp::detail::srdif_rdft<float>>;
         }
         else {
             return std::is_same_v<sample, std::int32_t>; // Q31 true, Q15 false
@@ -318,13 +321,18 @@ namespace {
     class allocation_guard {
       public:
         allocation_guard() noexcept
-            : m_start(allocation_count.load(std::memory_order_relaxed)) {}
+            : m_start(allocation_count.load(std::memory_order_relaxed))
+            , m_start_bytes(allocated_bytes.load(std::memory_order_relaxed)) {}
         std::size_t allocations_since() const noexcept {
             return allocation_count.load(std::memory_order_relaxed) - m_start;
+        }
+        std::size_t bytes_since() const noexcept {
+            return allocated_bytes.load(std::memory_order_relaxed) - m_start_bytes;
         }
 
       private:
         std::size_t m_start;
+        std::size_t m_start_bytes;
     };
 
     constexpr std::size_t k_guarded_sizes[] = {512, 4096};
@@ -412,6 +420,65 @@ namespace {
             expect_no_allocation<TypeParam>(
                 n, "inverse", [](TypeParam& fft, const sample* in, sample* out) { (void)fft.inverse(in, out); });
         }
+    }
+
+    // ------------------------------------------------------------------------
+    // The srdif engine's heap per object (fft.h, the engine's range entry):
+    // one allocation of sizeof(Sample) x (N/2 for N <= 32, 44 at N = 64, 112
+    // at N = 128, 7N/8 + 36 from N = 256) bytes, and nothing else allocated
+    // during construction (no temporary, no second table).
+    //
+    // The contract number is the element storage; what the standard library's
+    // std::allocator adds on top is excluded, and the guard, which counts the
+    // bytes operator new is asked for, sees it. One library adds any: MSVC's
+    // STL on x86 / x64 over-allocates every request of at least 4096 bytes
+    // (_Big_allocation_threshold) by sizeof(void*) + 31 bytes (two pointers
+    // + 31 in a _DEBUG build) to align big blocks to 32 bytes by hand
+    // (_Allocate_manually_vector_aligned): 39 bytes on x64 release, so float
+    // 7,312 -> 7,351 B at N = 2048 and 14,480 -> 14,519 at 4096, double
+    // 14,624 -> 14,663 and 28,960 -> 28,999; every smaller pin, and every
+    // other library, is exact.
+    // ------------------------------------------------------------------------
+    constexpr std::size_t std_allocator_overhead(std::size_t bytes) noexcept {
+#if defined(_MSVC_STL_VERSION) && (defined(_M_IX86) || defined(_M_X64)) && !defined(_M_ARM64EC)
+#ifdef _DEBUG
+        return bytes >= 4096 ? 2 * sizeof(void*) + 31 : 0;
+#else
+        return bytes >= 4096 ? sizeof(void*) + 31 : 0;
+#endif
+#else
+        (void)bytes;
+        return 0;
+#endif
+    }
+
+    template <typename Sample>
+    void expect_srdif_heap_is_the_formula() {
+        struct pin {
+            std::size_t n;
+            std::size_t samples;
+        };
+        constexpr pin k_pins[] = {{4, 2},     {32, 16},   {64, 44},     {128, 112},
+                                  {256, 260}, {512, 484}, {2048, 1828}, {4096, 3620}};
+        for (const pin& p : k_pins) {
+            const std::size_t bytes = sizeof(Sample) * p.samples;
+            EXPECT_EQ(tap::dsp::detail::srdif_rdft<Sample>::heap_bytes(p.n), bytes) << "N=" << p.n;
+            allocation_guard guard;
+            {
+                const tap::dsp::detail::srdif_rdft<Sample> engine(p.n);
+                EXPECT_EQ(guard.allocations_since(), 1u) << "N=" << p.n;
+                EXPECT_EQ(guard.bytes_since(), bytes + std_allocator_overhead(bytes)) << "N=" << p.n;
+                EXPECT_EQ(engine.size(), p.n);
+            }
+        }
+    }
+
+    TEST(fft_rt_srdif, FloatHeapIsOneAllocationOfTheStatedSize) {
+        expect_srdif_heap_is_the_formula<float>();
+    }
+
+    TEST(fft_rt_srdif, DoubleHeapIsOneAllocationOfTheStatedSize) {
+        expect_srdif_heap_is_the_formula<double>();
     }
 
     // ------------------------------------------------------------------------

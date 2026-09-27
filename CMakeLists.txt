@@ -7,9 +7,9 @@ project(DspTap VERSION 0.1.0 LANGUAGES C CXX)
 # DspTap — shared DSP primitives for the Tap family of audio libraries.
 #
 # Header-only C++20 (include/tap/dsp/): the real FFT in four profiles — the
-# C++20 split-radix engine for double and float (fft/split_radix.h, the
-# transliteration of Ooura's rdft that replaced the vendored C at Stage 2b and
-# is bit-identical to it), the int32 fixed-point kernel for Q15 and Q31
+# srdif engine for double and float (fft/srdif.h: a split-radix
+# decimation-in-frequency kernel of length N/2 and the real post-pass,
+# written from the literature), the int32 fixed-point kernel for Q15 and Q31
 # (fft/fixed_point.h) — with optional, mutually-exclusive float32 backends
 # (CMSIS-DSP Helium on the Cortex-M55, Apple vDSP on macOS) that re-present
 # the same numeric contract; plus the pitch, wake-word, inference and FIR
@@ -17,9 +17,12 @@ project(DspTap VERSION 0.1.0 LANGUAGES C CXX)
 #
 # tap::dsp is a pure INTERFACE target. Since Stage 2c
 # (docs/audit-fft-and-code-smells.md, Part 3; Decision D6) no vendored C is
-# compiled into what ships; the reference copy of Ooura's fftsg.c that the
-# parity gate in tests/ compiled was deleted at D6, and third_party/ooura/
-# readme.txt stays as the license record for the derived engine.
+# compiled into what ships, and since tap/DspTap#42 no code derived from
+# Ooura's FFT package is either, in the maintainer's judgement (NOTICE.md;
+# the srdif engine replaced the C++20 port of its rdft).
+# third_party/ooura/readme.txt and LICENSES/LicenseRef-Ooura.txt stay as the
+# license record for the older trees: from #28 to #42's base they carry that
+# port, earlier ones the C itself (NOTICE.md).
 # The one compiled (static) library, tap_dsp_fft, exists only when
 # TAP_DSP_FFT_CMSIS is ON and carries the CMSIS-DSP objects (below).
 # ==============================================================================
@@ -40,16 +43,17 @@ target_compile_features(tap_dsp INTERFACE cxx_std_20)
 # ------------------------------------------------------------------------------
 # Helium (Cortex-M55 MVE) FFT backend. When ON, the float32 real FFT in
 # include/tap/dsp/fft.h routes through the vendored CMSIS-DSP subset
-# (third_party/cmsis-dsp, Apache-2.0) instead of the split-radix engine —
-# measured 1.8-2.0x fewer instructions over the whole ratchet scenario on the
-# M55 (bench/README.md). Double is untouched (always the split-radix engine),
+# (third_party/cmsis-dsp, Apache-2.0) instead of the srdif engine —
+# measured 1.6-1.8x fewer instructions over the whole ratchet scenario on the
+# M55 (bench/README.md). Double is untouched (always the srdif engine),
 # so the double-precision golden model is unaffected; on the float32 embedded
 # path CMSIS agrees with the engine to single-precision rounding (not
 # bit-identical). This is the one case in which tap::dsp links a compiled
 # library: tap_dsp_fft (alias tap::dsp_fft), PIC so MODULE/SHARED consumers
 # (host applications, Max externals) can link it, carrying the CMSIS objects
-# and nothing else. Until Stage 2c the same target also carried the vendored
-# Ooura C on every platform; it does not exist at all without this option now.
+# and nothing else. Until Stage 2c the same target also carried a vendored
+# C transform on every platform; it does not exist at all without this
+# option now.
 #
 # Default: ON exactly when the target compiler provides floating-point Helium
 # (MVE-F) — the Cortex-M55 / M85 class — and OFF everywhere else: desktop, the
@@ -74,7 +78,7 @@ target_compile_features(tap_dsp INTERFACE cxx_std_20)
 # same in both, as every toolchain here does), not CMAKE_CXX_FLAGS_<CONFIG>,
 # not per-target or per-directory options, and not the caller's
 # CMAKE_REQUIRED_* (the check resets them). Flags it cannot see leave the
-# default OFF: the split-radix engine is correct on every target, so a missed
+# default OFF: the srdif engine is correct on every target, so a missed
 # detection costs speed, never the contract. It re-runs on every configure
 # (its cached result is cleared first), so a re-configure with different
 # flags re-detects. An explicit -DTAP_DSP_FFT_CMSIS=ON / OFF always wins — and,
@@ -121,7 +125,7 @@ if(TAP_DSP_FFT_CMSIS)
         message(WARNING
             "TAP_DSP_FFT_CMSIS=ON but the compiler does not target floating-point "
             "Helium (__ARM_FEATURE_MVE & 2): CMSIS-DSP compiles its non-Helium C and "
-            "the float FFT's size range is 32 … 4096 (split-radix: 4 … 2^30).")
+            "the float FFT's size range is 32 … 4096 (srdif: 4 … 2^30).")
     endif()
     file(GLOB _tap_dsp_cmsis_src CONFIGURE_DEPENDS
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cmsis-dsp/Source/*/*.c)
@@ -152,15 +156,16 @@ endif()
 
 # ------------------------------------------------------------------------------
 # Apple vDSP (Accelerate) FFT backend. When ON, the float32 real FFT in
-# include/tap/dsp/fft.h routes through Apple's vDSP instead of the split-radix
-# engine — measured ~3x faster per transform than the clang-autovectorized C
-# on Apple Silicon (MuTap's transform-only figure; the same-binary comparison
-# is Stage 4). Double is untouched (always the split-radix engine), so the
+# include/tap/dsp/fft.h routes through Apple's vDSP instead of the srdif
+# engine — measured ~3x faster per transform than the clang-autovectorized
+# engine the library carried before on Apple Silicon (MuTap's transform-only
+# figure; the same-binary comparison is Stage 4). Double is untouched (always
+# the srdif engine), so the
 # double-precision golden model is unaffected; on the float32 path vDSP agrees
 # with the engine to single-precision rounding (not bit-identical). Default ON
 # for Apple, OFF everywhere else; it is mutually exclusive with the CMSIS
 # backend. No compiled library: the framework is linked on the INTERFACE.
-# Force the split-radix engine with -DTAP_DSP_FFT_ACCELERATE=OFF.
+# Force the srdif engine with -DTAP_DSP_FFT_ACCELERATE=OFF.
 # ------------------------------------------------------------------------------
 if(APPLE AND NOT TAP_DSP_FFT_CMSIS)
     set(_tap_dsp_fft_accel_default ON)

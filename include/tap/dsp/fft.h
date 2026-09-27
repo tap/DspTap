@@ -4,23 +4,25 @@
 // Copyright 2025-2026 Timothy Place and the DspTap contributors.
 //
 // Extracted from the Tap family DSP libraries (MuTap's adaptive-filtering FFT
-// and AmbiTap's binaural convolution FFT), which each carried a byte-identical
-// copy of the vendored Ooura transform under a diverging wrapper. This is the
-// consolidated wrapper: one numeric contract (Ooura's, carried since Stage 2b
-// by the bit-identical C++20 port), one place to add a faster engine. See
-// README.md for the provenance and migration notes.
+// and AmbiTap's binaural convolution FFT), which each carried a copy of the
+// same vendored transform under a diverging wrapper. This is the
+// consolidated wrapper: one numeric contract (packing, sign and scale are the
+// ones those libraries shipped with), one place to add a faster engine. See
+// README.md for the migration notes.
 //
 // Four profiles share the contract (packing, exp(+i), unnormalized inverse):
 // double (the golden model) and float (the embedded floating profile) run an
 // ENGINE that is a template parameter of the class (Stage 4 of
-// docs/audit-fft-and-code-smells.md, Decision D4): the split-radix engine in
-// fft/split_radix.h, the C++20 transliteration of Ooura's rdft that Stage 2a
-// landed bit-identical to the vendored C, is the default for double always
-// and for float unless the build selected an accelerated engine
-// (fft/backends/cmsis.h on the Cortex-M55, fft/backends/accelerate.h on
-// Apple). std::int16_t (Q15) and std::int32_t (Q31) run the int32
-// fixed-point kernel in fft/fixed_point.h, whose transforms return an
-// exponent in place of a floating scale (Stage 3b).
+// docs/audit-fft-and-code-smells.md, Decision D4): the srdif engine in
+// fft/srdif.h (a split-radix decimation-in-frequency kernel of length N/2
+// and the real post-pass, written from the literature) is the default for
+// double always and for float unless the build selected an accelerated
+// engine (fft/backends/cmsis.h on the Cortex-M55, fft/backends/accelerate.h
+// on Apple). Until it replaced it, the floating profiles ran a port of a
+// third-party split-radix engine at the same contract (docs/fft-design.md,
+// "The floating engine (srdif)"). std::int16_t (Q15) and std::int32_t (Q31)
+// run the int32 fixed-point kernel in fft/fixed_point.h, whose transforms
+// return an exponent in place of a floating scale (Stage 3b).
 
 #pragma once
 
@@ -34,23 +36,20 @@
 
 #include "tap/dsp/detail/expects.h"
 #include "tap/dsp/fft/fixed_point.h"
-#include "tap/dsp/fft/split_radix.h"
+#include "tap/dsp/fft/srdif.h"
 
-// Header-only. No vendored C is compiled into what ships: the split-radix
-// engine replaced Ooura's rdft at Stage 2b, and Stage 2c moved the C out of
-// the shipping tree (docs/audit-fft-and-code-smells.md, Part 3); Decision D6
-// then deleted the reference copy the bit-identity gate compiled, and the
-// engine's identity to the C is pinned since as output fingerprints
-// (tests/test_fft_split_radix_fingerprint.cpp). tap::dsp is a pure INTERFACE
-// target unless TAP_DSP_FFT_CMSIS is on, in which case it links the CMSIS-DSP
-// objects (root CMakeLists.txt).
+// Header-only. No vendored C is compiled into what ships (since Stage 2c,
+// docs/audit-fft-and-code-smells.md, Part 3). The srdif engine's output bits
+// are pinned as output fingerprints (tests/test_fft_srdif_fingerprint.cpp).
+// tap::dsp is a pure INTERFACE target unless TAP_DSP_FFT_CMSIS is on, in
+// which case it links the CMSIS-DSP objects (root CMakeLists.txt).
 
 // ----------------------------------------------------------------------------
 // THE ONE PLACE the build selects the float default engine and, with it, the
 // ABI tag (Stage 4). AT MOST ONE of the two defines may be set (they are
 // mutually exclusive), and each applies ONLY to float — double always defaults
-// to the split-radix engine, the golden model, so the double-precision
-// reference battery is unaffected:
+// to the srdif engine, the golden model, so the double-precision reference
+// battery is unaffected:
 //   TAP_DSP_FFT_CMSIS       CMSIS-DSP Helium on the bare-metal Cortex-M55
 //                           (fft/backends/cmsis.h; N = 32 … 4096 only).
 //                           The root CMakeLists.txt defaults it ON only when
@@ -58,20 +57,20 @@
 //                           (__ARM_FEATURE_MVE & 2), OFF otherwise.
 //   TAP_DSP_FFT_ACCELERATE  Apple's vDSP (Accelerate) on macOS
 //                           (fft/backends/accelerate.h)
-// Each accelerated engine re-presents the split-radix engine's EXACT numeric
-// contract (Ooura's: same packed layout, exp(+i) sign convention,
-// unnormalized inverse), so every intermediate spectrum matches the default
-// build to float epsilon and the whole float32 test battery stays a valid
-// oracle (tests/test_fft_backend.cpp, typed over the engines the host can
-// build). Against the vendored C, to which the split-radix engine is
-// bit-identical: on the M55 icount key the C executes 1.81x (N = 512) /
-// 1.97x (N = 2048) the instructions of the CMSIS build over the whole
-// ratchet scenario (bench/README.md, run 35844483811); the "~3x faster on
-// Apple Silicon" figure is MuTap's transform-only measurement on the C
-// (tap/MuTap#31), not re-measured here (docs/fft-design.md).
+// Each accelerated engine re-presents the srdif engine's EXACT numeric
+// contract (same packed layout, exp(+i) sign convention, unnormalized
+// inverse), so every intermediate spectrum matches the default build to
+// float epsilon and the whole float32 test battery stays a valid oracle
+// (tests/test_fft_backend.cpp, typed over the engines the host can build).
+// On the M55 icount keys the srdif engine executes 1.65x (N = 512) / 1.82x
+// (N = 2048) the instructions of the CMSIS build over the whole ratchet
+// scenario (bench/README.md); the "~3x faster on Apple Silicon" figure for
+// vDSP is MuTap's transform-only measurement against the engine the
+// library carried before (tap/MuTap#31), not re-measured here
+// (docs/fft-design.md).
 //
 // TAP_DSP_FFT_ABI names the inline namespace this header opens on tap::dsp
-// (below) from the selection: fft_split_radix, fft_cmsis or fft_vdsp. The
+// (below) from the selection: fft_srdif, fft_cmsis or fft_vdsp. The
 // selection is visible in the mangled name of every class defined inside it,
 // which is the point — see "The ABI tag" in the class docstring.
 // ----------------------------------------------------------------------------
@@ -87,8 +86,8 @@
 #define TAP_DSP_FFT_ABI fft_vdsp
 #define TAP_DSP_FFT_ABI_NAME "fft_vdsp"
 #else
-#define TAP_DSP_FFT_ABI fft_split_radix
-#define TAP_DSP_FFT_ABI_NAME "fft_split_radix"
+#define TAP_DSP_FFT_ABI fft_srdif
+#define TAP_DSP_FFT_ABI_NAME "fft_srdif"
 #endif
 
 namespace tap::dsp {
@@ -99,7 +98,7 @@ namespace tap::dsp {
     /// floating engines, the exponent for the fixed-point one), size(), and
     /// three contract numbers — the supported size range, as the bounds of a
     /// power-of-two interval, and whether one object may be transformed
-    /// through by two threads at once. Satisfied by detail::split_radix_rdft,
+    /// through by two threads at once. Satisfied by detail::srdif_rdft,
     /// detail::accelerate_real_fft_f32, detail::cmsis_real_fft_f32 and
     /// detail::fixed_point_rdft.
     template <typename Engine, typename Sample>
@@ -116,12 +115,12 @@ namespace tap::dsp {
     namespace detail {
 
         /// The engine a floating profile runs when the caller names none:
-        /// the split-radix engine, except float under one of the two build
+        /// the srdif engine, except float under one of the two build
         /// defines above. Specialized in exactly one place (here); every
         /// other header reads it through default_real_fft_engine_t.
         template <std::floating_point Sample>
         struct default_real_fft_engine {
-            using type = split_radix_rdft<Sample>;
+            using type = srdif_rdft<Sample>;
         };
 #if defined(TAP_DSP_FFT_CMSIS)
         template <>
@@ -138,7 +137,7 @@ namespace tap::dsp {
     } // namespace detail
 
     /// The engine basic_real_fft<Sample> (one argument) runs for a floating
-    /// Sample in this build: detail::split_radix_rdft<Sample>, or for float
+    /// Sample in this build: detail::srdif_rdft<Sample>, or for float
     /// the accelerated engine the build selected (the block above).
     template <std::floating_point Sample>
     using default_real_fft_engine_t = typename detail::default_real_fft_engine<Sample>::type;
@@ -173,7 +172,7 @@ namespace tap::dsp {
 // the class docstring below has the full statement).
 namespace tap::dsp::inline TAP_DSP_FFT_ABI {
 
-    /// The tag this translation unit was built under, as text ("fft_split_radix",
+    /// The tag this translation unit was built under, as text ("fft_srdif",
     /// "fft_cmsis" or "fft_vdsp"); the tests pin it against the build define.
     inline constexpr const char* k_real_fft_abi_tag = TAP_DSP_FFT_ABI_NAME;
 
@@ -188,8 +187,8 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     /// Two parameter lists in one (Stage 4, Decision D4). The second
     /// parameter means "engine" for a floating Sample and "scaling policy"
     /// for a fixed-point one: basic_real_fft<double> and <float> (the
-    /// selected engine), basic_real_fft<float, detail::split_radix_rdft<float>>
-    /// (an engine named explicitly — on a macOS or M55 build, the split-radix
+    /// selected engine), basic_real_fft<float, detail::srdif_rdft<float>>
+    /// (an engine named explicitly — on a macOS or M55 build, the srdif
     /// engine beside the accelerated default in the same binary, which is
     /// what makes engine parity a test rather than a CI-matrix property),
     /// basic_real_fft<std::int16_t> / <std::int32_t, scaling::block_floating>
@@ -229,9 +228,10 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///     with no fault at all; N = 4 returns a wrong spectrum and corrupts
     ///     the heap, so a later call fails somewhere else (a HardFault after
     ///     the transform in one probe, newlib's "Balloc succeeded" assertion
-    ///     in the next printf in another). On the host the
-    ///     split-radix engine at N = 12 reads past the caller's buffer
-    ///     (ASan). There is deliberately no defined fallback in the
+    ///     in the next printf in another). On the host the srdif engine
+    ///     at N = 12 writes past the caller's buffer in its permutation
+    ///     (ASan). There is
+    ///     deliberately no defined fallback in the
     ///     transforms. supports_size is therefore the MANDATORY gate wherever
     ///     N comes from configuration rather than a constant: the capi's
     ///     dsptap_fft_create applies it per profile; the config-driven classes
@@ -240,11 +240,20 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///     on those; a consumer's config path must (docs/fft-design.md,
     ///     "MuTap bump checklist"). `SupportsSizeIsThePowerOfTwoInterval` pins the
     ///     predicate on every leg. Per engine:
-    ///       split-radix (double, float)   4 … 2^30  (the int-indexing bound
-    ///                                     of Ooura's arithmetic; bit identity
-    ///                                     to the C was gated to 2^20 until
-    ///                                     D6 and is fingerprinted to 65536,
-    ///                                     the oracle sweeps to 65536)
+    ///       srdif (double, float)         4 … 2^30  (the output is
+    ///                                     fingerprinted and the oracle
+    ///                                     sweeps to 65536, the battery
+    ///                                     constructs up to 2^20). Heap per
+    ///                                     object, one allocation:
+    ///                                     sizeof(Sample) x (N/2 for
+    ///                                     N <= 32, 44 at N = 64, 112 at
+    ///                                     N = 128, 7N/8 + 36 from N = 256)
+    ///                                     bytes (srdif_rdft::heap_bytes;
+    ///                                     float 7,312 B at N = 2048): the
+    ///                                     element storage, the allocator's
+    ///                                     own bookkeeping excluded (MSVC's
+    ///                                     STL adds 39 B to a request of
+    ///                                     4 KiB or more on x64)
     ///       vDSP (float, Apple)           4 … 2^20  (fft/backends/accelerate.h)
     ///       CMSIS-DSP (float, Cortex-M55) 32 … 4096 (CMSIS's own table; below
     ///                                     32 or above 4096 the library's init
@@ -255,8 +264,8 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///     `EngineRangesAreTheStatedNumbers`, `SupportsSizeIsThePowerOfTwoInterval`,
     ///     `ConstructsAtTheRangeBounds` (tests/test_fft_engine.cpp).
     ///   - k_is_shareable: whether two threads may run transforms through ONE
-    ///     object concurrently. True for the split-radix engine (its tables
-    ///     are built in the constructor and its transforms are const) and for
+    ///     object concurrently. True for the srdif engine (its tables are
+    ///     built in the constructor and its transforms are const) and for
     ///     Q31 (no mutable state during a transform); false for the two
     ///     accelerated engines (per-object scratch) and for Q15 (the int32
     ///     work buffer behind the in-place int16 API). Shareable IMPLIES
@@ -287,7 +296,7 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     /// between the two builds (the argument is in the mangled name). The
     /// embedders' do not, which is what the tag is for: fft.h, pvoc.h and
     /// log_mel.h define those classes inside `inline namespace
-    /// TAP_DSP_FFT_ABI` (fft_split_radix / fft_cmsis / fft_vdsp), so their
+    /// TAP_DSP_FFT_ABI` (fft_srdif / fft_cmsis / fft_vdsp), so their
     /// mangled names carry the selection and the loader sees two unrelated
     /// symbols. Measured with arm-none-eabi-nm on one translation unit built
     /// twice for the M55 (docs/fft-design.md, "Stage 4"). What the tag does
@@ -305,38 +314,37 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     /// (MuTap: a follow-up on its bump, recorded in the design note).
     ///
     /// Routing (Stage 2b, generalized at Stage 4):
-    ///   - double  -> detail::split_radix_rdft<double> (fft/split_radix.h) by
-    ///                default. The golden model.
-    ///   - float   -> detail::split_radix_rdft<float> by default, unless the
-    ///                build defines TAP_DSP_FFT_CMSIS (CMSIS-DSP Helium,
-    ///                bare-metal Cortex-M55) or TAP_DSP_FFT_ACCELERATE (Apple
-    ///                vDSP), in which case the default is that engine, which
+    ///   - double  -> detail::srdif_rdft<double> (fft/srdif.h) by default.
+    ///                The golden model.
+    ///   - float   -> detail::srdif_rdft<float> by default, unless the build
+    ///                defines TAP_DSP_FFT_CMSIS (CMSIS-DSP Helium, bare-metal
+    ///                Cortex-M55) or TAP_DSP_FFT_ACCELERATE (Apple vDSP), in
+    ///                which case the default is that engine, which
     ///                re-presents the same contract to float epsilon
     ///                (tests/test_fft_backend.cpp, typed over the engines the
     ///                host can build — same-binary on macOS).
     ///   - Q15/Q31 -> detail::fixed_point_rdft (the specialization below).
-    /// The split-radix engine is the C++20 transliteration of Ooura's rdft
-    /// and is BIT-IDENTICAL to the C it replaced for both precisions
-    /// (Decision D10: gated against the reference C from Stage 2a until D6
-    /// deleted it, pinned since by tests/test_fft_split_radix_fingerprint.cpp),
-    /// so the flip changed no output bit of any consumer built at default
-    /// fp-contraction (measured on every CI platform) or with clang and FMA;
-    /// the one measured exception is a g++ x86-64 build with -march (FMA),
-    /// which moves the float profile's last bits at N >= 1024 (the
-    /// fp-contraction policy below, D9). tests/test_fft_routing.cpp pins
-    /// that this class's output is byte-identical to the engine's, for the
-    /// split-radix engine on every build (named explicitly) and for whatever
-    /// the default resolves to.
+    /// The srdif engine's output bits are pinned at every power of two 4 …
+    /// 65536 in both precisions (tests/test_fft_srdif_fingerprint.cpp, one
+    /// row for every compiler and target CI runs: its tables come from
+    /// integer arithmetic, not libm). Replacing the engine it succeeded
+    /// changed every consumer's output bits, at the error level of either
+    /// engine (fft/srdif.h has the accuracy against a quad-precision
+    /// reference). tests/test_fft_routing.cpp pins that this class's output
+    /// is byte-identical to the engine's, for the srdif engine on every build
+    /// (named explicitly) and for whatever the default resolves to.
     ///
     /// FFT size must be a power of 2 inside the engine's range (above), fixed
-    /// at construction. Workspace (bit-reversal and trig tables) is allocated
-    /// AND BUILT in the constructor (the vendored C built its tables lazily
-    /// on the first transform; the engine does not, audit item F6), so the
-    /// first transform costs what every later one costs; the transforms
-    /// themselves are noexcept and allocation-free, so they are safe on a
-    /// real-time audio thread (tests/test_fft_rt.cpp). No alignment
-    /// requirement on the data pointer. NaN propagates to every bin (no
-    /// data-dependent branches). Latency 0. Copyable, and a copy is
+    /// at construction. Workspace (the engine's tables: for the srdif engine
+    /// one allocation of post-pass coefficients and kernel twiddles, the
+    /// bit reversal needing none; the backends' and the fixed-point engine's
+    /// their own) is allocated AND BUILT in the constructor (the vendored C
+    /// of the early stages built its tables lazily on the first transform;
+    /// audit item F6), so the first transform costs what every later one
+    /// costs; the transforms themselves are noexcept and allocation-free, so
+    /// they are safe on a real-time audio thread (tests/test_fft_rt.cpp). No
+    /// alignment requirement on the data pointer. NaN propagates to every bin
+    /// (no data-dependent branches). Latency 0. Copyable, and a copy is
     /// bit-identical to its source; the object is held by value in every
     /// consumer.
     ///
@@ -355,86 +363,66 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     /// The raw inverse is unnormalized: inverse_inplace() must be followed by
     /// a 2/N scaling for a round trip, which inverse() applies for you.
     ///
-    /// Noise floor (docs/fft-design.md, contract table; measured 2026-09-23
-    /// on x86-64 Linux, GCC 13.3.0 and Clang 18.1.3 -O3, glibc 2.39, the
-    /// engine as routed here): double against the compensated-summation DFT
-    /// oracle, relative 2-norm error of the forward on full-scale uniform
-    /// noise at N = 256, 1.85e-16, pinned at 4x (7.4e-16) for the libm and
+    /// Noise floor (docs/fft-design.md, contract table; measured 2026-09-26
+    /// on x86-64 Linux, GCC 13.3.0 -O3, the srdif engine): double against
+    /// the compensated-summation DFT oracle, relative 2-norm error of the
+    /// forward on full-scale uniform noise at N = 256, 1.60e-16 (1.85e-16 on
+    /// the engine it replaced, which set the pin), pinned at 7.4e-16 for the
     /// fp-contraction spread across hosts
     /// (`fft_oracle_floor.DoubleForwardTracksCompensatedDft`); float against
-    /// double, same metric at N = 512 on the split-radix engine itself,
-    /// 1.12e-7 (the audit's Part 6 N2 probe value of 1.105e-7, re-measured on
-    /// what ships; the two runs differ in material, not in engine), pinned at
-    /// 2x (2.25e-7) (`RealFftCrossPrecision.FloatEngineTracksDoubleAtN512`),
-    /// and < 1e-6 at N = 1024 through basic_real_fft (`FloatTracksDouble`).
+    /// double, same metric at N = 512 on the srdif engine itself, 9.73e-8
+    /// (1.12e-7 before), pinned at 2.25e-7
+    /// (`RealFftCrossPrecision.FloatEngineTracksDoubleAtN512`), and < 1e-6 at
+    /// N = 1024 through basic_real_fft (`FloatTracksDouble`).
     ///
     /// fp-contraction policy (Decision D9; measurements in docs/fft-design.md,
     /// "The fp-contraction policy"). tap::dsp does NOT export an
     /// -ffp-contract setting to its consumers and this header sets none: the
     /// engine's arithmetic is compiled under whatever contraction the
     /// consumer's compiler applies, alike for every instantiation in that
-    /// build. The bit-identity gate against the reference C ran at
-    /// -ffp-contract=off on both sides (Stage 2a until D6; the fingerprints
-    /// that replaced it are built the same way), and at default flags the
-    /// identity was MEASURED to hold as well on every CI platform (0 ulp on
-    /// linux, windows and macOS arm64 and on the Cortex-M4, M4F, M33 and M55
-    /// legs, three of them VFMA; identical bench checksums between the C and
-    /// the engine on every bench key while the C was built there; MuTap's
-    /// fingerprint rows byte-identical through the flip, float rows
-    /// included, with no flag set anywhere), because the
-    /// engine's statements are textually the C's and each compiler fuses both
-    /// sides alike. That is an observation, not a guarantee: g++ on x86-64
-    /// built with -march (FMA) is measured to fuse the two sides differently
-    /// (float moves by a few ulp at N >= 1024; clang with the same flags is
-    /// identical) and is not claimed. That is the first experiment, the
-    /// engine-vs-reference-C gate (retired at D6): bit-identical at
-    /// -ffp-contract=off on both sides and, at default flags, on every CI
-    /// platform including MSVC and the four QEMU legs.
-    ///
-    /// The second experiment, stronger, measured on tap/DspTap#34 (Stage 6,
-    /// which touches neither fft.h nor fft/), is a fingerprint A/B of pvoc
-    /// and log_mel through this class, main vs branch, run on g++ and on the
-    /// M33 leg and NOT on MSVC or AppleClang: under g++ -O3
-    /// -march=x86-64-v3 at the default -ffp-contract=fast, the output of
-    /// basic_real_fft depends on the TRANSLATION-UNIT CONTEXT, not only on
-    /// the flags — an edit to unrelated code in the same TU (log_mel.h's
-    /// constructor) changed GCC's inlining of cftmdl2 into the split-radix
-    /// engine's cftrec4 / cftleaf (float cftrec4 went from 194 to 168
-    /// vfmadd instructions, double from 224 to 254) and moved pvoc's float
-    /// output bits while every pvoc function was instruction-identical;
-    /// appending ~30 unrelated lines to the TU made the outputs identical
-    /// again. The double codegen moved in that experiment too, so "double
-    /// does not move under g++ with FMA" (the 2b measurement) is an
-    /// observation, not a guarantee.
+    /// build. Without contraction the srdif engine's output bits are a
+    /// function of the source alone — its tables are integer arithmetic,
+    /// its statements IEEE operations in a fixed order — and the
+    /// fingerprint test, built with -ffp-contract=off, pins one row for every
+    /// host and every QEMU leg (tests/test_fft_srdif_fingerprint.cpp). With
+    /// contraction, which GCC applies by default wherever the target has a
+    /// fused multiply-add (the M4F, M33 and M55 legs; Apple arm64 under
+    /// clang within a statement), the complex products may fuse and the last
+    /// bits move, at the error level of the transform and not above it. What
+    /// fuses is also a function of the translation unit, not only of the
+    /// flags: measured on tap/DspTap#34 (Stage 6, on the engine the srdif
+    /// engine replaced), an edit to unrelated code in the same TU changed
+    /// GCC's inlining inside the engine under -O3 -march=x86-64-v3 and moved
+    /// pvoc's float output bits while every pvoc function was
+    /// instruction-identical. So bit identity across builds is claimed at
+    /// -ffp-contract=off only.
     ///
     /// Why no export: an INTERFACE -ffp-contract=off would reach every
     /// consumer translation unit that includes this header and would
     /// pessimize the VFMA / FMA targets the float profile exists for (the
-    /// M55, Apple arm64) for the whole of that code, in exchange for a
-    /// cross-compiler bit reproducibility that libm's last-bit cos/sin
-    /// differences between glibc, newlib, UCRT and Apple already deny across
-    /// hosts. A consumer that needs bit reproducibility across its own
-    /// compilers sets -ffp-contract=off on its own targets; the contract this
-    /// header makes is the one above.
+    /// M55, Apple arm64) for the whole of that code. A consumer that needs
+    /// bit reproducibility across its own compilers sets -ffp-contract=off
+    /// on its own targets; the contract this header makes is the one above.
     ///
     /// Thread rule: one transform at a time per object unless k_is_shareable
     /// (above) says otherwise for the engine in use.
     template <typename Sample, typename Policy = detail::default_real_fft_policy_t<Sample>>
     class basic_real_fft {
         static_assert(std::is_same_v<Sample, float> || std::is_same_v<Sample, double>,
-                      "basic_real_fft supports float and double (split radix, or the engine named) and std::int16_t "
+                      "basic_real_fft supports float and double (the srdif engine, or the engine named) and "
+                      "std::int16_t "
                       "/ std::int32_t (Q15 / Q31)");
 
       public:
         /// The engine this instantiation runs (see the class docstring).
         /// For the pre-Stage-4 spelling (Policy = scaling::fixed, cv-qualified
         /// or not) the static_assert below rejects every instantiation; the
-        /// split-radix engine stands in here only as error recovery, so the
+        /// srdif engine stands in here only as error recovery, so the
         /// rest of the class body stays well-formed and the D4 message is the
         /// one diagnostic (g++ would otherwise cascade through every use of
         /// engine). It is never an engine any program runs.
         static constexpr bool k_is_pre_stage4_spelling = std::is_same_v<std::remove_cv_t<Policy>, scaling::fixed>;
-        using engine = std::conditional_t<k_is_pre_stage4_spelling, detail::split_radix_rdft<Sample>, Policy>;
+        using engine = std::conditional_t<k_is_pre_stage4_spelling, detail::srdif_rdft<Sample>, Policy>;
         static_assert(!k_is_pre_stage4_spelling,
                       "basic_real_fft<float | double, scaling::fixed> is the pre-Stage-4 spelling, removed at the D4 "
                       "expiry: write basic_real_fft<float> / basic_real_fft<double> (real_fft32 / real_fft), or name "
@@ -605,7 +593,7 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///    q31 real FFTs as "downscaled by 2 for every stage", i.e. a forward
     ///    output of X / N with log2 N bits to upscale. The Q15 fixed forward
     ///    here is that same X / N; the Q31 fixed forward is X / 2N, one bit
-    ///    below, because of the pre-shift; the inverse here is Ooura's
+    ///    below, because of the pre-shift; the inverse here is the library's
     ///    unnormalized inverse over 2^e, i.e. (1/N) sum X W^-jk divided by 2
     ///    (Q15) or 4 (Q31), which is not CMSIS's inverse table; block
     ///    floating point has no CMSIS analogue. The exponent, not a fixed
