@@ -2639,6 +2639,148 @@ records as arithmetically the package's. The access statement is the
 implementer's own report. The maintainer's judgement (`NOTICE.md`): since
 #42 DspTap ships no code derived from the package. Not legal advice.
 
+### Comparison with other FFT libraries (2026-09-27)
+
+Review B compared the srdif engine with Ooura's package. A separate
+provenance audit on #42 (at `e2e04f6`) asked whether DspTap's FFT engines
+copy or closely follow any other well-known FFT implementation. It covered
+`fft/srdif.h`, the Q15 / Q31 engine (`fft/fixed_point.h`, `fft/tables.h`,
+`fft/fft_arith.h`), `fft.h`, `fft/spectrum.h` and the two backend
+wrappers. Its full report, with every score and side-by-side, is on #42.
+It is a statement of fact, not legal advice.
+
+**Sources.** All come from official locations:
+
+- FFTW 3.3.10, the release tarball (sha256 `56c93254…e26467`; its md5
+  equals the published `.md5sum`). The scan covered the generated
+  `dft/scalar/codelets`, `rdft/scalar/r2cf`, `r2cb` and `r2r` codelets
+  (230 files) and the hand-written `kernel/`, `dft/`, `rdft/` and `api/`
+  (179 files).
+- KissFFT, GitHub `mborgerding/kissfft` at `e5e3fac`.
+- pocketfft, GitHub `mreineck/pocketfft`: the C version on `master` at
+  `81d171a` and the C++ header on `cpp` at `c90e55b`.
+- PFFFT, the author's Bitbucket repository at `0aec032`, with the FFTPACK
+  translation it bundles.
+- CMSIS-DSP, the vendored sources plus upstream's cfft / rfft / radix /
+  bit-reversal sources at the pinned `918014f`. The vendored files are
+  byte-identical to upstream.
+
+Numerical Recipes was not downloaded (its licence forbids it). `four1`,
+`realft` and `twofft` were compared as the book describes them, from the
+auditor's knowledge.
+
+**Method.**
+
+- **Signature greps in both directions:** each library's characteristic
+  identifiers, macros, constants and comment phrases.
+- **A MOSS-style token scan:** comments stripped; k-gram coverage and
+  winnowed containment.
+  - *normalized* mode, every identifier and literal replaced, at
+    k = 15 / 20 / 25;
+  - *raw* mode, identifiers kept, at k = 8 / 12.
+- **Calibration of the scan** (coverage at normalized k = 20 / raw k = 12):
+  - Ooura's `fftsg.c` against the port that transliterated it scores
+    96 % / 95 %;
+  - PFFFT against the FFTPACK it rewrote into SIMD macros scores
+    9 % / 8 %;
+  - independent pairs (KissFFT against pocketfft, pocketfft against
+    `fftsg.c`) score 0–3 % / 0 %;
+  - DspTap's non-FFT headers against the FFT files score up to 11 % / 2 %.
+- **A structural side-by-side** of each engine against its closest
+  comparators: decomposition, loops, twiddles, bit reversal, leaves and the
+  real pass.
+
+The scan did not flag the post-pass pair that #42 item 5 records as
+statement-for-statement Ooura's. Its operands are spelled differently. A
+low score therefore rules out copied text, not paraphrase, which is what
+the structural reading is for.
+
+**Results.** Against every comparator, the raw scan covers at most 1.0 %
+of any DspTap FFT file at k = 12, and at most 0.7 % of `srdif.h` and
+`fixed_point.h` at k = 8. That is below the same-author baseline. Three
+normalized hits exceed the baseline, and each was read:
+
+- `fixed_point.h` against PFFFT (22 %) and CMSIS (13 %): runs of
+  `x = f(a, b);`. The trait calls `work::add(…)` normalize like
+  `VADD(…)` and `vaddq(…)`, but the operands differ.
+- `tables.h` against pocketfft C (23 %): the octant symmetry fill (below).
+- `srdif.h` against FFTW codelets (5 %): generic loads and complex
+  products.
+
+No comparator-characteristic identifier occurs in the engines. None of the
+following appears:
+
+- FFTW's `KP…` constants, `FMA` / `FNMS` macros and `E` / `R` types;
+- KissFFT's `C_MUL` and `super_twiddles`;
+- FFTPACK's `ido`, `cc`, `ch` and `wa`;
+- CMSIS's `CoefA` / `CoefB`;
+- Numerical Recipes' `wpr`, `wpi`, `wtemp` and `h1r` … `h2i`.
+
+**Verdict per comparator.**
+
+- **FFTW: not derived.**
+  - FFTW is a planner over genfft-generated straight-line codelets, with
+    halfcomplex or r2c layouts and real Cooley–Tukey steps (`hc2hc`,
+    `hc2c`).
+  - It has no half-length complex transform with a post-pass, and no bit
+    reversal.
+  - Shared are only the multiplication by i through a temporary (srdif
+    `fill_kernel_table`, `kernel/trig.c` `real_cexp`) and the split-radix
+    operation count of a 16-point leaf (144 + 24, the algorithm's).
+- **KissFFT: not derived.**
+  - KissFFT is a mixed-radix decimation-in-time recursion.
+  - Its real pass is `kiss_fftr`'s sum and difference with a halving,
+    not one folded coefficient.
+  - It has different twiddles and no packed DC / Nyquist.
+- **pocketfft: not derived.**
+  - pocketfft uses FFTPACK-style Stockham passes and a native real radix,
+    with no post-pass.
+  - Its twiddles come from a floating minimax polynomial for cos − 1 and a
+    √n table.
+  - The one textual parallel is forced by the mathematics. `tables.h`
+    (`make_twiddle_table`, `:120-124`) and `calc_first_half` both write
+    `table[2k] = table[2j + 1]; table[2k + 1] = table[2j];`: the identity
+    W^(q−k) = i·conj W^k in an interleaved table. The loop control differs.
+- **PFFFT: not derived.** Its scalar path is FFTPACK's real radix; its
+  ordered output layout (DC at [0], Nyquist at [1]) is a convention, not
+  code.
+- **CMSIS-DSP: not derived.** It is the same pipeline family
+  (half-length CFFT, bit reversal, split pass; for Q31, radix-4 DIF with
+  per-stage scaling). The kernels differ:
+  - f32: radix-8 with table bit reversal;
+  - q31: truncating shifts, a twiddle-outer loop and a separate last stage;
+  - the split pass: per bin, with A and B tables and four products per
+    component.
+
+  Two details are forced by the mathematics, not taken from CMSIS:
+  - the radix-2² output placement, which a radix-4 DIF followed by plain
+    bit reversal requires;
+  - the ½(1 − sin θ, ±cos θ) coefficient, the ½-folded twiddle of either
+    sign convention.
+
+  `backends/cmsis.h` and `backends/accelerate.h` wrap the vendor APIs and
+  copy nothing.
+- **Numerical Recipes (knowledge only): not derived, as far as such a
+  comparison reaches.** NR's `four1` is a radix-2 decimation in time with
+  the trigonometric recurrence; `realft` uses the h1 / h2 sum-difference
+  form. Shared are:
+  - the reverse-carry idea behind srdif's small-M permutation, differently
+    expressed (Gold and Rader, cited);
+  - the half-length method;
+  - the output contract (exp(+i), DC / Nyquist in the first pair, N/2
+    round-trip gain), which DspTap kept from the pre-#42 contract.
+
+**What the comparison supports.** No passage in DspTap's FFT engines is
+statement-for-statement close to FFTW, KissFFT, pocketfft, PFFFT, CMSIS-DSP
+or, as far as can be judged without its text, Numerical Recipes. The shared
+elements are textbook-forced formulas and idioms and contract conventions.
+The one statement-for-statement parallel in DspTap's FFT remains the real
+post-pass pair against Ooura's `rftfsub` / `rftbsub` (item 5 above).
+
+**Not covered:** older releases; libraries without public source (vDSP,
+IPP); smaller libraries (FFTS, muFFT, meow_fft, djbfft); and the text of
+Numerical Recipes.
+
 ### Consumer follow-ups
 
 Ride the pin bumps; none is DspTap's to make. Line numbers below were read

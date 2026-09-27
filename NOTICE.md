@@ -134,7 +134,11 @@ text:
     the package's `rftfsub` / `rftbsub`.
     `docs/fft-design.md` ("The floating engine, replaced clean-room") records
     the procedure, the access statement and its near misses, and the
-    structural comparison against `fftsg.c` made by #42's provenance review.
+    structural comparison against `fftsg.c` made by #42's provenance review;
+    "Comparison with other FFT libraries (2026-09-27)" there records a
+    further audit against FFTW, KissFFT, pocketfft, PFFFT, CMSIS-DSP and
+    Numerical Recipes (no copying or close following found; not legal
+    advice).
     The maintainer's judgement is that the srdif engine is DspTap's own,
     MIT, and not a derivative of the package.
   - *Which trees carry what* (for a consumer's notices): trees before
