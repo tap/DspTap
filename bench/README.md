@@ -147,6 +147,20 @@ audit Part 3); the outcome is in the table below.
 | `m33` | Cortex-M33, no MVE | `mps2-an505` | srdif engine |
 | `m55` | Cortex-M55, Helium | `mps3-an547` | CMSIS-DSP — the deployed profile |
 | `m55-ooura` | Cortex-M55, `-DTAP_DSP_FFT_CMSIS=OFF` | `mps3-an547` | srdif engine — the fallback (the key keeps the historical name of the vendored C the ratchet was seeded on) |
+| `hexagon` | Hexagon v68 + HVX-128, CodeLinaro clang 19.1.5, static musl | `qemu-hexagon` user mode (8.2.2, built with plugins) | srdif engine; hosted, so `rfft_f64_512` is built and gated too |
+
+The `hexagon` key counts **packets**, not instructions: qemu-hexagon reports
+one guest instruction per VLIW packet (up to four instructions), as the
+per-address profile of the Hexagon tuning pass showed (`docs/fft-design.md`,
+"Hexagon (clang) tuning"). So on that key the ratchet rewards what the
+compiler packs side by side as well as what it executes. The key was added
+when MuTap's Hexagon ratchet found the srdif engine 12–13 % above the port on
+its chain workloads, which no key here had measured. Its counts are
+comparable with MuTap's Hexagon ratchet: same toolchain, flags and QEMU.
+Absolute counts move by a few hundred to about a thousand between machines,
+from the user-mode process environment. The move is constant across
+scenarios on one machine (the CI runner reads 473 below one local machine),
+so compare within a run.
 
 JSON carries no comments, so the provenance of every recorded set lives here,
 in the table below: the `main` run that recorded it, and the GCC and QEMU
@@ -332,7 +346,7 @@ python3 scripts/icount.py --merge a.json b.json    # fold per-key files into one
   regression hide in the slack — the winning commit re-records.
 - **The ratchet runs on every pull request and on every push to `main`**
   on every QEMU leg (one run per ref at a time). A red ratchet is a failing
-  check, not a warning. Once seeded, the five `icount <key>` jobs are the
+  check, not a warning. Once seeded, the six `icount <key>` jobs are the
   required checks; the artifact-merge job never is.
 - **`--update` is a written commit on its own**: the measured before/after per
   key and the reason go into the table above, in its fixed shape. An expected

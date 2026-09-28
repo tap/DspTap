@@ -942,7 +942,7 @@ host.
 The port and its header were deleted at tap/DspTap#42 (hand-off commit
 `17db855`), and the srdif engine that replaced it is not a transliteration
 of anything: its own constraints (statement order under D9, the integer
-table generator, the register leaves) are stated in `fft/srdif.h`. The rules
+table generator, the leaf blocks) are stated in `fft/srdif.h`. The rules
 below applied to the port from Stage 2a (tap/DspTap#28) to #42. They lived
 in the engine header (`include/tap/dsp/fft/split_radix.h`) so the next person
 would not undo them, and are recorded here because they were what the bit
@@ -2840,6 +2840,68 @@ post-pass is the stated exception: it inherits #39's arrangement, which #39
 records as arithmetically the package's. The access statement is the
 implementer's own report. The maintainer's judgement (`NOTICE.md`): since
 #42 DspTap ships no code derived from the package. Not legal advice.
+
+### The Hexagon tuning pass, clean-room (2026-09-28)
+
+After #42 merged, MuTap's Hexagon ratchet (clang 19, v68 + HVX) measured the
+srdif engine 12–13 % above the port on its chain workloads. No DspTap key
+measured Hexagon, so "must not regress" had never been checked there. The
+maintainer chose to tune srdif before the consumer took it. The procedure
+followed #42's:
+
+1. **What the orchestrator did, which had read the port.** It added the
+   `hexagon` bench key (toolchain file, `icount.py` target, `bench.yml` job).
+   It measured the port's Hexagon counts once, from a detached checkout of
+   `7a58ebe` built with the same harness, then deleted that checkout. It also
+   deleted every port build product it had made while diagnosing on Hexagon:
+   a public-API microbenchmark's binary and its disassembly. The implementer
+   received those counts as numbers only, per scenario, plus a per-transform
+   figure from the same microbenchmark.
+2. **The brief.** The implementer was barred from:
+   - every copy of the port and the package, and git history before `17db855`;
+   - the main DspTap clone, the MuTap and MuTap-Max trees (their submodules
+     carry the port), the other worktrees, and the orchestrator's scratch
+     except the brief;
+   - `NOTICE.md` and the audit doc;
+   - every section of this note except the contract, fixed-point,
+     fp-contraction, Stage 4, size/count and srdif sections;
+   - every tap/DspTap and tap/MuTap pull request and review, and every other
+     FFT library's source.
+
+   The brief listed hypotheses to measure, all about the compiler, not about
+   the port: clang ignoring srdif's GCC pragma, inlining boundaries, index
+   arithmetic, the complex-multiply form, and the cost of the permutation.
+3. **Access statement (the implementer's report).** It opened nothing on the
+   list. The one exception: broad `grep`s over this file printed single lines
+   from sections it could not read. These were:
+   - every heading;
+   - three history lines;
+   - line 971 of the transliteration-rules history, which names the port's
+     routines (`makect`, the `bitrv2*` family, `cftfsub` / `cftbsub`, the
+     `cft*` leaves);
+   - a line of the bit-identity record naming `bitrv2` / `bitrv2conj` and the
+     port's 512-point leaf;
+   - lines of the provenance and library-comparison sections describing
+     srdif's own routines and a 16-point leaf's operation count.
+
+   These were names and one-line prose, not code. It reported using none of
+   them. Its history operations were a `git show --stat` of `28befbd` and a
+   `git archive` of it for the baseline builds.
+4. **Result.** "Hexagon (clang) tuning" in "The floating engine (srdif)"
+   records the changes, what was tried and the counts:
+   - forced inlining under clang;
+   - post-pass pairs loaded before either is stored;
+   - blocks of 16 and fewer run one level at a time in memory;
+   - one fused-pass group per loop step for double;
+   - one multiply-subtract form for float.
+
+   Every Hexagon floating scenario ends 3–8 % below the port, and every
+   Cortex-M float key 0.06–1.1 % below #42's baselines. No output bit moved
+   at `-ffp-contract=off`.
+
+   The implementer found that the `hexagon` key counts packets (up to four
+   instructions each), not instructions, so it rewards packing as well as
+   instruction count.
 
 ### Comparison with other FFT libraries (2026-09-27)
 
