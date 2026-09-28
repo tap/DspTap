@@ -1528,7 +1528,7 @@ is the port's (or the vendored C's, where the table says so).
 
 ### `.text` per profile at N = 512
 
-**The srdif engine (tap/DspTap#42; 2026-09-26, local, not yet a CI run).**
+**The srdif engine (tap/DspTap#42; 2026-09-26, local; confirmed by CI on `main`).**
 MinSizeRel float probe (`tap_dsp_size_probe_rfft_f32_512`, `size -A`
 `.text`), arm-none-eabi-gcc 13.2.1 (15:13.2.rel1-2), 2026-09-27 (the tree
 after the fix pass for review A of #42), the port's Stage 2c figure in
@@ -1538,8 +1538,9 @@ longer links libm's double `sin` / `cos` (the tables are integer
 arithmetic), which is most of the 11–22 kB. Ceilings re-recorded to
 measured + 3 %, rounded up to 64 bytes: 32,064 / 29,824 / 29,184 / 29,056 (from
 54,912 / 45,952 / 45,376 / 40,512). The Q15 / Q31 probes and the `m55`
-(CMSIS) probe are unchanged. The confirming CI run is pending
-(`bench/README.md`, "Sizes").
+(CMSIS) probe are unchanged. The push-to-`main` bench run on the #42
+squash, `72977aa` (run 36348787347), measured the same four figures to the
+byte (`bench/README.md`, "Sizes").
 
 **Post-pass re-derivation (2026-09-26; local, not a CI run).** The
 fixed-point post-pass / pre-pass re-derived from the literature (§1),
@@ -1637,8 +1638,9 @@ rdft-reachable text, `--gc-sections`): float 15.7 KB at `-Os`, 19.9 KB at
 
 ### Instructions per scenario
 
-**The srdif engine (tap/DspTap#42; 2026-09-27, local, not yet a CI run; the
-tree after the fix pass for review A of #42).**
+**The srdif engine (tap/DspTap#42; 2026-09-27, local, the tree after the fix
+pass for review A of #42; confirmed to the instruction by the push-to-`main`
+bench run on the #42 squash, `72977aa`, run 36348787347).**
 `scripts/icount.py` as `bench.yml` runs it; the port's baselines → the
 srdif engine's counts:
 
