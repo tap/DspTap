@@ -128,9 +128,9 @@ jobs:
             arch: hexagon
             toolchain: cmake/hexagon-linux-musl.cmake
             flags: ""
-            text_ceiling_f32: 0
-            text_ceiling_q15: 0
-            text_ceiling_q31: 0
+            text_ceiling_f32: 245824
+            text_ceiling_q15: 251968
+            text_ceiling_q31: 251456
     env:
       # Commit the tag pointed at when pinned (tags are movable; commit SHAs
       # are not); the header's digest is verified on download. This SHA is
