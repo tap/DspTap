@@ -40,8 +40,9 @@ asset's contract summary.
   each floor a measured number against the double profile. The floating profiles run the srdif
   engine (`fft/srdif.h`): the N real samples as N/2 complex values, a split-radix
   decimation-in-frequency kernel of length N/2 (fused two-level passes, compile-time blocks of 32
-  and 64, register leaves of 16 and fewer), the bit-reversal permutation and the real post-pass
-  derived for the fixed-point engine (#39), written clean-room from the literature the header cites
+  and 64, one level at a time in memory below that, forced inlining under every clang, tuned on
+  Hexagon), the bit-reversal permutation and the real post-pass derived for the fixed-point engine
+  (#39), written clean-room from the literature the header cites
   (tap/DspTap#42; it replaced, at the same contract, the C++20 port of Ooura's `rdft`,
   `fft/split_radix.h`, that the floating profiles ran from Stage 2b, so DspTap ships no code derived
   from Ooura's package — the maintainer's judgement, `NOTICE.md`). Since Stage 4 the engine is a
@@ -102,7 +103,9 @@ parity suite runs for real. Each leg builds `tap_dsp_tests` one-shot (`tests/bar
 with the `MAIN_FILTER` in `tests/CMakeLists.txt` naming what the emulation budget excludes, plus
 the srdif fingerprints, with every FFT sweep capped at `TAP_DSP_TEST_MAX_FFT_N=4096`. The
 instruction-count ratchet (`bench.yml`, `bench/README.md`) runs the same four cores under five
-baseline keys at ±3 %, with `.text` ceilings per profile; a red ratchet is a failing check. The
+baseline keys at ±3 %, plus a `hexagon` key (clang 19, v68 + HVX, under `qemu-hexagon`; it
+counts packets, not instructions), with `.text` ceilings per profile; a red ratchet is a failing
+check. The
 hosted build and battery need no Arm toolchain; where `gcc-arm-none-eabi` and `qemu-system-arm`
 are installed, `cmake -S . -B build-m33 -DCMAKE_TOOLCHAIN_FILE=cmake/arm-cortex-m33-mps2.cmake`
 reproduces a leg.

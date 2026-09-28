@@ -47,14 +47,15 @@ namespace {
 
     // Sizes small enough for the QEMU legs (Part 10) and wide enough to cross
     // every code path the engine dispatches on (fft/srdif.h, "Structure"):
-    // the kernel of M = N/2 complex values as the register leaves alone
-    // (M = 2, 4, 8, 16: N = 4, 8, 16, 32), the compile-time blocks (M = 32,
-    // 64: N = 64, 128) and the run-time fused pass above them (M >= 128:
-    // N = 256 ... 4096, each fused pass recursing down to the compile-time
-    // blocks), and the post-pass's single-pair (N = 8) and paired-loop
-    // (N >= 16) forms. The certified geometries 512 and 2048 and 4096 (the
-    // largest the emulated legs run) are among them. An engine whose range
-    // excludes a size (CMSIS: 32 … 4096) is checked at the sizes it supports.
+    // the kernel of M = N/2 complex values as the small blocks alone (M = 2,
+    // 4, 8, 16: N = 4, 8, 16, 32; levels in memory down to pairs), the
+    // compile-time blocks (M = 32, 64: N = 64, 128) and the run-time fused
+    // pass above them (M >= 128: N = 256 ... 4096, each fused pass recursing
+    // down to the compile-time blocks), and the post-pass's single-pair
+    // (N = 8) and paired-loop (N >= 16) forms. The certified geometries 512
+    // and 2048 and 4096 (the largest the emulated legs run) are among them.
+    // An engine whose range excludes a size (CMSIS: 32 … 4096) is checked at
+    // the sizes it supports.
     constexpr std::size_t k_sizes[] = {4, 8, 16, 32, 64, 128, 256, 512, 2048, 4096};
 
     template <typename Sample>
