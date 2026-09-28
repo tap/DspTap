@@ -1924,7 +1924,10 @@ the kernel is arranged around that:
   unrolled groups) from their own small tables; blocks of 16 and fewer are
   leaves held in registers through every remaining level. The run-time
   recursion handles l ≥ 128 only, and its groups run two per loop step so
-  the eight row pointers serve both.
+  the eight row pointers serve both. (As #42 shipped it. The Hexagon tuning
+  below replaced the register leaves with one split-radix level at a time in
+  memory down to pairs, and runs the double profile's run-time groups one
+  per step.)
 - **The permutation** keeps no index table: a bit-reversed counter walks
   beside the natural index (the reverse-carry increment of Gold and Rader,
   *Digital Processing of Signals*, 1969: adding one flips an index's
@@ -2290,6 +2293,203 @@ made.
   `ConstructsAtTheRangeBounds`, 2.86e-6 against 3.28e-7 at 2^20;
   `FloatEngineTracksDoubleAtN512`, 2.25e-7 against 9.73e-8 / 1.05e-7;
   `DoubleForwardTracksCompensatedDft`, 7.4e-16 against 1.49–1.70e-16).
+
+
+### Hexagon (clang) tuning
+
+The engine met "must not regress" on every key the ratchet measured at #42,
+all four Cortex-M cores under GCC 13.2. DspTap's main consumer also ships on
+Qualcomm Hexagon (clang 19, v68 with HVX-128), where the srdif engine of
+`72977aa` executed more instructions than the engine it replaced; the bench
+gained a `hexagon` key for it (`cmake/hexagon-linux-musl.cmake`, the
+CodeLinaro clang 19.1.5 toolchain, `-mv68 -mhvx -mhvx-length=128b`, static
+musl, a plugin-enabled `qemu-hexagon` 8.2.2), and the engine was tuned until
+every floating Hexagon scenario is below the predecessor's count, without
+costing any Cortex-M key. Done under the same clean-room rules as the
+engine: from this tree, its own disassembly and counts, and the literature
+the header cites.
+
+**What the Hexagon key counts.** `qemu-hexagon` translates a packet (up to
+four instructions issued together) as one guest instruction, so the plugin
+counts **packets**, not instructions: a per-address profile (a scratch
+plugin, one counter per translated instruction) holds counts at
+packet-start addresses only, and they sum to the ratchet's total. The
+Hexagon count therefore rewards what the scheduler can pack side by side,
+not only what it executes. In the disassembly the float and double
+arithmetic takes two of a packet's four slots at most (with the negations
+and shifts that share them), the loads and stores the other two; a double
+multiply is six instructions (`dfmpyfix` twice, `dfmpyll`, `dfmpylh` twice,
+`dfmpyhh`), a double add one.
+
+**Where the count went at `72977aa`** (`rfft_f32_512`, 57.66 M packets):
+the class's out-of-place copies, which clang compiles to calls of musl's
+`memcpy`, 17.0 M (29 %; 33.7 M of the double scenario's 110.7 M), and the
+harness's fold 6.1 M, both the same for either engine (the fixed-point
+scenarios, which do not run srdif, measure the same on both trees); the
+engine the rest. clang's inliner had kept the butterflies' callers out of
+line: the fused pass called `group<…>` per group, each register leaf went
+through a stack array of values (`leaf_blocks<L>(cv*)`) and a call, and the
+index-sequence lambdas of `block<32 | 64>` and `leaf<L>` were calls. GCC
+inlines differently and the Cortex-M keys had not shown it.
+
+**Measured** with `scripts/icount.py` as `bench.yml` runs it (a fresh
+Release build per key), on one machine, 2026-09-28. Hexagon counts on this
+machine read a constant +1,250 against the machine that measured the
+predecessor, on every scenario including the fixed-point ones, which run the
+same code on both trees; the predecessor column below is that machine's
+count + 1,250. The Cortex-M counts reproduce `bench/baselines.json` exactly.
+
+| key | scenario | `72977aa` | tuned | Δ | predecessor | tuned vs predecessor |
+|---|---|---:|---:|---:|---:|---:|
+| `hexagon` | `rfft_f32_512` | 57,660,946 | 45,936,146 | −20.33 % | 49,734,654 | −7.64 % |
+| `hexagon` | `rfft_f32_2048` | 65,686,018 | 51,610,626 | −21.43 % | 54,836,437 | −5.88 % |
+| `hexagon` | `rfft_f64_512` | 110,685,320 | 99,941,512 | −9.71 % | 103,241,260 | −3.20 % |
+| `m4-softfp` | `rfft_f32_512` | 1,814,303,702 | 1,813,126,102 | −0.06 % | 1,864,929,141 | −2.78 % |
+| `m4-softfp` | `rfft_f32_2048` | 2,243,212,021 | 2,241,935,605 | −0.06 % | 2,294,360,259 | −2.28 % |
+| `m4f` | `rfft_f32_512` | 92,575,609 | 91,545,465 | −1.11 % | 97,138,544 | −5.76 % |
+| `m4f` | `rfft_f32_2048` | 106,282,752 | 105,151,232 | −1.06 % | 111,278,416 | −5.51 % |
+| `m33` | `rfft_f32_512` | 92,979,212 | 92,624,908 | −0.38 % | 100,945,841 | −8.24 % |
+| `m33` | `rfft_f32_2048` | 106,773,786 | 106,248,986 | −0.49 % | 115,465,626 | −7.98 % |
+| `m55-ooura` | `rfft_f32_512` | 83,933,381 | 83,628,229 | −0.36 % | 89,276,321 | −6.33 % |
+| `m55-ooura` | `rfft_f32_2048` | 97,602,563 | 97,109,507 | −0.51 % | 102,784,096 | −5.52 % |
+
+Unchanged, to the instruction: the `m55` key (CMSIS-DSP, 52,382,329 /
+54,858,158) and every fixed-point scenario on every key, Hexagon included
+(159,978,609 / 157,304,960 / 184,892,304 for Q15 512 / Q31 512 / Q31 2048).
+The Cortex-M float baselines are re-recorded to these counts
+(`bench/README.md`); the Hexagon key is seeded from CI. Against CMSIS-DSP
+on the M55 the srdif engine now executes 1.60× (N = 512) / 1.77×
+(N = 2048) the instructions (1.60× / 1.78× before).
+
+**What paid, step by step** (Hexagon, each step on top of the one before;
+`rfft_f32_512` / `rfft_f32_2048` / `rfft_f64_512`, millions of packets):
+
+| step | f32 512 | f32 2048 | f64 512 |
+|---|---:|---:|---:|
+| `72977aa` | 57.66 | 65.69 | 110.69 |
+| clang only: butterflies, groups, leaves, post-pass pairs and swaps forced inline (`TAP_DSP_SRDIF_INLINE`) | 49.67 | 55.24 | 105.83 |
+| post-pass: two bin pairs with every load before any store (`post_two`) | 48.26 | 53.80 | 104.54 |
+| the first level of a block of 16 (and of 8, 4 in double) in memory, register leaves of 8 (float) / 2 (double) | 48.15 | 53.70 | 103.02 |
+| forced inline also the index-sequence lambdas and the compile-time blocks | 46.10 | 51.72 | 100.44 |
+| double: the run-time fused pass one group per loop step | 46.10 | 51.72 | 100.06 |
+| `mul_sub`: `a b − c d` spelled so clang fuses it as a multiply-subtract | 45.88 | 51.58 | 100.09 |
+| no register leaves at all: levels in memory down to pairs, both profiles | 45.94 | 51.61 | 100.08 |
+| `mul_sub`'s split spelling for float only | 45.94 | 51.61 | 99.94 |
+
+Each change measured alone against the final tree (the change undone,
+everything else kept; Hexagon f32 512 / f32 2048 / f64 512, then the
+Cortex-M keys):
+
+- **Forced inlining (clang only).** Without it: 54.13 / 62.12 / 107.12 M
+  (+17.8 / +20.4 / +7.2 %). Forced under GCC as well: `m4f` +9.1 / +6.8 %,
+  `m33` +5.7 / +4.5 %, `m55-ooura` +6.3 / +4.9 % (spills in the larger
+  bodies), `m4-softfp` −0.22 / −0.14 %; so GCC keeps its own choices. Not
+  forced under `-Os` / `-Oz` (`__OPTIMIZE_SIZE__`): forced, the Hexagon
+  MinSizeRel float probe's `.text` grows from 238,628 to 263,204 bytes.
+- **`post_two`.** Pair by pair the compiler cannot move the second pair's
+  loads above the first pair's stores (a store through `pk` may alias a
+  load through `pj` as far as it knows), so the two pairs' arithmetic
+  cannot share packets. Without it: 47.47 / 53.17 / 100.97 M (+3.3 / +3.0 /
+  +1.0 %). The Cortex-M keys pay 0.00 – 0.02 % for it.
+- **Levels in memory down to pairs.** Register leaves of at most 16 / 8 / 4
+  values restored in the final tree: Hexagon 46.10 / 45.88 / 45.89 (f32 512),
+  51.79 / 51.58 / 51.55 (f32 2048), 101.30 / 100.63 / 100.12 (f64), against
+  45.94 / 51.61 / 99.94 for pairs; `m4f` 92.54 / 92.00 / 91.85 and 106.30 /
+  105.83 / 105.58 against 91.55 / 105.15; `m33` and `m55-ooura` 0.3 – 0.5 %
+  below leaves of 8, `m4-softfp` flat. A leaf of 16 holds 32 values: the
+  M4F's whole single-precision register file and all 32 of Hexagon's general
+  registers, of which a double takes two. Pairs cost Hexagon float 0.1 %
+  against its best (leaves of 4 or 8) and are the best everywhere else, in
+  one code path.
+- **One group per step in double.** Two groups per step: 100.32 M (+0.38 %).
+  One per step in float too: 46.16 / 52.12 M (+0.48 / +0.99 %), so float
+  keeps two.
+- **`mul_sub`.** clang contracts within a statement and, on `a * b − c * d`,
+  fuses the left product and negates the right, `fma(a, b, −(c d))`: a
+  separate negation (`togglebit`) in the two slots the float arithmetic
+  needs. `ab − c * d` with `ab` a statement of its own fuses as
+  `fma(−c, d, ab)`, one `Rx −= sfmpy(Rs, Rt)`. Without it: float 46.24 /
+  51.83 M (+0.65 / +0.43 %). Double keeps the plain expression (Hexagon has
+  no double fused multiply-add; the split spelling only moved the schedule,
+  +0.14 %). Without contraction both spellings are the same two products
+  and one subtraction; GCC, which contracts after SSA across statements,
+  compiles both the same (identical Cortex-M counts).
+
+Tried and not kept:
+
+- All eight loads of a group before its stores (the level-l butterfly at
+  j + l/8 no longer waits for the stores of the one at j): +1.8 / +3.2 %
+  float, +0.1 % double on Hexagon at the time; the extra live values cost
+  more than the freedom.
+- The permutation's six unconditional exchanges as two batches of three,
+  every load before any store (measured at the `mul_sub` step): Hexagon
+  float −0.39 / −0.37 %, but double +0.34 % (−0.05 % in batches of two),
+  `m55-ooura` +1.69 / +1.47 % and `m4-softfp` +0.10 / +0.08 %.
+- Register-leaf sizes of 16, 8 and 4 (above).
+
+**Output bits.** Unchanged wherever the fingerprints are defined: every
+change reorders loads, stores, calls and loop steps, or (`mul_sub`) splits a
+statement without changing its operations, so without contraction every
+output is the same operations in the same order. `tap_dsp_srdif_fingerprint`
+(`-ffp-contract=off`) passes unchanged on x86-64 g++ 13.3 and clang++ 18.1,
+on the four QEMU legs, and on Hexagon (clang 19.1.5 under `qemu-hexagon`,
+every N from 4 to 65536, both profiles; at `72977aa` as well): **Hexagon
+matches the one row**, though CI does not run it there. Under default flags,
+which contract, the bench checksums move where an FMA exists: the Cortex-M
+FPU keys' `rfft_f32_512` / `rfft_f32_2048` lines (`m4f`, `m33` and
+`m55-ooura` alike) from `0xd26ebf9b45534325` / `0xd06aa150d5bd9325` to
+`0x322a64b478d14325` / `0xb7eeda0471060d25` (GCC fuses across the former
+register leaves differently once their levels run through memory; `post_two`
+and `mul_sub` alone leave the GCC lines as they were), and Hexagon float
+from `0x8407c06ac8ac8325` / `0xe3dffd98aa4cf725` to `0x46adbb5e3ebf2325` /
+`0x7ecf6080a0f94125` (`mul_sub`). Without an FMA nothing moves: x86-64
+(`0x5caf505901a97f25`, g++ and clang++), `m4-softfp`, Hexagon double. The
+error statistics are the contraction policy's business ("The fp-contraction
+policy"); no accuracy re-run was needed, since no bit moved at
+`-ffp-contract=off`.
+
+**Contract.** Unchanged: packing, sign, scale, sizes 4 … 2^30,
+shareability, `noexcept` and allocation-free transforms, the tables and the
+heap formula (nothing about the tables changed). The Hexagon test battery
+(`tap_dsp_tests` and the side targets built with the Hexagon toolchain file,
+run by ctest through `qemu-hexagon`, sweeps capped at 4096) passes 423 of
+426; the three failures are `fft_abi_tag`'s `dlopen` tests, which a static
+musl image cannot run ("Dynamic loading not supported").
+
+**`.text`** of the MinSizeRel float probe: `m4-softfp` 31,465 B (31,081
+before), `m4f` 28,985 (28,921), `m33` 28,385 (28,305), `m55-ooura` 28,289
+(28,161), all under their ceilings, which are not re-recorded; Hexagon
+238,628 (239,044); the Q15 / Q31 probes and the `m55` CMSIS probe
+unchanged.
+
+**Host timings** (informational; `bench/bench_fft.cpp`, `-O3 -DNDEBUG`,
+g++ 13.3 and clang++ 18.1, Xeon 2.8 GHz VM (4 vCPUs, load about 1), pinned to one core, 11 runs
+alternating the two trees, the median of the per-run minima, ns per
+transform; `72977aa` → tuned):
+
+| compiler | scenario | forward | inverse |
+|---|---|---:|---:|
+| g++ | `rfft_f32_512` | 1,714 → 1,682 (−1.9 %) | 1,788 → 1,780 (−0.5 %) |
+| g++ | `rfft_f32_2048` | 8,259 → 8,022 (−2.9 %) | 8,605 → 8,398 (−2.4 %) |
+| g++ | `rfft_f64_512` | 1,852 → 1,759 (−5.0 %) | 1,965 → 1,879 (−4.4 %) |
+| clang++ | `rfft_f32_512` | 1,252 → 1,283 (+2.5 %) | 1,396 → 1,288 (−7.8 %) |
+| clang++ | `rfft_f32_2048` | 6,136 → 6,279 (+2.3 %) | 6,753 → 6,339 (−6.1 %) |
+| clang++ | `rfft_f64_512` | 1,516 → 1,404 (−7.4 %) | 1,556 → 1,449 (−6.8 %) |
+
+Nothing is slower by more than 5 % (the clang++ float forward, +2.3 …
++2.5 %, is the only cell that rose); faster by 5 % or more: the g++ double
+forward and every clang++ double and float-inverse cell. A different
+machine from #42's table above, so the two tables do not compare cell by
+cell.
+
+**A finding for the class, not the engine.** On Hexagon a third of every
+floating scenario is `basic_real_fft`'s out-of-place copy (`forward()` and
+`inverse()` copy the input before transforming in place), which clang turns
+into calls of musl's `memcpy`: 17.0 M of `rfft_f32_512`'s count, 16.8 M of
+`rfft_f32_2048`'s, 33.7 M of `rfft_f64_512`'s, the same for any engine.
+Consumers that transform in place do not pay it; the ratchet does. Left
+alone here: it is outside the engine, and the fixed-point class copies the
+same way.
 
 ## Provenance and licensing
 
