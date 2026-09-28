@@ -66,7 +66,7 @@
 //     tables.h does for the fixed-point tables.
 //
 // The arrangement of these pieces (the fused two-level pass, the twiddle
-// pairing, the compile-time blocks and register leaves, the table layouts)
+// pairing, the compile-time blocks and their in-memory levels, the table layouts)
 // is derived in the docstrings below.
 
 #pragma once
@@ -91,6 +91,28 @@
 #define TAP_DSP_SRDIF_NOINLINE __declspec(noinline)
 #else
 #define TAP_DSP_SRDIF_NOINLINE
+#endif
+
+// Under clang, the kernel's building blocks (butterflies, groups, the
+// compile-time blocks and their levels, the post-pass pairs, the permutation's
+// swaps) are forced inline into the pass that calls them (a performance
+// attribute only; the arithmetic and its order are the same either way).
+// clang's inliner, left to itself, kept them out of line on Hexagon (clang
+// 19, v68): the register leaves this engine had then went through a stack
+// array and every group through a call. Forcing them was the largest single
+// step of the Hexagon tuning (rfft_f32_512 57.66 -> 49.67 M instructions
+// with the leaves of the time; the tree as it stands reads 54.13 M without
+// the attribute and 45.94 M with it: docs/fft-design.md, "Hexagon (clang)
+// tuning"). GCC is left to its own choices: forced there, the Cortex-M
+// keys with an FPU (M4F, M33, M55 without CMSIS) cost 4.5 - 9.1 % more
+// instructions (spills in the larger bodies; the soft-float M4 0.1 - 0.2 %
+// less). Not forced when optimizing for size (-Os / -Oz define
+// __OPTIMIZE_SIZE__): forced, the Hexagon float size probe's .text grows
+// from 238,628 to 263,204 bytes.
+#if defined(__clang__) && !defined(__OPTIMIZE_SIZE__)
+#define TAP_DSP_SRDIF_INLINE __attribute__((always_inline))
+#else
+#define TAP_DSP_SRDIF_INLINE
 #endif
 
 namespace tap::dsp::detail {
@@ -339,8 +361,9 @@ namespace tap::dsp::detail {
     ///     48 of each. Every block of l >= 32 is processed this way and
     ///     recurses on the five blocks the two levels leave: l/4 (the first
     ///     half's half), l/8 twice (its quarters) and l/4 twice (the
-    ///     quarters). Groups run two per loop step in the run-time pass
-    ///     (l >= 128) so its eight row pointers serve both.
+    ///     quarters). In float, groups run two per loop step in the
+    ///     run-time pass (l >= 128) so its eight row pointers serve both; in
+    ///     double one (k_one_group_per_step).
     ///   - Special butterflies, as Sorensen, Heideman and Burrus count them:
     ///     j = 0 (W = 1, additions only) and j = l/8 (W^j = (1 + i)/sqrt 2,
     ///     W^3j = (-1 + i)/sqrt 2: two additions and two multiplications per
@@ -355,9 +378,9 @@ namespace tap::dsp::detail {
     ///     walks it backwards (group_high).
     ///   - Compile-time blocks: blocks of 32 and 64 (block<32>, block<64>)
     ///     run with every offset a constant and their own small tables, and
-    ///     blocks of 16 and fewer are register leaves (leaf<L>: loaded,
-    ///     transformed through every remaining level and stored once). The
-    ///     run-time recursion (kernel) handles l >= 128 only.
+    ///     blocks of 16 and fewer run one split-radix level at a time in
+    ///     memory (level<L>, one butterfly at a time) down to blocks of two.
+    ///     The run-time recursion (kernel) handles l >= 128 only.
     ///
     /// The tables: one allocation, sized once and built in place by the
     /// constructor, never touched by a transform except to read. In Samples,
@@ -438,11 +461,16 @@ namespace tap::dsp::detail {
     /// Speed: the instruction-count ratchet's float scenarios (forward plus
     /// scaled inverse over 2^20 samples, harness included; arm-none-eabi-gcc
     /// 13.2.1 -O3, QEMU 8.2.2), against the engine it replaced, N = 512 /
-    /// 2048: Cortex-M4 soft-float -2.71 % / -2.23 %, M4F -4.70 % / -4.49 %,
-    /// M33 -7.89 % / -7.53 %, M55 without CMSIS -5.98 % / -5.04 %
-    /// (bench/README.md, docs/fft-design.md, "The floating engine (srdif)").
-    /// On x86-64 (a same-machine A/B of the targets sheet's hostbench, g++
-    /// 13.3, pinned core, 11 runs; the predecessor's medians are review A's
+    /// 2048: Cortex-M4 soft-float -2.78 % / -2.28 %, M4F -5.76 % / -5.51 %,
+    /// M33 -8.24 % / -7.98 %, M55 without CMSIS -6.33 % / -5.52 % (at #42,
+    /// before the Hexagon tuning: -2.71 / -2.23, -4.70 / -4.49, -7.89 /
+    /// -7.53, -5.98 / -5.04 %); Hexagon (clang 19.1.5 -O3, -mv68 -mhvx,
+    /// qemu-hexagon 8.2.2, which counts packets) float -7.64 % / -5.88 %,
+    /// double at N = 512 -3.20 %, where #42 read +15.9 % / +19.8 % and
+    /// +7.2 % (bench/README.md; docs/fft-design.md, "The floating engine
+    /// (srdif)" and its "Hexagon (clang) tuning"). On x86-64 (a same-machine
+    /// A/B of the targets sheet's hostbench, g++ 13.3, pinned core, 11 runs,
+    /// at #42, before the Hexagon tuning; the predecessor's medians are review A's
     /// of tap/DspTap#42, this engine's measured the same way on the same
     /// machine, within 2 % of review A's own re-run of the previous tree),
     /// N = 256 … 4096, forward / inverse against the engine it replaced:
@@ -659,7 +687,7 @@ namespace tap::dsp::detail {
             }
         }
 
-        static void swap2(Sample* p, Sample* q) noexcept {
+        TAP_DSP_SRDIF_INLINE static void swap2(Sample* p, Sample* q) noexcept {
             const Sample p0 = p[0];
             const Sample p1 = p[1];
             const Sample q0 = q[0];
@@ -681,10 +709,37 @@ namespace tap::dsp::detail {
             Sample i;
         };
 
-        static cv   ld(const Sample* p) noexcept { return {p[0], p[1]}; }
-        static void st(Sample* p, cv v) noexcept {
+        TAP_DSP_SRDIF_INLINE static cv   ld(const Sample* p) noexcept { return {p[0], p[1]}; }
+        TAP_DSP_SRDIF_INLINE static void st(Sample* p, cv v) noexcept {
             p[0] = v.r;
             p[1] = v.i;
+        }
+
+        /// a b - c d, the first product rounded in a statement of its own.
+        ///
+        /// Without contraction this is the same two products and one
+        /// subtraction, rounded the same way, as the plain expression (the
+        /// output bits and the fingerprints do not move). The float spelling
+        /// is for the compilers that contract within a statement (clang,
+        /// AppleClang): on `a * b - c * d` clang fuses the left product and
+        /// negates the right one, fma(a, b, -(c d)), which costs Hexagon a
+        /// separate negation in the two slots the float arithmetic itself
+        /// needs; here the statement is `ab - c * d`, which it fuses as
+        /// fma(-c, d, ab), one Hexagon multiply-subtract (Rx -= sfmpy(Rs,
+        /// Rt)). Hexagon float scenarios -0.65 % / -0.43 % (N = 512 / 2048).
+        /// GCC contracts across statements after SSA and compiles both
+        /// spellings the same (the Cortex-M counts are identical). Double
+        /// keeps the plain expression: Hexagon has no double fused
+        /// multiply-add, and the split spelling there only moved the schedule
+        /// (rfft_f64_512 +0.14 %).
+        TAP_DSP_SRDIF_INLINE static Sample mul_sub(Sample a, Sample b, Sample c, Sample d) noexcept {
+            if constexpr (std::is_same_v<Sample, float>) {
+                const Sample ab = a * b;
+                return ab - c * d;
+            }
+            else {
+                return a * b - c * d;
+            }
         }
 
         /// The three kinds of split-radix butterfly, by twiddle.
@@ -698,7 +753,7 @@ namespace tap::dsp::detail {
         /// eighth: j = l/8, W^j = (1 + i)/sqrt 2, W^3j = (-1 + i)/sqrt 2;
         /// general: w1 = W^j, w3 = W^3j as given.
         template <bool Inverse, tw Kind>
-        static void bf(cv& x0, cv& x1, cv& x2, cv& x3, cv w1 = {}, cv w3 = {}) noexcept {
+        TAP_DSP_SRDIF_INLINE static void bf(cv& x0, cv& x1, cv& x2, cv& x3, cv w1 = {}, cv w3 = {}) noexcept {
             const Sample t1r = x0.r - x2.r;
             const Sample t1i = x0.i - x2.i;
             const Sample t2r = x1.r - x3.r;
@@ -743,12 +798,12 @@ namespace tap::dsp::detail {
             }
             else {
                 if constexpr (Inverse) {
-                    x2 = {ur * w1.r + ui * w1.i, ui * w1.r - ur * w1.i};
-                    x3 = {vr * w3.r + vi * w3.i, vi * w3.r - vr * w3.i};
+                    x2 = {ur * w1.r + ui * w1.i, mul_sub(ui, w1.r, ur, w1.i)};
+                    x3 = {vr * w3.r + vi * w3.i, mul_sub(vi, w3.r, vr, w3.i)};
                 }
                 else {
-                    x2 = {ur * w1.r - ui * w1.i, ur * w1.i + ui * w1.r};
-                    x3 = {vr * w3.r - vi * w3.i, vr * w3.i + vi * w3.r};
+                    x2 = {mul_sub(ur, w1.r, ui, w1.i), ur * w1.i + ui * w1.r};
+                    x3 = {mul_sub(vr, w3.r, vi, w3.i), vr * w3.i + vi * w3.r};
                 }
             }
         }
@@ -759,7 +814,8 @@ namespace tap::dsp::detail {
         /// level-l/2 butterfly at j of the first half (c1, c3), whose four
         /// inputs are exactly the first-half outputs of the other two.
         template <bool Inverse, tw KA, tw KB, tw KC>
-        static void group(Sample* p, std::size_t e, cv a1, cv a3, cv b1, cv b3, cv c1, cv c3) noexcept {
+        TAP_DSP_SRDIF_INLINE static void group(Sample* p, std::size_t e, cv a1, cv a3, cv b1, cv b3, cv c1,
+                                               cv c3) noexcept {
             const std::size_t d  = 2 * e;
             cv                x0 = ld(p);
             cv                x2 = ld(p + 2 * d);
@@ -784,21 +840,21 @@ namespace tap::dsp::detail {
 
         /// The four kinds of group in a fused pass over a block of length l = 8e.
         template <bool Inverse>
-        static void group_first(Sample* a, std::size_t e) noexcept {
+        TAP_DSP_SRDIF_INLINE static void group_first(Sample* a, std::size_t e) noexcept {
             // j = 0: W = 1, then the eighth-turn at j + e, then W = 1 at level l/2.
             group<Inverse, tw::one, tw::eighth, tw::one>(a, e, {}, {}, {}, {}, {}, {});
         }
 
         /// j in [1, e/2), twelve twiddles at w.
         template <bool Inverse>
-        static void group_low(Sample* a, std::size_t e, const Sample* w) noexcept {
+        TAP_DSP_SRDIF_INLINE static void group_low(Sample* a, std::size_t e, const Sample* w) noexcept {
             group<Inverse, tw::general, tw::general, tw::general>(a, e, {w[0], w[1]}, {w[2], w[3]}, {w[4], w[5]},
                                                                   {w[6], w[7]}, {w[8], w[9]}, {w[10], w[11]});
         }
 
         /// j = e/2 = l/16: W_16^1, W_16^3; W_16^3, W_16^9 = -W_16^1; the eighth-turn at level l/2.
         template <bool Inverse>
-        static void group_mid(Sample* a, std::size_t e) noexcept {
+        TAP_DSP_SRDIF_INLINE static void group_mid(Sample* a, std::size_t e) noexcept {
             const cv c16{k_cos_pi8, k_sin_pi8};
             const cv s16{k_sin_pi8, k_cos_pi8};
             group<Inverse, tw::general, tw::general, tw::eighth>(a, e, c16, s16, s16, {-k_cos_pi8, -k_sin_pi8}, {}, {});
@@ -808,10 +864,19 @@ namespace tap::dsp::detail {
         /// W^3j = -i conj W^3(j'+e), W^(j+e) = i conj W^j', W^3(j+e) = -i conj W^3j',
         /// and at level l/2 W^j = i conj W^j', W^3j = -i conj W^3j'.
         template <bool Inverse>
-        static void group_high(Sample* a, std::size_t e, const Sample* w) noexcept {
+        TAP_DSP_SRDIF_INLINE static void group_high(Sample* a, std::size_t e, const Sample* w) noexcept {
             group<Inverse, tw::general, tw::general, tw::general>(a, e, {w[5], w[4]}, {-w[7], -w[6]}, {w[1], w[0]},
                                                                   {-w[3], -w[2]}, {w[9], w[8]}, {-w[11], -w[10]});
         }
+
+        /// Whether the run-time fused pass runs one group per loop step
+        /// (double) or two (float, whose eight row pointers then serve both
+        /// groups at constant offsets). Two groups of doubles hold 32 values
+        /// and 24 twiddles, twice Hexagon's register file, and spill;
+        /// measured on Hexagon, one per step: rfft_f64_512 -0.38 %, the float
+        /// scenarios +0.48 % / +0.99 % (N = 512 / 2048), so each keeps its
+        /// best. The Cortex-M keys measure float only.
+        static constexpr bool k_one_group_per_step = sizeof(Sample) == 8;
 
         /// The fused pass over a block of l >= 128 complex values: level l and
         /// level l/2 of its first half; the table entry of j is j (m/l) steps.
@@ -821,36 +886,70 @@ namespace tap::dsp::detail {
             const std::size_t h      = e / 2;
             const std::size_t stride = 12 * ((m_n / 2) / l); // Samples per table step at this length
             group_first<Inverse>(a, e);
-            // j = 1 alone, then two groups per step (e/2 - 1 is odd): the
-            // eight row pointers serve both groups at constant offsets.
             const Sample* w = m_tables.data() + m_n / 2 + 48 + stride - 12;
-            group_low<Inverse>(a + 2, e, w);
-            w += stride;
-            for (std::size_t j = 2; j < h; j += 2, w += 2 * stride) {
-                group_low<Inverse>(a + 2 * j, e, w);
-                group_low<Inverse>(a + 2 * j + 2, e, w + stride);
+            if constexpr (k_one_group_per_step) {
+                for (std::size_t j = 1; j < h; ++j, w += stride) {
+                    group_low<Inverse>(a + 2 * j, e, w);
+                }
+                group_mid<Inverse>(a + 2 * h, e);
+                // j in (e/2, e) descending through the table: j' = e - j.
+                for (std::size_t j = h + 1; j < e; ++j) {
+                    w -= stride;
+                    group_high<Inverse>(a + 2 * j, e, w);
+                }
             }
-            group_mid<Inverse>(a + 2 * h, e);
-            // j in (e/2, e) descending through the table: j' = e - j.
-            w -= stride;
-            group_high<Inverse>(a + 2 * (h + 1), e, w);
-            for (std::size_t j = h + 2; j < e; j += 2) {
-                w -= 2 * stride;
-                group_high<Inverse>(a + 2 * j, e, w + stride);
-                group_high<Inverse>(a + 2 * j + 2, e, w);
+            else {
+                // j = 1 alone, then two groups per step (e/2 - 1 is odd): the
+                // eight row pointers serve both groups at constant offsets.
+                group_low<Inverse>(a + 2, e, w);
+                w += stride;
+                for (std::size_t j = 2; j < h; j += 2, w += 2 * stride) {
+                    group_low<Inverse>(a + 2 * j, e, w);
+                    group_low<Inverse>(a + 2 * j + 2, e, w + stride);
+                }
+                group_mid<Inverse>(a + 2 * h, e);
+                // j in (e/2, e) descending through the table: j' = e - j.
+                w -= stride;
+                group_high<Inverse>(a + 2 * (h + 1), e, w);
+                for (std::size_t j = h + 2; j < e; j += 2) {
+                    w -= 2 * stride;
+                    group_high<Inverse>(a + 2 * j, e, w + stride);
+                    group_high<Inverse>(a + 2 * j + 2, e, w);
+                }
             }
         }
 
         /// A block of L <= 64 complex values with everything known at compile
-        /// time: the fused pass (L = 32, 64) over the small tables, or a leaf.
+        /// time: the fused pass over the small tables (L = 32, 64), one
+        /// split-radix level in memory (L = 4, 8, 16) or the final pair.
+        ///
+        /// Below 32 every level runs in memory, one butterfly at a time,
+        /// down to blocks of two; there are no register leaves. Until the
+        /// Hexagon tuning blocks of 16 and fewer were register leaves (loaded
+        /// once, transformed through every remaining level in registers,
+        /// stored once), which on the ratchet's targets costs more than it
+        /// saves: a leaf of 16 holds 32 values, the M4F's whole float register
+        /// file and all of Hexagon's general registers (a double takes two),
+        /// and spills. The arithmetic of every output is the same either way
+        /// (the output bits do not move). Measured in this tree with register
+        /// leaves of at most 16 / 8 / 4 values restored, against the pairs
+        /// (docs/fft-design.md, "Hexagon (clang) tuning"), millions of
+        /// instructions: Hexagon rfft_f32_512 46.10 / 45.88 / 45.89 / 45.94,
+        /// rfft_f32_2048 51.79 / 51.58 / 51.55 / 51.61, rfft_f64_512 101.30 /
+        /// 100.63 / 100.12 / 99.94; M4F rfft_f32_512 92.54 / 92.00 / 91.85 /
+        /// 91.55, rfft_f32_2048 106.30 / 105.83 / 105.58 / 105.15; the M33 and
+        /// the M55 without CMSIS 0.3 - 0.5 % below leaves of 8 as well, the
+        /// soft-float M4 flat. Pairs cost Hexagon float 0.1 % against its best
+        /// (leaves of 4 or 8) and are the best everywhere else, in one code
+        /// path for both profiles.
         template <bool Inverse, std::size_t L>
-        static void block(Sample* a, const Sample* small) noexcept {
+        TAP_DSP_SRDIF_INLINE static void block(Sample* a, const Sample* small) noexcept {
             if constexpr (L >= 32) {
                 constexpr std::size_t e = L / 8;
                 constexpr std::size_t h = e / 2;
                 const Sample* const   w = small + (L == 32 ? 0 : 12); // this length's table
                 group_first<Inverse>(a, e);
-                [&]<std::size_t... J>(std::index_sequence<J...>) {
+                [&]<std::size_t... J>(std::index_sequence<J...>) TAP_DSP_SRDIF_INLINE {
                     (group_low<Inverse>(a + 2 * (J + 1), e, w + 12 * J), ...);
                     (group_high<Inverse>(a + 2 * (e - 1 - J), e, w + 12 * J), ...);
                 }(std::make_index_sequence<h - 1>{});
@@ -861,52 +960,57 @@ namespace tap::dsp::detail {
                 block<Inverse, L / 4>(a + L, small);
                 block<Inverse, L / 4>(a + L + L / 2, small);
             }
-            else {
-                (void)small; // the leaves need no table
-                leaf<Inverse, L>(a);
-            }
-        }
-
-        /// The split-radix recursion over a block held in registers (a leaf of
-        /// 2 ... 16 complex values), block by block.
-        template <bool Inverse, std::size_t L>
-        static void leaf_blocks(cv* v) noexcept {
-            if constexpr (L == 1) {
-                (void)v; // a block of one value is its own transform
-            }
-            else if constexpr (L == 2) {
-                const cv x0 = v[0];
-                const cv x1 = v[1];
-                v[0]        = {x0.r + x1.r, x0.i + x1.i};
-                v[1]        = {x0.r - x1.r, x0.i - x1.i};
-            }
             else if constexpr (L >= 4) {
-                static_assert(L <= 16, "leaves are 2 ... 16 complex values");
-                constexpr std::size_t q = L / 4;
-                bf<Inverse, tw::one>(v[0], v[q], v[2 * q], v[3 * q]);
-                if constexpr (L >= 8) {
-                    constexpr std::size_t e = L / 8;
-                    bf<Inverse, tw::eighth>(v[e], v[q + e], v[2 * q + e], v[3 * q + e]);
+                level<Inverse, L>(a);
+                block<Inverse, L / 2>(a, small);
+                if constexpr (L >= 8) { // blocks of one value are their own transforms
+                    block<Inverse, L / 4>(a + L, small);
+                    block<Inverse, L / 4>(a + L + L / 2, small);
                 }
-                if constexpr (L == 16) { // j = 1: W16^1, W16^3; j = 3: W16^3, W16^9 = -W16^1
-                    const cv c16{k_cos_pi8, k_sin_pi8};
-                    const cv s16{k_sin_pi8, k_cos_pi8};
-                    bf<Inverse, tw::general>(v[1], v[5], v[9], v[13], c16, s16);
-                    bf<Inverse, tw::general>(v[3], v[7], v[11], v[15], s16, {-k_cos_pi8, -k_sin_pi8});
-                }
-                leaf_blocks<Inverse, L / 4>(v + L / 2);
-                leaf_blocks<Inverse, L / 4>(v + 3 * q);
-                leaf_blocks<Inverse, L / 2>(v);
+            }
+            else {
+                static_assert(L == 2, "blocks of 2 ... 64 values");
+                (void)small; // the pairs need no table
+                const cv x0 = ld(a);
+                const cv x1 = ld(a + 2);
+                st(a, {x0.r + x1.r, x0.i + x1.i});
+                st(a + 2, {x0.r - x1.r, x0.i - x1.i});
             }
         }
 
+        /// The first split-radix level of a block of L = 4, 8 or 16 values, in
+        /// memory, one butterfly at a time: j = 0 (W = 1), j = L/8 (the
+        /// eighth turn) and, at L = 16, j = 1 and 3 (W_16^1, W_16^3; W_16^3,
+        /// W_16^9 = -W_16^1).
         template <bool Inverse, std::size_t L>
-        static void leaf(Sample* a) noexcept {
-            [&]<std::size_t... I>(std::index_sequence<I...>) {
-                cv v[L] = {ld(a + 2 * I)...};
-                leaf_blocks<Inverse, L>(v);
-                (st(a + 2 * I, v[I]), ...);
-            }(std::make_index_sequence<L>{});
+        TAP_DSP_SRDIF_INLINE static void level(Sample* a) noexcept {
+            [&]<std::size_t... J>(std::index_sequence<J...>)
+                TAP_DSP_SRDIF_INLINE { (level_bf<Inverse, L, J>(a), ...); }(std::make_index_sequence<L / 4>{});
+        }
+
+        template <bool Inverse, std::size_t L, std::size_t J>
+        TAP_DSP_SRDIF_INLINE static void level_bf(Sample* a) noexcept {
+            constexpr std::size_t q  = L / 4;
+            cv                    x0 = ld(a + 2 * J);
+            cv                    x1 = ld(a + 2 * (J + q));
+            cv                    x2 = ld(a + 2 * (J + 2 * q));
+            cv                    x3 = ld(a + 2 * (J + 3 * q));
+            if constexpr (J == 0) {
+                bf<Inverse, tw::one>(x0, x1, x2, x3);
+            }
+            else if constexpr (J == L / 8) {
+                bf<Inverse, tw::eighth>(x0, x1, x2, x3);
+            }
+            else if constexpr (J == 1) { // L = 16: W_16^1, W_16^3
+                bf<Inverse, tw::general>(x0, x1, x2, x3, {k_cos_pi8, k_sin_pi8}, {k_sin_pi8, k_cos_pi8});
+            }
+            else { // L = 16, J = 3: W_16^3, W_16^9 = -W_16^1
+                bf<Inverse, tw::general>(x0, x1, x2, x3, {k_sin_pi8, k_cos_pi8}, {-k_cos_pi8, -k_sin_pi8});
+            }
+            st(a + 2 * J, x0);
+            st(a + 2 * (J + q), x1);
+            st(a + 2 * (J + 2 * q), x2);
+            st(a + 2 * (J + 3 * q), x3);
         }
 
         /// Split-radix DIF over l complex values at a (bit-reversed output).
@@ -970,38 +1074,77 @@ namespace tap::dsp::detail {
             Sample* const end = a + m;
             post_pair<Inverse>(pk, pj, c);
             for (pk += 2, pj -= 2, c += 2; pk < end; pk += 4, pj -= 4, c += 4) {
-                post_pair<Inverse>(pk, pj, c);
-                post_pair<Inverse>(pk + 2, pj - 2, c + 2);
+                post_two<Inverse>(pk, pj, c);
             }
         }
 
+        /// The four outputs of one bin pair of the post-pass.
+        struct post_out {
+            Sample kr;
+            Sample ki;
+            Sample jr;
+            Sample ji;
+        };
+
         /// One bin pair of the post-pass: u = a[k], v = conj a[m - k],
         /// G = C_k (u - v) (conj C_k for the inverse), a[k] <- u - G,
-        /// a[m - k] <- conj(v + G).
+        /// a[m - k] <- conj(v + G); u, v and C_k given, the new a[k] and
+        /// conj a[m - k] returned.
         template <bool Inverse>
-        static void post_pair(Sample* pk, Sample* pj, const Sample* c) noexcept {
-            const Sample ur = pk[0];
-            const Sample ui = pk[1];
-            const Sample vr = pj[0];
-            const Sample vi = pj[1];
+        TAP_DSP_SRDIF_INLINE static post_out post_math(Sample ur, Sample ui, Sample vr, Sample vi, Sample cr,
+                                                       Sample ci) noexcept {
             const Sample dr = ur - vr;
             const Sample di = ui + vi;
-            const Sample cr = c[0];
-            const Sample ci = c[1];
             Sample       gr;
             Sample       gi;
             if constexpr (Inverse) {
                 gr = dr * cr + di * ci;
-                gi = di * cr - dr * ci;
+                gi = mul_sub(di, cr, dr, ci);
             }
             else {
-                gr = dr * cr - di * ci;
+                gr = mul_sub(dr, cr, di, ci);
                 gi = dr * ci + di * cr;
             }
-            pk[0] = ur - gr;
-            pk[1] = ui - gi;
-            pj[0] = vr + gr;
-            pj[1] = vi - gi;
+            return {ur - gr, ui - gi, vr + gr, vi - gi};
+        }
+
+        template <bool Inverse>
+        TAP_DSP_SRDIF_INLINE static void post_pair(Sample* pk, Sample* pj, const Sample* c) noexcept {
+            const post_out o = post_math<Inverse>(pk[0], pk[1], pj[0], pj[1], c[0], c[1]);
+            pk[0]            = o.kr;
+            pk[1]            = o.ki;
+            pj[0]            = o.jr;
+            pj[1]            = o.ji;
+        }
+
+        /// Two bin pairs, (k, m - k) and (k + 1, m - k - 1), every load before
+        /// any store. The compiler cannot tell a store through pk from a later
+        /// load through pj, so pair by pair the second pair's loads wait for
+        /// the first pair's stores, and on Hexagon, which issues up to four
+        /// instructions per packet and counts packets, the two pairs' arithmetic
+        /// then cannot share them: without this, the Hexagon scenarios read
+        /// +3.3 % / +3.0 % (float, N = 512 / 2048) and +1.0 % (double). The
+        /// Cortex-M keys pay at most 0.02 % for it (the soft-float M4).
+        template <bool Inverse>
+        TAP_DSP_SRDIF_INLINE static void post_two(Sample* pk, Sample* pj, const Sample* c) noexcept {
+            const Sample   u0r = pk[0];
+            const Sample   u0i = pk[1];
+            const Sample   u1r = pk[2];
+            const Sample   u1i = pk[3];
+            const Sample   v1r = pj[-2];
+            const Sample   v1i = pj[-1];
+            const Sample   v0r = pj[0];
+            const Sample   v0i = pj[1];
+            const post_out o0  = post_math<Inverse>(u0r, u0i, v0r, v0i, c[0], c[1]);
+            const post_out o1  = post_math<Inverse>(u1r, u1i, v1r, v1i, c[2], c[3]);
+            pk[0]              = o0.kr;
+            pk[1]              = o0.ki;
+            pk[2]              = o1.kr;
+            pk[3]              = o1.ki;
+            pj[-2]             = o1.jr;
+            pj[-1]             = o1.ji;
+            pj[0]              = o0.jr;
+            pj[1]              = o0.ji;
         }
 
         std::size_t         m_n;
