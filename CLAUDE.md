@@ -40,9 +40,9 @@ asset's contract summary.
   each floor a measured number against the double profile. The floating profiles run the srdif
   engine (`fft/srdif.h`): the N real samples as N/2 complex values, a split-radix
   decimation-in-frequency kernel of length N/2 (fused two-level passes, compile-time blocks of 32
-  and 64, one level at a time in memory below that, forced inlining under clang for Hexagon), the
-  bit-reversal permutation and the real post-pass
-  derived for the fixed-point engine (#39), written clean-room from the literature the header cites
+  and 64, one level at a time in memory below that, forced inlining under every clang, tuned on
+  Hexagon), the bit-reversal permutation and the real post-pass derived for the fixed-point engine
+  (#39), written clean-room from the literature the header cites
   (tap/DspTap#42; it replaced, at the same contract, the C++20 port of Ooura's `rdft`,
   `fft/split_radix.h`, that the floating profiles ran from Stage 2b, so DspTap ships no code derived
   from Ooura's package — the maintainer's judgement, `NOTICE.md`). Since Stage 4 the engine is a

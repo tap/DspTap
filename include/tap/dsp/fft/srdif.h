@@ -100,15 +100,25 @@
 // clang's inliner, left to itself, kept them out of line on Hexagon (clang
 // 19, v68): the register leaves this engine had then went through a stack
 // array and every group through a call. Forcing them was the largest single
-// step of the Hexagon tuning (rfft_f32_512 57.66 -> 49.67 M instructions
-// with the leaves of the time; the tree as it stands reads 54.13 M without
-// the attribute and 45.94 M with it: docs/fft-design.md, "Hexagon (clang)
-// tuning"). GCC is left to its own choices: forced there, the Cortex-M
-// keys with an FPU (M4F, M33, M55 without CMSIS) cost 4.5 - 9.1 % more
-// instructions (spills in the larger bodies; the soft-float M4 0.1 - 0.2 %
-// less). Not forced when optimizing for size (-Os / -Oz define
-// __OPTIMIZE_SIZE__): forced, the Hexagon float size probe's .text grows
-// from 238,628 to 263,204 bytes.
+// step of the Hexagon tuning (rfft_f32_512 57.66 -> 49.67 M packets, the
+// unit the hexagon key counts, with the leaves of the time; the tree as it
+// stands reads 54.13 M without the attribute and 45.94 M with it:
+// docs/fft-design.md, "Hexagon (clang) tuning"). The gate is every clang,
+// not Hexagon alone (AppleClang, clang-cl, IntelLLVM and clang-based Arm
+// toolchains take it too); it was tuned on Hexagon, and the review of the
+// tuning measured one more clang target: the bench's Cortex-M33 harness
+// compiled by clang 18 (thumbv8m.main, -O3) reads 7.1 % / 5.9 % fewer
+// instructions at N = 512 / 2048 forced than not. GCC is left to its own
+// choices: forced there, the Cortex-M keys with an FPU (M4F, M33, M55
+// without CMSIS) cost 4.5 - 9.1 % more instructions (spills in the larger
+// bodies; the soft-float M4 0.1 - 0.2 % less). Not forced when optimizing
+// for size (-Os / -Oz define __OPTIMIZE_SIZE__; clang-cl defines it under
+// /O1 and /Os): forced, the Hexagon float size probe's .text grows from
+// 238,628 to 263,204 bytes. The choice is made per translation unit, so a
+// program that mixes size- and speed-optimized translation units gets
+// whichever copy of the out-of-line members the linker keeps: "not forced
+// under -Os" is a property of a whole-program -Os build, not a guarantee
+// per call site.
 #if defined(__clang__) && !defined(__OPTIMIZE_SIZE__)
 #define TAP_DSP_SRDIF_INLINE __attribute__((always_inline))
 #else
@@ -717,16 +727,19 @@ namespace tap::dsp::detail {
 
         /// a b - c d, the first product rounded in a statement of its own.
         ///
-        /// Without contraction this is the same two products and one
-        /// subtraction, rounded the same way, as the plain expression (the
-        /// output bits and the fingerprints do not move). The float spelling
+        /// Without contraction, and with FLT_EVAL_METHOD == 0, this is the
+        /// same two products and one subtraction, rounded the same way, as
+        /// the plain expression (the output bits and the fingerprints do not
+        /// move; the fingerprint test asserts FLT_EVAL_METHOD == 0). Under
+        /// excess precision (x87, FLT_EVAL_METHOD == 2) the split statement
+        /// rounds ab to float where the plain expression would not. The float spelling
         /// is for the compilers that contract within a statement (clang,
         /// AppleClang): on `a * b - c * d` clang fuses the left product and
         /// negates the right one, fma(a, b, -(c d)), which costs Hexagon a
         /// separate negation in the two slots the float arithmetic itself
         /// needs; here the statement is `ab - c * d`, which it fuses as
         /// fma(-c, d, ab), one Hexagon multiply-subtract (Rx -= sfmpy(Rs,
-        /// Rt)). Hexagon float scenarios -0.65 % / -0.43 % (N = 512 / 2048).
+        /// Rt)). Hexagon float scenarios -0.65 % / -0.43 % packets (N = 512 / 2048).
         /// GCC contracts across statements after SSA and compiles both
         /// spellings the same (the Cortex-M counts are identical). Double
         /// keeps the plain expression: Hexagon has no double fused
@@ -934,7 +947,8 @@ namespace tap::dsp::detail {
         /// (the output bits do not move). Measured in this tree with register
         /// leaves of at most 16 / 8 / 4 values restored, against the pairs
         /// (docs/fft-design.md, "Hexagon (clang) tuning"), millions of
-        /// instructions: Hexagon rfft_f32_512 46.10 / 45.88 / 45.89 / 45.94,
+        /// packets on Hexagon and of instructions on the Cortex-M keys:
+        /// Hexagon rfft_f32_512 46.10 / 45.88 / 45.89 / 45.94,
         /// rfft_f32_2048 51.79 / 51.58 / 51.55 / 51.61, rfft_f64_512 101.30 /
         /// 100.63 / 100.12 / 99.94; M4F rfft_f32_512 92.54 / 92.00 / 91.85 /
         /// 91.55, rfft_f32_2048 106.30 / 105.83 / 105.58 / 105.15; the M33 and

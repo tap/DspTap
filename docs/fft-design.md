@@ -2335,11 +2335,20 @@ index-sequence lambdas of `block<32 | 64>` and `leaf<L>` were calls. GCC
 inlines differently and the Cortex-M keys had not shown it.
 
 **Measured** with `scripts/icount.py` as `bench.yml` runs it (a fresh
-Release build per key), on one machine, 2026-09-28. Hexagon counts on this
-machine read a constant +1,250 against the machine that measured the
-predecessor, on every scenario including the fixed-point ones, which run the
-same code on both trees; the predecessor column below is that machine's
-count + 1,250. The Cortex-M counts reproduce `bench/baselines.json` exactly.
+Release build per key), on one machine, 2026-09-28. The Hexagon counts carry
+a per-process offset: user-mode qemu passes the guest its environment and the
+binary's path, and the count moves with them (the review of the tuning
+measured +731 packets for a 44-character longer path, and −1,584 under
+`env -i`). The offset is constant across the scenarios of one setup. Here it
+read +1,250 against the setup that measured the predecessor (the fixed-point
+scenarios, which do not run srdif, read the same up to that offset), so the
+predecessor column below is that setup's count + 1,250. The review rebuilt
+`7a58ebe` at its own path and read the predecessor's float scenarios 28
+packets below these cells, so read them as ±28. No percentage moves.
+Against CI the offsets were +1,723 (this setup) and +1,596 (the review's).
+The Cortex-M float counts reproduce `bench/baselines.json` exactly. The
+fixed-point rows read the same +0.49 … +1.15 % in-band drift as on `main`:
+they were seeded at #32 and have not been re-recorded since.
 
 | key | scenario | `72977aa` | tuned | Δ | predecessor | tuned vs predecessor |
 |---|---|---:|---:|---:|---:|---:|
@@ -2854,14 +2863,26 @@ followed #42's:
    It measured the port's Hexagon counts once, from a detached checkout of
    `7a58ebe` built with the same harness, then deleted that checkout. It also
    deleted every port build product it had made while diagnosing on Hexagon:
-   a public-API microbenchmark's binary and its disassembly. The implementer
-   received those counts as numbers only, per scenario, plus a per-transform
-   figure from the same microbenchmark.
+   a public-API microbenchmark's binary and its disassembly. What crossed to
+   the implementer, all numbers, verbatim from the brief:
+   - the port's scenario counts: 49,733,404 / 54,835,187 / 103,240,010 for
+     `rfft_f32_512` / `rfft_f32_2048` / `rfft_f64_512`;
+   - "Per transform pair (forward + inverse) at N = 512 on Hexagon float, a
+     public-API microbenchmark read about 14.4 k instructions for the
+     removed engine against 18.3 k for srdif; double about 31.4 k against
+     35.0 k";
+   - "at N = 64 srdif was already 1–2 % below", a second measurement of the
+     port, at another size, that locates the gap.
+
+   The brief also stated that the ratchet counts instructions, not packets.
+   That was wrong, and the implementer showed it (item 4).
 2. **The brief.** The implementer was barred from:
    - every copy of the port and the package, and git history before `17db855`;
    - the main DspTap clone, the MuTap and MuTap-Max trees (their submodules
      carry the port), the other worktrees, and the orchestrator's scratch
-     except the brief;
+     except the brief, the conventions file, and #42's accuracy harness and
+     targets sheet (`clean-engine/TARGETS.md`, `clean-engine/targets/**`,
+     which use only the public API and were allowed at #42 too);
    - `NOTICE.md` and the audit doc;
    - every section of this note except the contract, fixed-point,
      fp-contraction, Stage 4, size/count and srdif sections;

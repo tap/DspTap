@@ -147,6 +147,8 @@ jobs:
       QEMU_SRC_URL: https://download.qemu.org/qemu-8.2.2.tar.xz
       QEMU_SRC_SHA256: 847346c1b82c1a54b2c38f6edbd85549edeb17430b7d4d3da12620e2962bc4f3
       HEXAGON_TOOLCHAIN: clang+llvm-19.1.5-cross-hexagon-unknown-linux-musl
+      HEXAGON_TOOLCHAIN_SHA256: 55b41922318f6331590ab7baa7f5dbdd99c109327a9c44a52c5e9878fab148c1
+      HEXAGON_TOOLCHAIN_VERSION: clang version 19.1.5
       PLUGIN: /tmp/libinsncount.so
       BUILD_DIR: build-${{ matrix.key }}
       SIZE_DIR: build-${{ matrix.key }}-minsizerel
@@ -194,26 +196,41 @@ jobs:
           mkdir -p ~/qemu-hexagon-plugins
           cp build/qemu-hexagon ~/qemu-hexagon-plugins/
 
+      # The compiler determines every hexagon count, so it is pinned like the
+      # QEMU source: digest-verified on download, and its version asserted.
       - name: Download the Hexagon toolchain
         if: matrix.arch == 'hexagon'
         run: |
+          set -eo pipefail
+          curl -fsSLo /tmp/hexagon-toolchain.tar.zst \
+            "https://artifacts.codelinaro.org/artifactory/codelinaro-toolchain-for-hexagon/19.1.5/${HEXAGON_TOOLCHAIN}.tar.zst"
+          echo "$HEXAGON_TOOLCHAIN_SHA256  /tmp/hexagon-toolchain.tar.zst" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/hexagon-toolchain"
-          curl -fsSL "https://artifacts.codelinaro.org/artifactory/codelinaro-toolchain-for-hexagon/19.1.5/${HEXAGON_TOOLCHAIN}.tar.zst" \
-            | tar --zstd -x -C "$RUNNER_TEMP/hexagon-toolchain"
+          tar --zstd -x -C "$RUNNER_TEMP/hexagon-toolchain" -f /tmp/hexagon-toolchain.tar.zst
+          rm /tmp/hexagon-toolchain.tar.zst
           cxx=$(find "$RUNNER_TEMP/hexagon-toolchain" -maxdepth 5 \( -type f -o -type l \) \
                   -name 'hexagon-unknown-linux-musl-clang++' | sort | head -1)
           test -n "$cxx" || { echo "::error::no hexagon clang++ in the toolchain archive"; exit 1; }
+          "$cxx" --version | head -1 | grep -qF "$HEXAGON_TOOLCHAIN_VERSION" \
+            || { echo "::error::the toolchain is not $HEXAGON_TOOLCHAIN_VERSION"; exit 1; }
           echo "HEXAGON_TOOLCHAIN_ROOT=$(dirname "$(dirname "$cxx")")" >> "$GITHUB_ENV"
           echo "$HOME/qemu-hexagon-plugins" >> "$GITHUB_PATH"
-          if "$HOME/qemu-hexagon-plugins/qemu-hexagon" -plugin help 2>&1 | grep -q "unknown option"; then
+
+      # linux-user qemu prints "unknown option 'plugin'" when built without
+      # plugin support; a missing binary is caught first.
+      - name: Check qemu-hexagon has plugin support
+        if: matrix.arch == 'hexagon'
+        run: |
+          set -o pipefail
+          q="$HOME/qemu-hexagon-plugins/qemu-hexagon"
+          test -x "$q" || { echo "::error::no qemu-hexagon at $q"; exit 1; }
+          if "$q" -plugin help 2>&1 | grep -q "unknown option"; then
             echo "::error::built qemu-hexagon lacks plugin support"; exit 1
           fi
 
-      # These versions go into bench/README.md next to the numbers when a key
-      # is seeded or re-recorded; the counts are only comparable within a
-      # toolchain/QEMU pair.
       - name: Toolchain versions
         run: |
+          set -o pipefail
           if [ "${{ matrix.arch }}" = hexagon ]; then
             "$HEXAGON_TOOLCHAIN_ROOT/bin/hexagon-unknown-linux-musl-clang++" --version | head -1
             qemu-hexagon --version | head -1
