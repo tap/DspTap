@@ -156,12 +156,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The Arm toolchain is ~620 MB of .debs, and the runners' Azure apt
+      # mirror throttles: on 2026-10-01 the m33 key spent its whole 45-minute
+      # budget downloading at 50-100 kB/s and was cancelled with nothing
+      # built, which failed the seeding summary. The .debs live in an
+      # actions/cache directory keyed by runner image (ci.yml does the same),
+      # so a hit turns the install into an index refresh, and apt gets a
+      # per-request timeout with retries so a hung mirror fails fast.
+      - name: Runner image (for the package cache key)
+        if: matrix.arch != 'hexagon'
+        id: apt-image
+        run: echo "os=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+      - name: Cache the Arm toolchain packages
+        if: matrix.arch != 'hexagon'
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-archives
+          key: apt-arm-toolchain-bench-${{ steps.apt-image.outputs.os }}-1
       - name: Install Arm toolchain and QEMU
         if: matrix.arch != 'hexagon'
-        run: >
-          sudo apt-get update -q &&
-          sudo apt-get install -y -q gcc-arm-none-eabi qemu-system-arm
-          libglib2.0-dev pkg-config
+        run: |
+          mkdir -p ~/apt-archives
+          apt_opts=(-o Acquire::http::Timeout=30 -o Acquire::Retries=3)
+          sudo apt-get "${apt_opts[@]}" update -q
+          sudo apt-get "${apt_opts[@]}" install -y -q -o Dir::Cache::Archives="$HOME/apt-archives" \
+            gcc-arm-none-eabi qemu-system-arm libglib2.0-dev pkg-config
+          sudo chown -R "$(id -u):$(id -g)" ~/apt-archives && rm -rf ~/apt-archives/partial ~/apt-archives/lock
 
       # Neither Debian's nor CodeLinaro's qemu-hexagon enables TCG plugins,
       # so the hexagon key builds its own from the pinned release (the same
