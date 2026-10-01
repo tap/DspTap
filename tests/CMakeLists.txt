@@ -123,13 +123,18 @@ endfunction()
 # the srdif engine's integer trigonometry) and the routing proof
 # (test_fft_routing.cpp: basic_real_fft is its engine byte for byte, for the
 # srdif engine named explicitly on every leg and for the selected default),
-# fir_kernels over float/Q15/Q31, decimate,
-# sample_traits, quantize, the cheap Kaiser tests, SineAnalysis, and whatever
-# a later PR appends — runs on target.
+# fir_kernels over float/Q15/Q31, decimate, chain (over every sample type),
+# sample_traits, quantize, the cheap Kaiser tests, the Nyquist designer's
+# structural pins, SineAnalysis, and whatever a later PR appends — runs on
+# target. The three Nyquist spec searches (Nyquist.SearchFindsTheMinimal*)
+# are excluded for the same reason as the Kaiser ones: each is a sweep of
+# double DFTs per candidate length, target-independent design numbers that
+# cost tens of seconds of soft-float emulation.
 # ------------------------------------------------------------------------------
 tap_dsp_add_gtest_executable(tap_dsp_tests
     SOURCES
         test_analysis.cpp
+        test_chain.cpp
         test_decimate.cpp
         test_fft.cpp
         test_fft_arith.cpp
@@ -143,6 +148,7 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_log_mel.cpp
         test_math.cpp
         test_nn.cpp
+        test_nyquist.cpp
         test_psola.cpp
         test_pvoc.cpp
         test_quantize.cpp
@@ -151,7 +157,7 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_windows_macros.cpp
         test_yin.cpp
     MAIN_FILTER
-        "*-psola_test/1.*:pvoc_test/1.*:yin_test/1.*:log_mel_test/1.*:nn_test/1.*:Kaiser.FastPrototypeMeetsSpec:Kaiser.BalancedPrototypeMeetsSpec:Kaiser.TransparentPrototypeMeetsSpec:Kaiser.EconomyPrototypeMeetsSpec:Kaiser.RationalPhaseCountMeetsSpec:Kaiser.CompensatedSpecsHoldAt16k:MultitoneAnalysis.*")
+        "*-psola_test/1.*:pvoc_test/1.*:yin_test/1.*:log_mel_test/1.*:nn_test/1.*:Kaiser.FastPrototypeMeetsSpec:Kaiser.BalancedPrototypeMeetsSpec:Kaiser.TransparentPrototypeMeetsSpec:Kaiser.EconomyPrototypeMeetsSpec:Kaiser.RationalPhaseCountMeetsSpec:Kaiser.CompensatedSpecsHoldAt16k:Nyquist.SearchFindsTheMinimal*:MultitoneAnalysis.*")
 target_link_libraries(tap_dsp_tests PRIVATE
     tap::dsp
     tap_dsp_warnings)

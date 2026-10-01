@@ -125,8 +125,11 @@ namespace tap::dsp {
       public:
         using traits = decimate_traits<M>;
         using coeff  = typename sample_traits<S>::coeff;
+        using sample = S;
 
         static constexpr std::size_t k_ratio = M;
+        static constexpr std::size_t k_up    = 1; ///< the stage ratio, for chain.h's sync_stage
+        static constexpr std::size_t k_down  = M;
 
         explicit basic_decimator(const decimate_profile& p = decimate_profile::economy())
             : m_taps(p.taps<M>()) {

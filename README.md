@@ -361,9 +361,12 @@ Five headers carried from **SampleRateTap** (where they design and run the
 ASRC's polyphase datapath) and promoted here so **RatioTap**'s fixed-ratio
 44.1↔48 converter — now the SampleRateTap family's `bridge` engine, beside the
 ASRC as `async` — and any future FIR consumer — shares one implementation,
-plus the FFT's butterfly arithmetic trait (`fft/fft_arith.h`), which is built
-over the same sample formats and documented here until the Stage 3b README
-rewrite moves it to the FFT section's profiles table.
+plus two landed here first for the family's third engine, `rational`
+(`nyquist.h`, the L-th-band designer, and `chain.h`, the stage composition
+below every engine), plus the FFT's butterfly arithmetic trait
+(`fft/fft_arith.h`), which is built over the same sample formats and
+documented here until the Stage 3b README rewrite moves it to the FFT
+section's profiles table.
 The performance-sensitive pieces are regression-gated in the SampleRateTap
 family's instruction-count CI (both engines, Cortex-M33/M55, Hexagon, ±3%); treat measured claims in
 the header comments as contracts.
@@ -380,6 +383,54 @@ constexpr (the header's design note does the arithmetic); run it in a
 constructor, off the audio path. Also exports `solve_dense`, the small dense
 solver the compensated design and the analysis instruments share (noexcept and
 allocation-free: it pivots by exchanging rows in the caller's buffers).
+
+### `tap/dsp/nyquist.h` — L-th-band (Nyquist) FIR design
+
+The design math of the SampleRateTap family's `rational` engine (its
+`PLAN.md` 2.2), landed here first: `design_nyquist(h, L, beta)` writes the
+Kaiser-windowed sinc with cutoff exactly π/L at length N = 2mL − 1
+(`nyquist_length`, `nyquist_centre`, `nyquist_nonzero_taps`,
+`is_nyquist_length`), the centre tap exactly 1.0 and every L-th tap from it
+exactly 0.0 (written as zeros, not libm's 1e−16), every polyphase branch
+normalized to DC gain 1 so the whole sums to L — an interpolator's branch 0
+is a copy, a decimator uses h / L. The response is antisymmetric about the
+lower rate's Nyquist, so the transition is symmetric (f_p + f_s = r: the
+engine's coverage rule with equality) and a half-band stage computes 2m + 1
+MACs per output instead of 4m − 1. `nyquist_response_db`,
+`nyquist_worst_stopband_db` and `search_nyquist_m` (the smallest m meeting
+a stopband with ≥ 1 dB margin on a fine grid, the `bridge` criterion) are
+the design-time instruments. Published literature: Mintzer 1982,
+Vaidyanathan §4.6.
+
+Pinned by `tests/test_nyquist.cpp`: the exact centre and zeros for L ∈
+{2, 3, 4, 6, 8}, per-branch unity, the sum of the L shifted zero-phase
+responses equal to 1 at every frequency, the half-band MAC count, and the
+searched minima measured for the engine's profile candidates (economy
+half-band m = 11, N = 43; economy third-band m = 11, N = 65; transparent
+half-band m = 31, N = 123, each with the next-shorter length missing the
+spec).
+
+### `tap/dsp/chain.h` — the synchronous-stage concept and `chain<>`
+
+The composition point below the family's engines (rational `PLAN.md`, R6):
+the `sync_stage` concept (a `sample` type, the ratio `k_up` / `k_down` as
+compile-time numbers, `process`, `outputs_for`, `reset`) and
+`chain<Stages...>`, which runs the stages in order through scratch sized at
+construction (noexcept, allocation-free, bit-identical for any chunking),
+composes `outputs_for` forward and `frames_needed` (the exact inverse)
+backward, and reports the chain's group delay as an `exact_ratio` at its
+output rate from each stage's own (`latency_output_frames()` or
+`latency_input_samples()`). A chain is written by the caller as a type,
+never looked up from a rate pair. `basic_decimator` satisfies the concept
+(`sample`, `k_up`, `k_down` added), which is how the helper is proven on an
+existing primitive before any new engine depends on it.
+
+Pinned by `tests/test_chain.cpp`: a chain of the by-2 and by-3 decimators
+equals the two run in sequence bit for bit in every sample format, for
+chunks of 1 to the whole stream; `outputs_for` exact from every phase;
+`frames_needed` the exact inverse; latency 80/3 output frames (40/2 of the
+by-2's outputs through the by-3, plus 60/3), the impulse peak where it
+says; reset bit-exact.
 
 ### `tap/dsp/sample_traits.h` — sample formats: double, float, Q15, Q31
 
