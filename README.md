@@ -5,8 +5,8 @@ plain portable C++ (C++20, standard library only), no Max/Min or framework
 dependency — consumed as a git submodule by the individual libraries.
 
 Today it holds seven primitives, plus the [FIR substrate](#the-fir-substrate) —
-the shared design-math / sample-format / kernel layer under SampleRateTap and
-RatioTap — and the [scalar helpers](#tapdspmathh--periodic-hann-and-decibel-helpers)
+the shared design-math / sample-format / kernel layer under the SampleRateTap
+family's two engines, `async` and `bridge` — and the [scalar helpers](#tapdspmathh--periodic-hann-and-decibel-helpers)
 (`tap/dsp/math.h`) the consuming libraries call instead of re-typing them:
 
 ## `tap::dsp::real_fft` — real FFT with a fixed numeric contract
@@ -298,12 +298,12 @@ arithmetic on the float path: the RP2350's Cortex-M33 has no FP64.
 
 `include/tap/dsp/decimate.h` is the host-rate stage in front of the 16 kHz
 front end: `basic_decimator<S, M>` (S a `sample_type`) for M = 2, 3, 6
-(32 / 48 / 96 kHz in), in RatioTap's pattern — ratio as a type, Kaiser-windowed sinc from
+(32 / 48 / 96 kHz in), in the `bridge` engine's pattern — ratio as a type, Kaiser-windowed sinc from
 `kaiser.h` with the cutoff at the output Nyquist and DC gain exactly 1,
 `fir_kernels.h`'s `dot_row` over the `sample_traits.h` formats (double golden,
 float embedded, Q15 / Q31 with row-sum-preserving quantization). It is deliberately not
-RatioTap, whose charter is 44.1 ↔ 48 only; a 44.1 kHz host composes RatioTap's
-44.1 → 48 in front of the by-3 stage. Odd tap counts, integer group delay
+`tap::sr::bridge`, whose charter is 44.1 ↔ 48 only; a 44.1 kHz host composes the
+`bridge` engine's 44.1 → 48 in front of the by-3 stage. Odd tap counts, integer group delay
 `(taps - 1) / 2`, one output as input `k*M` arrives.
 
 | profile     | stopband | passband | taps by 2 / 3 / 6 |
@@ -359,12 +359,13 @@ suppressor's cross-precision pin must be unchanged by the promotion.
 
 Five headers carried from **SampleRateTap** (where they design and run the
 ASRC's polyphase datapath) and promoted here so **RatioTap**'s fixed-ratio
-44.1↔48 converter — and any future FIR consumer — shares one implementation,
+44.1↔48 converter — now the SampleRateTap family's `bridge` engine, beside the
+ASRC as `async` — and any future FIR consumer — shares one implementation,
 plus the FFT's butterfly arithmetic trait (`fft/fft_arith.h`), which is built
 over the same sample formats and documented here until the Stage 3b README
 rewrite moves it to the FFT section's profiles table.
-The performance-sensitive pieces are regression-gated in SampleRateTap's
-instruction-count CI (Cortex-M33/M55, Hexagon, ±3%); treat measured claims in
+The performance-sensitive pieces are regression-gated in the SampleRateTap
+family's instruction-count CI (both engines, Cortex-M33/M55, Hexagon, ±3%); treat measured claims in
 the header comments as contracts.
 
 ### `tap/dsp/kaiser.h` — FIR prototype design
@@ -409,7 +410,7 @@ additive identity.
 Q15/Q31 profiles exist for targets where double (sometimes any float) is
 unaffordable — SampleRateTap measured its float datapath at ~19× the
 instruction count of Q15 on a Cortex-M33 (soft-double accumulation). Expected
-deployments include Bluetooth-adjacent conversion (RatioTap) and M33/M55-class
+deployments include Bluetooth-adjacent conversion (the `bridge` engine) and M33/M55-class
 eurorack and pedal targets running TapTools primitives. Per-primitive adoption
 is opt-in, and each adoption is its own documented Q-format design: the ladder
 of headroom bits, pre-shifts, and the single rounding point is a per-datapath
