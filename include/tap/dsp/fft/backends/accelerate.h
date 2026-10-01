@@ -19,6 +19,7 @@
 #include <memory>
 #include <new>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <Accelerate/Accelerate.h>
@@ -114,6 +115,27 @@ namespace tap::dsp::detail {
             m_rp.assign(n / 2 + k_align_pad, 0.0f);
             m_ip.assign(n / 2 + k_align_pad, 0.0f);
         }
+
+        /// Copyable (the setup is shared, the scratch per object) and movable:
+        /// the moved-from engine reports size() == 0 and owns no scratch
+        /// (fft.h, "Movable").
+        accelerate_real_fft_f32(const accelerate_real_fft_f32&)            = default;
+        accelerate_real_fft_f32& operator=(const accelerate_real_fft_f32&) = default;
+        accelerate_real_fft_f32(accelerate_real_fft_f32&& other) noexcept
+            : m_setup(std::move(other.m_setup))
+            , m_rp(std::move(other.m_rp))
+            , m_ip(std::move(other.m_ip))
+            , m_n(std::exchange(other.m_n, 0))
+            , m_log2n(other.m_log2n) {}
+        accelerate_real_fft_f32& operator=(accelerate_real_fft_f32&& other) noexcept {
+            m_setup = std::move(other.m_setup);
+            m_rp    = std::move(other.m_rp);
+            m_ip    = std::move(other.m_ip);
+            m_n     = std::exchange(other.m_n, 0);
+            m_log2n = other.m_log2n;
+            return *this;
+        }
+        ~accelerate_real_fft_f32() = default;
 
         [[nodiscard]] std::size_t size() const noexcept { return static_cast<std::size_t>(m_n); }
 

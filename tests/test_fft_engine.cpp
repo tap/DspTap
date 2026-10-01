@@ -364,3 +364,43 @@ namespace {
 #endif
 
 } // namespace
+
+// ----------------------------------------------------------------------------
+// Move semantics (fft.h, "Movable"): the moved-to object is the source as it
+// was; the moved-from object reports size() == 0 and num_bins() == 1, so a
+// size check (supports_size, a consumer's own gate) rejects it instead of a
+// transform reading tables it no longer owns. Every shipped profile, and the
+// srdif engine named explicitly.
+// ----------------------------------------------------------------------------
+namespace {
+
+    template <typename Fft>
+    void expect_moved_from_reports_size_zero() {
+        Fft a(64);
+        Fft b(std::move(a));
+        EXPECT_EQ(a.size(), 0u);     // NOLINT(bugprone-use-after-move): the contract under test
+        EXPECT_EQ(a.num_bins(), 1u); // NOLINT(bugprone-use-after-move)
+        EXPECT_EQ(b.size(), 64u);
+        EXPECT_EQ(b.num_bins(), 33u);
+        EXPECT_FALSE(Fft::supports_size(a.size())); // NOLINT(bugprone-use-after-move)
+        Fft c(32);
+        c = std::move(b);
+        EXPECT_EQ(b.size(), 0u); // NOLINT(bugprone-use-after-move)
+        EXPECT_EQ(c.size(), 64u);
+        a = Fft(16); // a moved-from object may be assigned to
+        EXPECT_EQ(a.size(), 16u);
+        Fft d(c); // and a copy of the moved-to object is whole
+        EXPECT_EQ(d.size(), 64u);
+    }
+
+    TEST(fft_engine, MovedFromReportsSizeZero) {
+        expect_moved_from_reports_size_zero<tap::dsp::real_fft>();
+        expect_moved_from_reports_size_zero<tap::dsp::real_fft32>();
+        expect_moved_from_reports_size_zero<srdif_fft32>();
+        expect_moved_from_reports_size_zero<tap::dsp::real_fft_q15>();
+        expect_moved_from_reports_size_zero<tap::dsp::real_fft_q31>();
+        expect_moved_from_reports_size_zero<tap::dsp::real_fft_q15_bfp>();
+        expect_moved_from_reports_size_zero<tap::dsp::real_fft_q31_bfp>();
+    }
+
+} // namespace

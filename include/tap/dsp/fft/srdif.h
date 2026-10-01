@@ -518,6 +518,20 @@ namespace tap::dsp::detail {
             : m_n(checked_size(n))
             , m_tables(make_tables(n)) {}
 
+        /// Copyable (a copy is bit-identical) and movable: the moved-from
+        /// engine reports size() == 0 and owns no tables (fft.h, "Movable").
+        srdif_rdft(const srdif_rdft&)            = default;
+        srdif_rdft& operator=(const srdif_rdft&) = default;
+        srdif_rdft(srdif_rdft&& other) noexcept
+            : m_n(std::exchange(other.m_n, 0))
+            , m_tables(std::move(other.m_tables)) {}
+        srdif_rdft& operator=(srdif_rdft&& other) noexcept {
+            m_n      = std::exchange(other.m_n, 0);
+            m_tables = std::move(other.m_tables);
+            return *this;
+        }
+        ~srdif_rdft() = default;
+
         [[nodiscard]] std::size_t size() const noexcept { return m_n; }
 
         TAP_DSP_SRDIF_NOINLINE void forward_inplace(Sample* a) const noexcept {
