@@ -566,15 +566,15 @@ namespace tap::dsp::detail {
             std::vector<Sample> t(table_samples(n));
             Sample* const       post = t.data();
             fill_post_table(post, n);
-            Sample* const small = post + n / 2;
+            Sample* const small_tables = post + n / 2;
             if (m >= 32) {
-                fill_kernel_table(small, 32, post, n);
+                fill_kernel_table(small_tables, 32, post, n);
             }
             if (m >= 64) {
-                fill_kernel_table(small + 12, 64, post, n);
+                fill_kernel_table(small_tables + 12, 64, post, n);
             }
             if (m >= 128) {
-                fill_kernel_table(small + 48, m, post, n);
+                fill_kernel_table(small_tables + 48, m, post, n);
             }
             return t;
         }
@@ -957,34 +957,34 @@ namespace tap::dsp::detail {
         /// (leaves of 4 or 8) and are the best everywhere else, in one code
         /// path for both profiles.
         template <bool Inverse, std::size_t L>
-        TAP_DSP_SRDIF_INLINE static void block(Sample* a, const Sample* small) noexcept {
+        TAP_DSP_SRDIF_INLINE static void block(Sample* a, const Sample* small_tables) noexcept {
             if constexpr (L >= 32) {
                 constexpr std::size_t e = L / 8;
                 constexpr std::size_t h = e / 2;
-                const Sample* const   w = small + (L == 32 ? 0 : 12); // this length's table
+                const Sample* const   w = small_tables + (L == 32 ? 0 : 12); // this length's table
                 group_first<Inverse>(a, e);
                 [&]<std::size_t... J>(std::index_sequence<J...>) TAP_DSP_SRDIF_INLINE {
                     (group_low<Inverse>(a + 2 * (J + 1), e, w + 12 * J), ...);
                     (group_high<Inverse>(a + 2 * (e - 1 - J), e, w + 12 * J), ...);
                 }(std::make_index_sequence<h - 1>{});
                 group_mid<Inverse>(a + 2 * h, e);
-                block<Inverse, L / 4>(a, small);
-                block<Inverse, L / 8>(a + L / 2, small);
-                block<Inverse, L / 8>(a + L / 2 + L / 4, small);
-                block<Inverse, L / 4>(a + L, small);
-                block<Inverse, L / 4>(a + L + L / 2, small);
+                block<Inverse, L / 4>(a, small_tables);
+                block<Inverse, L / 8>(a + L / 2, small_tables);
+                block<Inverse, L / 8>(a + L / 2 + L / 4, small_tables);
+                block<Inverse, L / 4>(a + L, small_tables);
+                block<Inverse, L / 4>(a + L + L / 2, small_tables);
             }
             else if constexpr (L >= 4) {
                 level<Inverse, L>(a);
-                block<Inverse, L / 2>(a, small);
+                block<Inverse, L / 2>(a, small_tables);
                 if constexpr (L >= 8) { // blocks of one value are their own transforms
-                    block<Inverse, L / 4>(a + L, small);
-                    block<Inverse, L / 4>(a + L + L / 2, small);
+                    block<Inverse, L / 4>(a + L, small_tables);
+                    block<Inverse, L / 4>(a + L + L / 2, small_tables);
                 }
             }
             else {
                 static_assert(L == 2, "blocks of 2 ... 64 values");
-                (void)small; // the pairs need no table
+                (void)small_tables; // the pairs need no table
                 const cv x0 = ld(a);
                 const cv x1 = ld(a + 2);
                 st(a, {x0.r + x1.r, x0.i + x1.i});
@@ -1030,25 +1030,25 @@ namespace tap::dsp::detail {
         /// Split-radix DIF over l complex values at a (bit-reversed output).
         template <bool Inverse>
         void kernel(Sample* a, std::size_t l) const noexcept {
-            const Sample* const small = m_tables.data() + m_n / 2;
+            const Sample* const small_tables = m_tables.data() + m_n / 2;
             switch (l) {
             case 64:
-                block<Inverse, 64>(a, small);
+                block<Inverse, 64>(a, small_tables);
                 return;
             case 32:
-                block<Inverse, 32>(a, small);
+                block<Inverse, 32>(a, small_tables);
                 return;
             case 16:
-                block<Inverse, 16>(a, small);
+                block<Inverse, 16>(a, small_tables);
                 return;
             case 8:
-                block<Inverse, 8>(a, small);
+                block<Inverse, 8>(a, small_tables);
                 return;
             case 4:
-                block<Inverse, 4>(a, small);
+                block<Inverse, 4>(a, small_tables);
                 return;
             case 2:
-                block<Inverse, 2>(a, small);
+                block<Inverse, 2>(a, small_tables);
                 return;
             default:
                 break;
