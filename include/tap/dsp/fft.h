@@ -346,7 +346,12 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     /// alignment requirement on the data pointer. NaN propagates to every bin
     /// (no data-dependent branches). Latency 0. Copyable, and a copy is
     /// bit-identical to its source; the object is held by value in every
-    /// consumer.
+    /// consumer. Movable: the moved-to object is the source as it was, and
+    /// the moved-from object reports size() == 0 and num_bins() == 1 and
+    /// owns no tables — it may be destroyed or assigned to, and nothing
+    /// else; a transform on it is a precondition violation like a size
+    /// outside the range (the engines' own moves zero their size the same
+    /// way, `MovedFromReportsSizeZero`, tests/test_fft_engine.cpp).
     ///
     /// Packing after a forward transform of N real samples (N/2 + 1 bins):
     ///   - bin[0].real    = data[0]   (DC;      imag is zero, not stored)
@@ -455,6 +460,20 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
             : m_size(static_cast<int>(size))
             , m_engine(checked(size)) {}
 
+        basic_real_fft(const basic_real_fft&)            = default;
+        basic_real_fft& operator=(const basic_real_fft&) = default;
+        /// The moved-from object reports size() == 0 (the class docstring,
+        /// "Movable").
+        basic_real_fft(basic_real_fft&& other) noexcept
+            : m_size(std::exchange(other.m_size, 0))
+            , m_engine(std::move(other.m_engine)) {}
+        basic_real_fft& operator=(basic_real_fft&& other) noexcept {
+            m_size   = std::exchange(other.m_size, 0);
+            m_engine = std::move(other.m_engine);
+            return *this;
+        }
+        ~basic_real_fft() = default;
+
         [[nodiscard]] std::size_t size() const noexcept { return static_cast<std::size_t>(m_size); }
         [[nodiscard]] std::size_t num_bins() const noexcept { return static_cast<std::size_t>(m_size / 2 + 1); }
 
@@ -465,14 +484,17 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
         /// UNSCALED — multiply by 2/size for a normalized round trip.
         void inverse_inplace(Sample* data) noexcept { m_engine.inverse_inplace(data); }
 
-        /// Out-of-place forward FFT. Output may alias input.
+        /// Out-of-place forward FFT. Output may alias input exactly (output ==
+        /// input) or not at all: a partial overlap is a precondition
+        /// violation (the copy runs forward through the buffer).
         void forward(const Sample* input, Sample* output) noexcept {
             copy(input, output);
             forward_inplace(output);
         }
 
         /// Out-of-place inverse FFT, scaled by 2/size so forward() -> inverse()
-        /// reproduces the input. Output may alias input.
+        /// reproduces the input. Output may alias input exactly or not at all
+        /// (as forward()).
         void inverse(const Sample* input, Sample* output) noexcept {
             copy(input, output);
             inverse_inplace(output);
@@ -561,7 +583,14 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
     ///    maximum grows with the exponent gap, with no closed form, and is
     ///    pinned per size at 2x the measured 31.0 / 32.0 / 59.0 / 76.0 / 80.0
     ///    LSB (index 0) at N = 4096 / 8192 / 16384 / 32768 / 65536: bounds
-    ///    62.01 / 63.99 / 118.01 / 152.0 / 160.02 LSB; Q31 fixed per size
+    ///    62.01 / 63.99 / 118.01 / 152.0 / 160.02 LSB. These maxima are the
+    ///    battery's sweep's, not bounds over every input: under block
+    ///    floating point an input quiet enough that no stage shifts (e = 0)
+    ///    has every early rounding amplified by every later stage, and an
+    ///    independent sweep measured 423 LSB at N = 65536 on the inverse of
+    ///    low-level noise (2026-10-01) — 1.6e-6 of the output, i.e. the SNR
+    ///    the noise-floor rows state; the SNR numbers are the contract at
+    ///    e = 0, the LSB maxima are the sweep's. Q31 fixed per size
     ///    at 2x its 4.70 / 4.25 / 4.25 / 4.74 / 4.72 LSB; Q15 inside its
     ///    N <= 2048 pins at every size. The F(x) + F(-x) rounding-asymmetry
     ///    maxima likewise (Q31 block floating 121 / 126 / 137 / 141 / 286
@@ -658,6 +687,14 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
         explicit basic_real_fft(std::size_t size)
             : m_engine(checked(size)) {}
 
+        /// Copyable and movable as the floating profiles: the moved-from
+        /// object reports size() == 0 (the engine's move zeroes its size).
+        basic_real_fft(const basic_real_fft&)                = default;
+        basic_real_fft& operator=(const basic_real_fft&)     = default;
+        basic_real_fft(basic_real_fft&&) noexcept            = default;
+        basic_real_fft& operator=(basic_real_fft&&) noexcept = default;
+        ~basic_real_fft()                                    = default;
+
         [[nodiscard]] std::size_t size() const noexcept { return m_engine.size(); }
         [[nodiscard]] std::size_t num_bins() const noexcept { return m_engine.size() / 2 + 1; }
 
@@ -671,7 +708,8 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
         [[nodiscard]] int inverse_inplace(Sample* data) noexcept { return m_engine.inverse_inplace(data); }
 
         /// Out-of-place forward FFT: copy, then forward_inplace. Output may
-        /// alias input. @return e.
+        /// alias input exactly or not at all (a partial overlap is a
+        /// precondition violation). @return e.
         [[nodiscard]] int forward(const Sample* input, Sample* output) noexcept {
             copy(input, output);
             return forward_inplace(output);
@@ -679,7 +717,8 @@ namespace tap::dsp::inline TAP_DSP_FFT_ABI {
 
         /// Out-of-place inverse FFT: copy, then inverse_inplace. NO 2/N is
         /// applied (the exponent carries the scale, unlike the floating
-        /// profiles' inverse()). Output may alias input. @return e.
+        /// profiles' inverse()). Output may alias input exactly or not at
+        /// all. @return e.
         [[nodiscard]] int inverse(const Sample* input, Sample* output) noexcept {
             copy(input, output);
             return inverse_inplace(output);

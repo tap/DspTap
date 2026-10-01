@@ -188,6 +188,12 @@ target_sources(tap_dsp_tests PRIVATE
     test_fft_oracle.cpp
     test_fft_rt.cpp)
 target_compile_definitions(tap_dsp_tests PRIVATE TAP_DSP_TEST_MAX_FFT_N=${TAP_DSP_TEST_MAX_FFT_N})
+# The two-thread transform test (test_fft_rt.cpp) runs where std::thread
+# exists: the hosts; never the bare-metal legs (no threads in newlib).
+target_compile_definitions(tap_dsp_tests PRIVATE TAP_DSP_TEST_HAS_THREADS=$<BOOL:${Threads_FOUND}>)
+if(Threads_FOUND)
+    target_link_libraries(tap_dsp_tests PRIVATE Threads::Threads)
+endif()
 
 # fp-contraction OFF, for the targets whose pins are bit patterns that a
 # contraction choice would move (this block's fingerprints, the Stage 3c block

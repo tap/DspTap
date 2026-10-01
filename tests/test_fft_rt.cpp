@@ -584,3 +584,65 @@ namespace {
     }
 
 } // namespace
+
+// ----------------------------------------------------------------------------
+// k_is_shareable, exercised: four threads transform through ONE object at once
+// (forward then inverse, hundreds of times each) and every forward result is
+// byte-identical to the single-threaded one. The structural half of the trait
+// (const transforms) is asserted above; this is the behavioural half, for the
+// shareable profiles the host builds (double always, float on the srdif engine,
+// Q31 fixed and block floating). Hosts only: the bare-metal legs have no
+// threads (TAP_DSP_TEST_HAS_THREADS, tests/CMakeLists.txt). A non-shareable
+// profile (Q15, the two accelerated engines) is deliberately not run here —
+// that would be the data race the trait says it is.
+// ----------------------------------------------------------------------------
+#if TAP_DSP_TEST_HAS_THREADS
+#include <thread>
+
+namespace {
+
+    template <typename Fft, typename Sample>
+    void expect_shared_transforms_are_identical(std::size_t n) {
+        static_assert(Fft::k_is_shareable, "only a shareable profile may be transformed through by two threads");
+        Fft                 fft(n);
+        std::vector<Sample> x(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            x[i] = static_cast<Sample>((static_cast<int>((i * 7919u) % 2003u) - 1001) * 16);
+        }
+        std::vector<Sample> reference = x;
+        (void)fft.forward_inplace(reference.data());
+
+        constexpr int            k_threads = 4;
+        constexpr int            k_rounds  = 200;
+        std::atomic<int>         mismatches{0};
+        std::vector<std::thread> threads;
+        threads.reserve(k_threads);
+        for (int t = 0; t < k_threads; ++t) {
+            threads.emplace_back([&] {
+                std::vector<Sample> y(n);
+                for (int r = 0; r < k_rounds; ++r) {
+                    y = x;
+                    (void)fft.forward_inplace(y.data());
+                    if (std::memcmp(y.data(), reference.data(), n * sizeof(Sample)) != 0) {
+                        mismatches.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    (void)fft.inverse_inplace(y.data());
+                }
+            });
+        }
+        for (auto& t : threads) {
+            t.join();
+        }
+        EXPECT_EQ(mismatches.load(), 0) << "N = " << n;
+    }
+
+    TEST(fft_rt, SharedObjectTransformsAreIdenticalFromFourThreads) {
+        expect_shared_transforms_are_identical<tap::dsp::real_fft, double>(1024);
+        expect_shared_transforms_are_identical<tap::dsp::basic_real_fft<float, tap::dsp::detail::srdif_rdft<float>>,
+                                               float>(4096);
+        expect_shared_transforms_are_identical<tap::dsp::real_fft_q31, std::int32_t>(512);
+        expect_shared_transforms_are_identical<tap::dsp::real_fft_q31_bfp, std::int32_t>(512);
+    }
+
+} // namespace
+#endif

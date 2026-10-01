@@ -260,6 +260,26 @@ namespace tap::dsp {
                 assert(n >= k_min_size && n <= k_max_size && (n & (n - 1)) == 0);
             }
 
+            /// Copyable and movable: the moved-from engine reports size() == 0
+            /// and owns no tables (fft.h, "Movable").
+            fixed_point_rdft(const fixed_point_rdft&)            = default;
+            fixed_point_rdft& operator=(const fixed_point_rdft&) = default;
+            fixed_point_rdft(fixed_point_rdft&& other) noexcept
+                : m_n(std::exchange(other.m_n, 0))
+                , m_twiddles(std::move(other.m_twiddles))
+                , m_post(std::move(other.m_post))
+                , m_bitrev(std::move(other.m_bitrev))
+                , m_work(std::move(other.m_work)) {}
+            fixed_point_rdft& operator=(fixed_point_rdft&& other) noexcept {
+                m_n        = std::exchange(other.m_n, 0);
+                m_twiddles = std::move(other.m_twiddles);
+                m_post     = std::move(other.m_post);
+                m_bitrev   = std::move(other.m_bitrev);
+                m_work     = std::move(other.m_work);
+                return *this;
+            }
+            ~fixed_point_rdft() = default;
+
             [[nodiscard]] std::size_t size() const noexcept { return m_n; }
 
             /// In-place forward transform: N samples -> packed spectrum, scaled

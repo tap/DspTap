@@ -19,6 +19,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "arm_math.h"
@@ -102,6 +103,23 @@ namespace tap::dsp::detail {
             TAP_EXPECTS(status == ARM_MATH_SUCCESS);
             static_cast<void>(status); // the release build evaluates TAP_EXPECTS to nothing
         }
+
+        /// Copyable and movable: the moved-from engine reports size() == 0
+        /// and owns no scratch (fft.h, "Movable"); the CMSIS instance holds
+        /// pointers into the library's const tables and copies freely.
+        cmsis_real_fft_f32(const cmsis_real_fft_f32&)            = default;
+        cmsis_real_fft_f32& operator=(const cmsis_real_fft_f32&) = default;
+        cmsis_real_fft_f32(cmsis_real_fft_f32&& other) noexcept
+            : m_inst(other.m_inst)
+            , m_scratch(std::move(other.m_scratch))
+            , m_n(std::exchange(other.m_n, 0)) {}
+        cmsis_real_fft_f32& operator=(cmsis_real_fft_f32&& other) noexcept {
+            m_inst    = other.m_inst;
+            m_scratch = std::move(other.m_scratch);
+            m_n       = std::exchange(other.m_n, 0);
+            return *this;
+        }
+        ~cmsis_real_fft_f32() = default;
 
         [[nodiscard]] std::size_t size() const noexcept { return static_cast<std::size_t>(m_n); }
 
