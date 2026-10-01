@@ -13,7 +13,7 @@ the FFT came from). Seven primitives today: the real FFT (`fft.h`), the YIN pitc
 (`yin.h`), two pitch shifters (`psola.h`, `pvoc.h`), the wake-word front end —
 the log-mel/PCEN feature extractor (`log_mel.h`) and the fixed-ratio decimators to
 16 kHz (`decimate.h`) — and the dense/GRU inference kernels (`nn.h`) — plus the FIR substrate carried from
-SampleRateTap for the two rate converters (SampleRateTap, RatioTap): Kaiser prototype design
+SampleRateTap for the family's two rate converters (its `async` and `bridge` engines): Kaiser prototype design
 (`kaiser.h`), the sample-format traits (`sample_traits.h`: double/float/Q15/Q31), the FIR dot kernels
 (`fir_kernels.h`), row-sum-preserving quantization (`quantize.h`), and the measurement
 instruments (`analysis/`) — plus the public scalar helpers consumers share (`math.h`: the
