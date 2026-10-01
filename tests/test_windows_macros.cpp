@@ -11,11 +11,12 @@
 // The macros are defined here by hand, with the SDK's replacement lists
 // (hyper's __int64 spelled portably), so the check runs on every host and on
 // the QEMU legs rather than on the Windows leg alone; <windows.h> itself is
-// not included. The standard library and gtest are included first, as a
-// Windows consumer's would already be parsed: only DspTap's own text must
-// survive the macros. min and max are out of scope: a consumer that includes
-// <windows.h> defines NOMINMAX, as the SDK documents. Runs on every host and
-// on all four QEMU legs (not excluded by MAIN_FILTER).
+// not included. The standard library, gtest and the selected FFT backend's
+// vendor header are included first, as a Windows consumer's would already be
+// parsed: only DspTap's own text must survive the macros. min and max are out
+// of scope: a consumer that includes <windows.h> defines NOMINMAX, as the SDK
+// documents. Runs on every host and on all four QEMU legs (not excluded by
+// MAIN_FILTER).
 
 #include <algorithm>
 #include <array>
@@ -37,6 +38,15 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+
+// The accelerated backends' vendor headers are system headers too, parsed
+// before the macros for the same reason: neither is ever compiled beside
+// <windows.h> (IOKit, under Accelerate, names a field `interface`).
+#if defined(TAP_DSP_FFT_ACCELERATE)
+#include <Accelerate/Accelerate.h>
+#elif defined(TAP_DSP_FFT_CMSIS)
+#include "arm_math.h"
+#endif
 
 // The SDK's spellings, which the house macro-naming rule cannot apply to.
 // NOLINTBEGIN(readability-identifier-naming)
