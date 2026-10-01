@@ -118,15 +118,37 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The Arm toolchain is ~600 MB of .debs (libstdc++-arm-none-eabi-newlib
+      # alone is 463 MB), and the runners' Azure apt mirror throttles and
+      # hangs: on 2026-10-01 this job sat in apt-get update for 45 minutes
+      # (both runs of one commit) until the job timeout cancelled it, with
+      # nothing built. The .debs are kept in an actions/cache directory keyed
+      # by runner image (SampleRateTap's ci.yml does the same), so a hit
+      # turns the install into an index refresh, and apt gets a per-request
+      # timeout with retries so a hung mirror fails in seconds, not in the
+      # job budget.
+      - name: Runner image (for the package cache key)
+        id: apt-image
+        run: echo "os=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+      - name: Cache the Arm toolchain packages
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: ~/apt-archives
+          key: apt-arm-toolchain-${{ steps.apt-image.outputs.os }}-1
+
       # newlib and the C++ runtime are only Recommends of gcc-arm-none-eabi;
       # name them so the install does not depend on apt's Recommends default
       # (and does not drag ~90 desktop packages in behind qemu-system-arm).
       - name: Install Arm GNU toolchain and QEMU
-        run: >
-          sudo apt-get update -q &&
-          sudo apt-get install -y -q --no-install-recommends
-          gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
-          qemu-system-arm
+        run: |
+          mkdir -p ~/apt-archives
+          apt_opts=(-o Acquire::http::Timeout=30 -o Acquire::Retries=3)
+          sudo apt-get "${apt_opts[@]}" update -q
+          sudo apt-get "${apt_opts[@]}" install -y -q --no-install-recommends \
+            -o Dir::Cache::Archives="$HOME/apt-archives" \
+            gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib \
+            qemu-system-arm
+          sudo chown -R "$(id -u):$(id -g)" ~/apt-archives && rm -rf ~/apt-archives/partial ~/apt-archives/lock
 
       - name: Toolchain versions
         run: |
