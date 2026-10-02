@@ -506,7 +506,11 @@ DSP-extension Arm cores without Helium — bit-exact by construction), and the
 channel-parallel pair `dot_tile_frame_major` / `dot_rows_frame_major`
 (register-blocked 8/4/2/1 tiles over frame-major storage, coefficient
 broadcast across channel lanes — bit-exact against the planar path for every
-sample type, float included, because lanes are channels, not taps). The
+sample type, float included, because lanes are channels, not taps), and
+`accumulate_row`, `dot_row`'s accumulation without its finalize, so a caller
+can sum several rows under one rounding point (a polyphase decimator that
+dots only its nonzero branches; `finalize(accumulate_row(accum{}, …))` is
+`dot_row` bit for bit, pinned). The
 `TAP_DSP_CHANNEL_PARALLEL` / `TAP_DSP_CP_MIN_CHANNELS` gates encode which
 targets prefer which layout.
 
