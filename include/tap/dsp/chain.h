@@ -37,6 +37,17 @@
 //     Each stage reports latency_output_frames() (an exact_ratio in its own
 //     output frames) or latency_input_samples() (an integer at its input
 //     rate, decimate.h's form); the chain converts either.
+//   - flush(out): end of stream. Feeds each stage, in order, window_frames()
+//     zeros at its own input and runs what it produces through the stages
+//     after it, so every stage's tail is drained and written;
+//     flush_output_frames() frames, exactly. A stage's window_frames() is the
+//     count of zero input frames after which its output is silence (its
+//     history length: taps - 1 for an M-branch decimator); each stage reports
+//     it, and a chain of stages that do not cannot flush (a static_assert
+//     names the rule). flush() equals zero-padding the chain's input, bit for
+//     bit: its output is a prefix of the padded stream's, and every padded
+//     output beyond it is silence. The chain is left in the zero-fed state;
+//     reset() before reuse.
 //   - reset() resets every stage.
 //
 // Channels: every stage of a chain must agree on the frame width; the chain
@@ -113,6 +124,10 @@ namespace tap::dsp {
         concept reports_latency_input = requires(const T& s) {
             { s.latency_input_samples() } -> std::convertible_to<std::uint64_t>;
         };
+        template <typename T>
+        concept reports_window = requires(const T& s) {
+            { s.window_frames() } noexcept -> std::convertible_to<std::size_t>;
+        };
 
         /// A stage's group delay in its own output frames, from whichever
         /// form it reports.
@@ -167,14 +182,18 @@ namespace tap::dsp {
         chain(std::size_t channels, First first, Rest... rest)
             : m_stages(std::move(first), std::move(rest)...)
             , m_channels(channels) {
-            // Scratch i holds stage i's output for a k_block-frame input chunk
-            // (the last stage writes to the caller's buffer).
-            std::size_t cap = k_block;
-            [&]<std::size_t... I>(std::index_sequence<I...>) {
-                ((cap = detail::max_outputs_for<std::tuple_element_t<I, stages_tuple>>(cap),
-                  I + 1 < k_stages ? m_scratch[I].assign(cap * m_channels, sample_traits<sample>::silence()) : void()),
-                 ...);
+            // Scratch i holds stage i's output for a k_block-frame chunk fed to
+            // any stage at or before it (process feeds stage 0, flush feeds
+            // every stage in turn); the last stage writes to the caller's
+            // buffer.
+            std::size_t cap[k_stages] = {};
+            [&]<std::size_t... E>(std::index_sequence<E...>) {
+                (widen_scratch_from<E>(cap), ...);
             }(std::make_index_sequence<k_stages>{});
+            for (std::size_t i = 0; i + 1 < k_stages; ++i) {
+                m_scratch[i].assign(cap[i] * m_channels, sample_traits<sample>::silence());
+            }
+            m_zeros.assign(k_block * m_channels, sample_traits<sample>::silence());
         }
 
         /// Feeds n input frames through every stage; returns the frames the
@@ -220,6 +239,34 @@ namespace tap::dsp {
             return latency_output_frames().value() / out_rate_hz;
         }
 
+        /// End of stream: drains every stage's tail in order (see the file
+        /// header); writes flush_output_frames() frames and returns that.
+        /// noexcept and allocation-free; reset() before reuse.
+        std::size_t flush(sample* out) noexcept {
+            static_assert(k_every_stage_reports_window,
+                          "a chain's flush needs every stage to report window_frames(), the zero input frames that "
+                          "drain it");
+            std::size_t produced = 0;
+            [&]<std::size_t... I>(std::index_sequence<I...>) {
+                ((produced += flush_stage<I>(out + produced * m_channels)), ...);
+            }(std::make_index_sequence<k_stages>{});
+            return produced;
+        }
+
+        /// Frames flush() will write from the current position: each stage's
+        /// outputs for the frames the stages before it drain plus its own
+        /// window of zeros, composed forward.
+        std::size_t flush_output_frames() const noexcept {
+            static_assert(k_every_stage_reports_window,
+                          "a chain's flush needs every stage to report window_frames(), the zero input frames that "
+                          "drain it");
+            std::size_t n = 0;
+            [&]<std::size_t... I>(std::index_sequence<I...>) {
+                ((n = std::get<I>(m_stages).outputs_for(n + std::get<I>(m_stages).window_frames())), ...);
+            }(std::make_index_sequence<k_stages>{});
+            return n;
+        }
+
         void reset() noexcept {
             std::apply([](auto&... s) { (s.reset(), ...); }, m_stages);
         }
@@ -237,6 +284,9 @@ namespace tap::dsp {
 
       private:
         using stages_tuple = std::tuple<First, Rest...>;
+
+        static constexpr bool k_every_stage_reports_window =
+            detail::reports_window<First> && (detail::reports_window<Rest> && ...);
 
         /// The product of the ratios of the stages after I: converts stage
         /// I's output frames to the chain's.
@@ -262,6 +312,33 @@ namespace tap::dsp {
                 const std::size_t made = std::get<I>(m_stages).process(in, n, m_scratch[I].data());
                 return run_chunk<I + 1>(m_scratch[I].data(), made, out);
             }
+        }
+
+        /// Widens cap[I] for every stage I >= E to the outputs a k_block-frame
+        /// chunk fed to stage E can reach it with.
+        template <std::size_t E>
+        static constexpr void widen_scratch_from(std::size_t* cap) noexcept {
+            std::size_t c = k_block;
+            [&]<std::size_t... I>(std::index_sequence<I...>) {
+                ((I >= E ? (c      = detail::max_outputs_for<std::tuple_element_t<I, stages_tuple>>(c),
+                            cap[I] = cap[I] > c ? cap[I] : c)
+                         : std::size_t{0}),
+                 ...);
+            }(std::make_index_sequence<k_stages>{});
+        }
+
+        /// Feeds stage I its window of zeros, k_block at a time, through the
+        /// stages after it.
+        template <std::size_t I>
+        std::size_t flush_stage(sample* out) noexcept {
+            std::size_t n        = static_cast<std::size_t>(std::get<I>(m_stages).window_frames());
+            std::size_t produced = 0;
+            while (n > 0) {
+                const std::size_t take = n < k_block ? n : k_block;
+                produced += run_chunk<I>(m_zeros.data(), take, out + produced * m_channels);
+                n -= take;
+            }
+            return produced;
         }
 
         /// The smallest n with s.outputs_for(n) >= k for one stage: outputs_for
@@ -294,6 +371,7 @@ namespace tap::dsp {
         stages_tuple        m_stages;
         std::size_t         m_channels;
         std::vector<sample> m_scratch[k_stages > 1 ? k_stages - 1 : 1];
+        std::vector<sample> m_zeros; ///< one k_block chunk of silence, what flush feeds
     };
 
 } // namespace tap::dsp

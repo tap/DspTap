@@ -183,6 +183,9 @@ namespace tap::dsp {
         std::span<const coeff> coefficients() const noexcept { return m_h; }
         /// Group delay in input samples: (taps - 1) / 2, an integer.
         std::size_t latency_input_samples() const noexcept { return (m_taps - 1) / 2; }
+        /// Zero input samples after which the output is silence: the history
+        /// length, taps - 1 (what a chain's flush feeds; chain.h).
+        std::size_t window_frames() const noexcept { return m_taps - 1; }
 
       private:
         static constexpr std::size_t k_block = 256; ///< history buffer slack before the memmove
