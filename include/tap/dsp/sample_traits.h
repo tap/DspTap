@@ -314,4 +314,66 @@ namespace tap::dsp {
                   == std::int64_t{1} << 44);
     // ANCHOR_END: st_core_concept
 
+    // ANCHOR: st_finalize_divided
+    /// finalize() of acc / Divisor, the division folded into the single
+    /// rounding point: for a dot whose coefficients carry a gain of Divisor
+    /// the format cannot hold, e.g. a polyphase decimator by M whose M
+    /// branches are each quantized at their own unity sum (so each keeps the
+    /// full coefficient precision instead of 1 / M of it) and whose summed
+    /// branches are then divided by M once, here.
+    ///
+    /// Contract, per format:
+    ///   - floating: finalize(acc / Divisor), the division in the accumulator
+    ///     domain (double);
+    ///   - fixed point, Divisor a power of two 2^k: round-half-up then
+    ///     saturate, exactly as finalize() with its shift widened by k —
+    ///     finalize_divided<S, 1> IS finalize;
+    ///   - Q31, any other Divisor: the exact round-half-up quotient
+    ///     floor((acc + D 2^(f-1)) / (D 2^f)), f = k_finalize_shift, saturated
+    ///     (one 64-bit division);
+    ///   - Q15, any other Divisor: multiply-back, (acc c + 2^(f+s-1)) >> (f+s)
+    ///     with c = round(2^s / D), s = 26, saturated. For |acc| < 2^37 the
+    ///     product fits int64 and the result is the exact round-half-up
+    ///     quotient except where that quotient lies within D 2^-11 of a
+    ///     rounding boundary (|quotient| < 2^16); at every exact multiple of
+    ///     D 2^f — DC through unity-sum branches — it is exact.
+    /// A full-scale input through rows summing to Divisor x unity therefore
+    /// comes out at exactly full scale, as finalize() does through one row.
+    template <sample_type S, std::uint32_t Divisor>
+    constexpr S finalize_divided(typename sample_traits<S>::accum acc) noexcept {
+        static_assert(Divisor >= 1, "finalize_divided: the divisor is a positive integer");
+        using tr = sample_traits<S>;
+        if constexpr (!tr::k_is_fixed_point) {
+            return tr::finalize(acc / static_cast<typename tr::accum>(Divisor));
+        }
+        else {
+            constexpr int f = tr::k_finalize_shift;
+            if constexpr ((Divisor & (Divisor - 1)) == 0) {
+                constexpr int k = [] {
+                    int n = 0;
+                    while ((std::uint32_t{1} << n) < Divisor) {
+                        ++n;
+                    }
+                    return n;
+                }();
+                return detail::clamp_sat<S>((acc + (std::int64_t{1} << (f + k - 1))) >> (f + k));
+            }
+            else if constexpr (std::is_same_v<S, std::int16_t>) {
+                constexpr int          s = 26;
+                constexpr std::int64_t c = ((std::int64_t{1} << s) + Divisor / 2) / Divisor; // round(2^s / D)
+                return detail::clamp_sat<S>((acc * c + (std::int64_t{1} << (f + s - 1))) >> (f + s));
+            }
+            else {
+                constexpr std::int64_t den = static_cast<std::int64_t>(Divisor) << f; // even: f >= 1
+                const std::int64_t     num = acc + den / 2;
+                std::int64_t           q   = num / den; // truncates toward zero
+                if (num % den != 0 && num < 0) {
+                    --q; // floor
+                }
+                return detail::clamp_sat<S>(q);
+            }
+        }
+    }
+    // ANCHOR_END: st_finalize_divided
+
 } // namespace tap::dsp
