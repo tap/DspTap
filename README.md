@@ -421,19 +421,25 @@ compile-time numbers, `process`, `outputs_for`, `reset`) and
 `chain<Stages...>`, which runs the stages in order through scratch sized at
 construction (noexcept, allocation-free, bit-identical for any chunking),
 composes `outputs_for` forward and `frames_needed` (the exact inverse)
-backward, and reports the chain's group delay as an `exact_ratio` at its
+backward, reports the chain's group delay as an `exact_ratio` at its
 output rate from each stage's own (`latency_output_frames()` or
-`latency_input_samples()`). A chain is written by the caller as a type,
+`latency_input_samples()`), and drains the stream with `flush()`: each
+stage in order is fed its `window_frames()` of zeros (the zero input after
+which its output is silence, `taps - 1` for a decimator) through the stages
+after it, `flush_output_frames()` frames in all, bit-identical to zero
+padding the chain's input. A chain is written by the caller as a type,
 never looked up from a rate pair. `basic_decimator` satisfies the concept
-(`sample`, `k_up`, `k_down` added), which is how the helper is proven on an
-existing primitive before any new engine depends on it.
+(`sample`, `k_up`, `k_down`, `window_frames` added), which is how the helper
+is proven on an existing primitive before any new engine depends on it.
 
 Pinned by `tests/test_chain.cpp`: a chain of the by-2 and by-3 decimators
 equals the two run in sequence bit for bit in every sample format, for
 chunks of 1 to the whole stream; `outputs_for` exact from every phase;
 `frames_needed` the exact inverse; latency 80/3 output frames (40/2 of the
 by-2's outputs through the by-3, plus 60/3), the impulse peak where it
-says; reset bit-exact.
+says; flush equal to zero padding bit for bit from every phase in every
+format, `flush_output_frames` exact, the chain silent afterwards; reset
+bit-exact.
 
 ### `tap/dsp/sample_traits.h` — sample formats: double, float, Q15, Q31
 

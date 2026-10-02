@@ -6,8 +6,9 @@
 // two run in sequence bit for bit, for any chunking, from a fresh state and
 // after reset; outputs_for composes to exactly what process writes from
 // every phase; frames_needed is the exact inverse; the latency is the exact
-// rational the stages' delays compose to; and the concept admits
-// basic_decimator and rejects a type missing a member.
+// rational the stages' delays compose to; flush drains every stage's tail and
+// equals zero padding bit for bit, from every phase, in every sample format;
+// and the concept admits basic_decimator and rejects a type missing a member.
 
 #include <cmath>
 #include <cstddef>
@@ -189,6 +190,64 @@ namespace {
         ASSERT_EQ(a.size(), b.size());
         c.process(x.data(), x.size(), b.data());
         EXPECT_TRUE(a == b);
+    }
+
+    // flush() is zero padding: its output is a prefix of the padded stream's,
+    // flush_output_frames() long, and the padded stream is silence beyond it.
+    TYPED_TEST(chain_test, FlushEqualsZeroPaddingBitForBit) {
+        using sample = TypeParam;
+        using chain6 = chain<basic_decimator<sample, 2>, basic_decimator<sample, 3>>;
+        const auto x = test_signal<sample>(601);
+        for (std::size_t fed = 595; fed <= 601; ++fed) { // every phase of the by-6 chain
+            chain6              flushed(basic_decimator<sample, 2>{}, basic_decimator<sample, 3>{});
+            std::vector<sample> scratch(flushed.outputs_for(fed));
+            flushed.process(x.data(), fed, scratch.data());
+            chain6 padded = flushed;
+
+            const std::size_t   expect = flushed.flush_output_frames();
+            std::vector<sample> a(expect + 8, sample{1});
+            ASSERT_EQ(flushed.flush(a.data()), expect);
+            // Enough zeros to drain both stages twice over.
+            const std::size_t zeros =
+                2 * (padded.template stage<0>().window_frames() + 2 * padded.template stage<1>().window_frames());
+            std::vector<sample> z(zeros, tap::dsp::sample_traits<sample>::silence());
+            std::vector<sample> b(padded.outputs_for(zeros));
+            const std::size_t   made = padded.process(z.data(), zeros, b.data());
+            ASSERT_GT(made, expect);
+            for (std::size_t i = 0; i < expect; ++i) {
+                ASSERT_EQ(a[i], b[i]) << "fed " << fed << " output " << i;
+            }
+            for (std::size_t i = expect; i < made; ++i) {
+                ASSERT_EQ(b[i], tap::dsp::sample_traits<sample>::silence()) << "fed " << fed << " output " << i;
+            }
+        }
+    }
+
+    TEST(Chain, FlushOutputFramesIsExactFromEveryPhaseAndTheTailIsDrained) {
+        chain<basic_decimator<float, 2>, basic_decimator<float, 3>> c(basic_decimator<float, 2>{},
+                                                                      basic_decimator<float, 3>{});
+        // Each window is the stage's history length; the count is what
+        // outputs_for composes over the two windows.
+        const std::size_t w0 = c.stage<0>().window_frames();
+        const std::size_t w1 = c.stage<1>().window_frames();
+        EXPECT_EQ(w0, c.stage<0>().taps() - 1);
+        EXPECT_EQ(w1, c.stage<1>().taps() - 1);
+        EXPECT_EQ(c.flush_output_frames(), c.stage<1>().outputs_for(c.stage<0>().outputs_for(w0) + w1));
+        const auto         x = test_signal<float>(64);
+        std::vector<float> y(c.outputs_for(64) + c.flush_output_frames() + 1);
+        for (std::size_t fed = 0; fed < 12; ++fed) {
+            chain<basic_decimator<float, 2>, basic_decimator<float, 3>> probe = c;
+            probe.process(x.data(), fed, y.data());
+            const std::size_t expect = probe.flush_output_frames();
+            EXPECT_EQ(probe.flush(y.data()), expect) << "fed " << fed;
+            // Drained: the next window of zeros produces silence only.
+            std::vector<float> z(w0 + 3 * w1, 0.0f);
+            std::vector<float> tail(probe.outputs_for(z.size()));
+            probe.process(z.data(), z.size(), tail.data());
+            for (const float v : tail) {
+                EXPECT_EQ(v, 0.0f);
+            }
+        }
     }
 
     TEST(Chain, ProfilesPassThroughToTheStages) {
