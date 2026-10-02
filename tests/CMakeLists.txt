@@ -127,9 +127,11 @@ endfunction()
 # sample_traits, quantize, the cheap Kaiser tests, the Nyquist designer's
 # structural pins, SineAnalysis, and whatever a later PR appends — runs on
 # target. The three Nyquist spec searches (Nyquist.SearchFindsTheMinimal*)
-# are excluded for the same reason as the Kaiser ones: each is a sweep of
-# double DFTs per candidate length, target-independent design numbers that
-# cost tens of seconds of soft-float emulation.
+# and the search-grid test (Nyquist.SearchGrid*, a 16384-point sweep per
+# candidate at the 8th band) are excluded for the same reason as the Kaiser
+# ones: each is a sweep of double DFTs per candidate length,
+# target-independent design numbers that cost tens of seconds of soft-float
+# emulation.
 # ------------------------------------------------------------------------------
 tap_dsp_add_gtest_executable(tap_dsp_tests
     SOURCES
@@ -157,7 +159,7 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_windows_macros.cpp
         test_yin.cpp
     MAIN_FILTER
-        "*-psola_test/1.*:pvoc_test/1.*:yin_test/1.*:log_mel_test/1.*:nn_test/1.*:Kaiser.FastPrototypeMeetsSpec:Kaiser.BalancedPrototypeMeetsSpec:Kaiser.TransparentPrototypeMeetsSpec:Kaiser.EconomyPrototypeMeetsSpec:Kaiser.RationalPhaseCountMeetsSpec:Kaiser.CompensatedSpecsHoldAt16k:Nyquist.SearchFindsTheMinimal*:MultitoneAnalysis.*")
+        "*-psola_test/1.*:pvoc_test/1.*:yin_test/1.*:log_mel_test/1.*:nn_test/1.*:Kaiser.FastPrototypeMeetsSpec:Kaiser.BalancedPrototypeMeetsSpec:Kaiser.TransparentPrototypeMeetsSpec:Kaiser.EconomyPrototypeMeetsSpec:Kaiser.RationalPhaseCountMeetsSpec:Kaiser.CompensatedSpecsHoldAt16k:Nyquist.SearchFindsTheMinimal*:Nyquist.SearchGrid*:MultitoneAnalysis.*")
 target_link_libraries(tap_dsp_tests PRIVATE
     tap::dsp
     tap_dsp_warnings)

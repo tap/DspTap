@@ -398,8 +398,11 @@ lower rate's Nyquist, so the transition is symmetric (f_p + f_s = r: the
 engine's coverage rule with equality) and a half-band stage computes 2m + 1
 MACs per output instead of 4m − 1. `nyquist_response_db`,
 `nyquist_worst_stopband_db` and `search_nyquist_m` (the smallest m meeting
-a stopband with ≥ 1 dB margin on a fine grid, the `bridge` criterion) are
-the design-time instruments. Published literature: Mintzer 1982,
+a stopband with ≥ 1 dB margin on a grid of `grid_points`, the `bridge`
+criterion; the default 1024 points resolve designs up to a few hundred
+taps and a long design asks for more — the 8th-band 120 dB candidate reads
+−121.7 dB on 1024 points and −119.3 dB on 8192, a pinned test) are the
+design-time instruments. Published literature: Mintzer 1982,
 Vaidyanathan §4.6.
 
 Pinned by `tests/test_nyquist.cpp`: the exact centre and zeros for L ∈
