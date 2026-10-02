@@ -6,9 +6,13 @@
 // contract point (Q formats, rounding mode, saturation, accumulator
 // pre-shift); changing one is a breaking change for every consumer.
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <type_traits>
+#include <utility>
 
 #include <gtest/gtest.h>
 
@@ -162,5 +166,123 @@ namespace {
     // value the kernels start from.
     static_assert(q15::mac(q15::accum{}, std::int16_t{-32768}, std::int16_t{-16384}) == std::int64_t{32768} * 16384);
     static_assert(f64::mac(f64::accum{}, 3.0, -2.0) == -6.0);
+
+    // ------------------------------------------------------------------
+    // finalize_divided<S, D>: finalize() of acc / D under one rounding.
+
+    /// The exact round-half-up quotient floor((acc + D 2^(f-1)) / (D 2^f)).
+    std::int64_t exact_quotient(std::int64_t acc, std::int64_t divisor, int f) {
+        const std::int64_t den = divisor << f;
+        const std::int64_t num = acc + den / 2;
+        std::int64_t       q   = num / den;
+        if (num % den != 0 && num < 0) {
+            --q;
+        }
+        return q;
+    }
+
+    template <std::uint32_t D>
+    void expect_q15_multiples_exact() {
+        for (std::int32_t x = -32768; x <= 32767; ++x) {
+            const std::int64_t acc = static_cast<std::int64_t>(D) * (std::int64_t{1} << q15::k_finalize_shift) * x;
+            ASSERT_EQ((tap::dsp::finalize_divided<std::int16_t, D>(acc)), x) << "D=" << D;
+        }
+    }
+
+    template <std::uint32_t D>
+    void expect_q31_multiples_exact() {
+        for (std::int64_t x : {std::int64_t{-2147483648LL}, std::int64_t{-1}, std::int64_t{0}, std::int64_t{1},
+                               std::int64_t{123456789}, std::int64_t{2147483647}}) {
+            const std::int64_t acc = static_cast<std::int64_t>(D) * (std::int64_t{1} << q31::k_finalize_shift) * x;
+            EXPECT_EQ((tap::dsp::finalize_divided<std::int32_t, D>(acc)), x) << "D=" << D;
+        }
+    }
+
+    // Every exact multiple of D 2^f — the accumulator of DC through rows
+    // summing to D x unity — comes out exact: all 65536 Q15 values for each
+    // divisor of the family's vocabulary and two odd ones, a sample of Q31.
+    TEST(SampleTraits, FinalizeDividedIsExactAtEveryMultipleOfTheDivisor) {
+        expect_q15_multiples_exact<1>();
+        expect_q15_multiples_exact<2>();
+        expect_q15_multiples_exact<3>();
+        expect_q15_multiples_exact<4>();
+        expect_q15_multiples_exact<5>();
+        expect_q15_multiples_exact<6>();
+        expect_q15_multiples_exact<7>();
+        expect_q15_multiples_exact<8>();
+        expect_q31_multiples_exact<1>();
+        expect_q31_multiples_exact<3>();
+        expect_q31_multiples_exact<6>();
+        expect_q31_multiples_exact<8>();
+    }
+
+    // D = 1 is finalize(); a power of two is finalize's round-half-up with the
+    // shift widened (exact), Q31's other divisors the exact quotient, and
+    // Q15's multiply-back the exact quotient except within D 2^-11 of a
+    // rounding boundary, where it may land one step away.
+    template <std::uint32_t D>
+    void expect_q15_quotient(std::uint64_t seed) {
+        constexpr int f = q15::k_finalize_shift;
+        for (int i = 0; i < 20000; ++i) {
+            seed                     = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+            const auto         acc   = static_cast<std::int64_t>(seed >> 30) - (std::int64_t{1} << 33);
+            const std::int64_t exact = exact_quotient(acc, D, f);
+            const auto         got   = static_cast<std::int64_t>(tap::dsp::finalize_divided<std::int16_t, D>(acc));
+            const std::int64_t clamp = std::min<std::int64_t>(32767, std::max<std::int64_t>(-32768, exact));
+            if constexpr ((D & (D - 1)) == 0) {
+                ASSERT_EQ(got, clamp) << "D=" << D << " acc=" << acc;
+            }
+            else {
+                // Distance of the true quotient from its rounding boundary.
+                const double quotient = static_cast<double>(acc) / (static_cast<double>(D) * (1 << f));
+                const double frac     = quotient - std::floor(quotient);
+                if (std::abs(frac - 0.5) > static_cast<double>(D) / 2048.0) {
+                    ASSERT_EQ(got, clamp) << "D=" << D << " acc=" << acc;
+                }
+                else {
+                    ASSERT_LE(std::abs(got - clamp), 1) << "D=" << D << " acc=" << acc;
+                }
+            }
+        }
+    }
+
+    TEST(SampleTraits, FinalizeDividedRoundsTheQuotientHalfUp) {
+        for (std::int64_t acc : {std::int64_t{0}, std::int64_t{8191}, std::int64_t{8192}, std::int64_t{-8192},
+                                 std::int64_t{-8193}, std::int64_t{1} << 40, -(std::int64_t{1} << 40)}) {
+            EXPECT_EQ((tap::dsp::finalize_divided<std::int16_t, 1>(acc)), q15::finalize(acc)) << acc;
+            EXPECT_EQ((tap::dsp::finalize_divided<std::int32_t, 1>(acc)), q31::finalize(acc)) << acc;
+            EXPECT_EQ((tap::dsp::finalize_divided<double, 1>(static_cast<double>(acc))),
+                      f64::finalize(static_cast<double>(acc)));
+        }
+        expect_q15_quotient<2>(1);
+        expect_q15_quotient<3>(2);
+        expect_q15_quotient<6>(3);
+        expect_q15_quotient<8>(4);
+        std::uint64_t seed = 5;
+        for (int i = 0; i < 20000; ++i) {
+            seed           = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+            const auto acc = static_cast<std::int64_t>(seed >> 14) - (std::int64_t{1} << 49);
+            for (const auto& [got, d] :
+                 {std::pair{static_cast<std::int64_t>(tap::dsp::finalize_divided<std::int32_t, 3>(acc)), 3},
+                  std::pair{static_cast<std::int64_t>(tap::dsp::finalize_divided<std::int32_t, 6>(acc)), 6},
+                  std::pair{static_cast<std::int64_t>(tap::dsp::finalize_divided<std::int32_t, 8>(acc)), 8}}) {
+                const std::int64_t exact = exact_quotient(acc, d, q31::k_finalize_shift);
+                ASSERT_EQ(got, std::min<std::int64_t>(2147483647, std::max<std::int64_t>(-2147483648LL, exact)))
+                    << "D=" << d << " acc=" << acc;
+            }
+        }
+        // Floating: finalize of the quotient in the accumulator domain.
+        EXPECT_EQ((tap::dsp::finalize_divided<float, 3>(1.0)), static_cast<float>(1.0 / 3.0));
+        EXPECT_EQ((tap::dsp::finalize_divided<double, 6>(-3.0)), -0.5);
+    }
+
+    TEST(SampleTraits, FinalizeDividedSaturates) {
+        const std::int64_t big = std::int64_t{1} << 36;
+        EXPECT_EQ((tap::dsp::finalize_divided<std::int16_t, 3>(big)), 32767);
+        EXPECT_EQ((tap::dsp::finalize_divided<std::int16_t, 3>(-big)), -32768);
+        EXPECT_EQ((tap::dsp::finalize_divided<std::int16_t, 8>(big)), 32767);
+        EXPECT_EQ((tap::dsp::finalize_divided<std::int32_t, 6>(std::int64_t{1} << 62)), 2147483647);
+        EXPECT_EQ((tap::dsp::finalize_divided<std::int32_t, 6>(-(std::int64_t{1} << 62))), -2147483648LL);
+    }
 
 } // namespace

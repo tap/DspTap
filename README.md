@@ -483,6 +483,18 @@ This header is the format core only. Engine-specific extensions (e.g.
 SampleRateTap's inter-phase coefficient blending) derive from these
 specializations and refine the `tap::dsp::sample_type` concept.
 
+`finalize_divided<S, D>(acc)` is `finalize()` of `acc / D` under the same
+single rounding, for a dot whose coefficients carry a gain of D the format
+cannot hold: a Q15 polyphase decimator by M quantizes each of its M branches
+at its own unity sum (full Q1.14 precision, where `h / M` in one row would
+lose about 20 log10 M dB of stopband) and divides the summed branches by M
+here. A power-of-two D widens finalize's shift (exact; `D = 1` *is*
+`finalize`); otherwise Q31 takes the exact round-half-up quotient and Q15 a
+multiply-back by `round(2^26 / D)`, exact at every multiple of `D·2^14` (all
+65 536 DC values pinned for D = 1 … 8) and the exact quotient except within
+`D·2^-11` of a rounding boundary. SampleRateTap's rational engine adopts it
+for its Q15 decimators.
+
 ### `tap/dsp/fft/fft_arith.h` — butterfly arithmetic for the FFT profiles
 
 The sibling trait the fixed-point real FFT is written against (its docstrings
