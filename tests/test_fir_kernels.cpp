@@ -194,4 +194,40 @@ namespace {
         EXPECT_EQ(dot_row<sample>(row.data(), hist.data(), k_taps), tr::finalize(acc));
     }
 
+    // Every tap count from 0 to 40 against the reference mac chain, for all
+    // three planar kernels: on Helium targets this walks every predicated
+    // tail length of the eight-lane Q15 reduction (0 to 7 lanes live) and
+    // every scalar remainder of the reversed gather walk; on SMLALD targets
+    // both parities of the dual-MAC pairing; on hosts the same contract at
+    // forty more geometries. accumulate_row starts from a nonzero partial
+    // sum so the carried accumulator is pinned too.
+    TYPED_TEST(fir_kernels_test, EveryTapCountMatchesReference) {
+        using sample = TypeParam;
+        using tr     = sample_traits<sample>;
+        xorshift32 rng(0x51ed270bu);
+        for (std::size_t taps = 0; taps <= 40; ++taps) {
+            std::vector<sample>             hist(taps + 1);
+            std::vector<typename tr::coeff> row(taps + 1);
+            for (std::size_t t = 0; t <= taps; ++t) {
+                hist[t] = sample_from<sample>(rng.next_u32());
+                row[t]  = coeff_from<sample>(rng.next_u32());
+            }
+            typename tr::accum fwd{};
+            typename tr::accum rev{};
+            for (std::size_t t = 0; t < taps; ++t) {
+                fwd = tr::mac(fwd, hist[t], row[t]);
+                rev = tr::mac(rev, hist[t], row[taps - 1 - t]);
+            }
+            EXPECT_EQ(dot_row<sample>(row.data(), hist.data(), taps), tr::finalize(fwd)) << taps;
+            EXPECT_EQ(dot_row_reversed<sample>(row.data(), hist.data(), taps), tr::finalize(rev)) << taps;
+            const typename tr::accum seed = tr::mac(typename tr::accum{}, hist[taps], row[taps]);
+            typename tr::accum       ref  = seed;
+            for (std::size_t t = 0; t < taps; ++t) {
+                ref = tr::mac(ref, hist[t], row[t]);
+            }
+            EXPECT_EQ(tr::finalize(accumulate_row<sample>(seed, row.data(), hist.data(), taps)), tr::finalize(ref))
+                << taps;
+        }
+    }
+
 } // namespace

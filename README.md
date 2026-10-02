@@ -507,8 +507,12 @@ are the free functions in `fft/tables.h`, pinned by checksum per certified N.
 ### `tap/dsp/fir_kernels.h` — dot-product kernels
 
 The FIR hot loops, target-gated the way SampleRateTap's optimization campaign
-measured them: `dot_row` (planar; routes Q15 through a dual-MAC SMLALD loop on
-DSP-extension Arm cores without Helium — bit-exact by construction), and the
+measured them: `dot_row` (planar; routes Q15 through an eight-lane Helium
+VMLALDAVA reduction with a predicated tail on MVE cores — the Cortex-M55 /
+M85 class, where GCC 13 leaves the scalar loop at one SMLALBB per tap — and
+through a dual-MAC SMLALD loop on DSP-extension Arm cores without Helium; both
+bit-exact by construction, since every 16 × 16 product is exact and the int64
+sum associative, and both pinned at every tap count from 0 to 40), and the
 channel-parallel pair `dot_tile_frame_major` / `dot_rows_frame_major`
 (register-blocked 8/4/2/1 tiles over frame-major storage, coefficient
 broadcast across channel lanes — bit-exact against the planar path for every
