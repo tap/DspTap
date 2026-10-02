@@ -199,6 +199,24 @@ namespace {
         expect_search_minimal({.l = 2, .passband_frac = 5.0 / 12.0, .atten_db = 120.0, .expected_m = 31});
     }
 
+    // The search's grid is a parameter because a long design's sidelobes
+    // are narrower than the default grid's step: the 8th-band transparent
+    // candidate (120 dB, p = 5/12) passes at m = 24 (N = 383) on 1024 points
+    // and fails there on 16384, where m = 25 (N = 399) is the first to pass.
+    // Measured 2026-10-02 (the rational engine's M2 pins use 16384 points).
+    TEST(Nyquist, SearchGridIsAParameterAndResolvesLongDesignsSidelobes) {
+        EXPECT_EQ(search_nyquist_m(8, 5.0 / 12.0, 120.0), 24u);
+        EXPECT_EQ(search_nyquist_m(8, 5.0 / 12.0, 120.0, 1.0, 256, 16384), 25u);
+        const auto h24 = design(8, 24, 120.0);
+        EXPECT_LE(nyquist_worst_stopband_db(h24, 8, 5.0 / 12.0), -121.0);        // the coarse grid's verdict
+        EXPECT_GT(nyquist_worst_stopband_db(h24, 8, 5.0 / 12.0, 16384), -121.0); // the sidelobe it stepped over
+        EXPECT_LT(nyquist_worst_stopband_db(h24, 8, 5.0 / 12.0, 16384), -119.0);
+        const auto h25 = design(8, 25, 120.0);
+        EXPECT_LE(nyquist_worst_stopband_db(h25, 8, 5.0 / 12.0, 16384), -121.0);
+        EXPECT_NEAR(nyquist_worst_stopband_db(h25, 8, 5.0 / 12.0, 16384),
+                    nyquist_worst_stopband_db(h25, 8, 5.0 / 12.0, 65536), 0.01); // converged
+    }
+
     TEST(Nyquist, SearchReturnsZeroWhenNoLengthMeetsTheSpec) {
         EXPECT_EQ(search_nyquist_m(2, 0.49, 120.0, 1.0, 4), 0u);
     }

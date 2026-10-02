@@ -176,17 +176,28 @@ namespace tap::dsp {
     }
 
     /// The smallest m >= 1 whose L-th-band design meets the stopband spec with
-    /// the margin on nyquist_worst_stopband_db's grid: the bridge engine's
-    /// ">= 1 dB margin on a fine grid" criterion. Returns 0 when no m up to
-    /// max_m does. Allocates (one candidate at a time); design time only.
+    /// the margin on nyquist_worst_stopband_db's grid of grid_points: the
+    /// bridge engine's ">= 1 dB margin on a fine grid" criterion. Returns 0
+    /// when no m up to max_m does. Allocates (one candidate at a time);
+    /// design time only.
+    ///
+    /// The grid must resolve the stopband's sidelobes, whose spacing is about
+    /// F_hi / N: the default 1024 points serve designs up to a few hundred
+    /// taps, and a long design needs more (measured: the 8th-band 120 dB
+    /// design at p = 5/12, N = 383, reads -121.7 dB on 1024 points and
+    /// -119.3 dB on 8192, a sidelobe the coarse grid steps over; 16384 points
+    /// agree with 65536 within 0.003 dB for every design up to N = 399). A
+    /// caller that pins a count states the grid it was found on.
     inline std::size_t search_nyquist_m(std::size_t num_phases, double passband_frac, double stopband_atten_db,
-                                        double margin_db = 1.0, std::size_t max_m = 256) {
+                                        double margin_db = 1.0, std::size_t max_m = 256,
+                                        std::size_t grid_points = 1024) {
         const double        beta = kaiser_beta(stopband_atten_db);
         std::vector<double> h;
         for (std::size_t m = 1; m <= max_m; ++m) {
             h.assign(nyquist_length(num_phases, m), 0.0);
             design_nyquist(h, num_phases, beta);
-            if (nyquist_worst_stopband_db(h, num_phases, passband_frac) <= -(stopband_atten_db + margin_db)) {
+            if (nyquist_worst_stopband_db(h, num_phases, passband_frac, grid_points)
+                <= -(stopband_atten_db + margin_db)) {
                 return m;
             }
         }
