@@ -109,6 +109,46 @@ namespace tap::dsp {
     }
     // ANCHOR_END: rs_dot_row
 
+    // ANCHOR: rs_accumulate_row
+    /// dot_row's accumulation without its finalize: acc plus the tap-order
+    /// sum of hist[t] * row[t] in the sample type's accumulator domain, so a
+    /// caller can sum several rows under ONE rounding point — the branches
+    /// of a polyphase decimator whose structural zeros are skipped by
+    /// dotting only its nonzero branches (SampleRateTap's rational engine).
+    /// Contract: finalize(accumulate_row(accum{}, row, hist, taps)) is
+    /// dot_row(row, hist, taps) bit for bit for every sample type: the Q15
+    /// path pairs taps with SMLALD behind the same gate (each product exact
+    /// in int32, the int64 sum associative), and the floating paths run the
+    /// same tap order from the given partial sum, so chaining rows is the
+    /// reference mac chain over their concatenation.
+    template <sample_type S>
+    inline typename sample_traits<S>::accum accumulate_row(typename sample_traits<S>::accum                         acc,
+                                                           const typename sample_traits<S>::coeff* TAP_DSP_RESTRICT row,
+                                                           const S* TAP_DSP_RESTRICT hist, std::size_t taps) noexcept {
+        using tr = sample_traits<S>;
+#if TAP_DSP_Q15_SMLALD
+        if constexpr (std::is_same_v<S, std::int16_t>) {
+            std::size_t t = 0;
+            for (; t + 1 < taps; t += 2) {
+                std::uint32_t h;
+                std::uint32_t r;
+                std::memcpy(&h, hist + t, sizeof h);
+                std::memcpy(&r, row + t, sizeof r);
+                acc = __smlald(static_cast<int16x2_t>(h), static_cast<int16x2_t>(r), acc);
+            }
+            for (; t < taps; ++t) {
+                acc = tr::mac(acc, hist[t], row[t]);
+            }
+            return acc;
+        }
+#endif
+        for (std::size_t t = 0; t < taps; ++t) {
+            acc = tr::mac(acc, hist[t], row[t]);
+        }
+        return acc;
+    }
+    // ANCHOR_END: rs_accumulate_row
+
     // ANCHOR: rs_dot_row_reversed
     /// Dot product with the coefficient row read tap-reversed:
     /// y = sum_t hist[t] * row[taps - 1 - t], history walked forward.

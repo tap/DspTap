@@ -18,6 +18,7 @@
 
 namespace {
 
+    using tap::dsp::accumulate_row;
     using tap::dsp::dot_row;
     using tap::dsp::dot_row_reversed;
     using tap::dsp::dot_rows_frame_major;
@@ -130,6 +131,46 @@ namespace {
             EXPECT_EQ(dot_row_reversed<sample>(row.data(), hist.data(), taps),
                       dot_row<sample>(mirrored.data(), hist.data(), taps))
                 << "taps=" << taps;
+        }
+    }
+
+    // accumulate_row's contract: finalize(accumulate_row(accum{}, ...)) is
+    // dot_row bit for bit (even and odd tap counts, so the SMLALD tail runs),
+    // and chaining two rows through one accumulator is the reference mac
+    // chain over their concatenation with a single finalize.
+    TYPED_TEST(fir_kernels_test, AccumulateRowIsDotRowWithoutTheFinalize) {
+        using sample = TypeParam;
+        using tr     = sample_traits<sample>;
+        xorshift32 rng(0x1234ABCDu);
+        for (const std::size_t taps : {48u, 47u, 1u, 2u}) {
+            std::vector<typename tr::coeff> row_a(taps), row_b(taps + 3);
+            std::vector<sample>             hist_a(taps), hist_b(taps + 3);
+            for (auto& v : row_a) {
+                v = coeff_from<sample>(rng.next_u32());
+            }
+            for (auto& v : row_b) {
+                v = coeff_from<sample>(rng.next_u32());
+            }
+            for (auto& v : hist_a) {
+                v = sample_from<sample>(rng.next_u32());
+            }
+            for (auto& v : hist_b) {
+                v = sample_from<sample>(rng.next_u32());
+            }
+            EXPECT_EQ(tr::finalize(accumulate_row<sample>(typename tr::accum{}, row_a.data(), hist_a.data(), taps)),
+                      dot_row<sample>(row_a.data(), hist_a.data(), taps))
+                << taps;
+            typename tr::accum ref{};
+            for (std::size_t t = 0; t < taps; ++t) {
+                ref = tr::mac(ref, hist_a[t], row_a[t]);
+            }
+            for (std::size_t t = 0; t < taps + 3; ++t) {
+                ref = tr::mac(ref, hist_b[t], row_b[t]);
+            }
+            const typename tr::accum chained =
+                accumulate_row<sample>(accumulate_row<sample>(typename tr::accum{}, row_a.data(), hist_a.data(), taps),
+                                       row_b.data(), hist_b.data(), taps + 3);
+            EXPECT_EQ(tr::finalize(chained), tr::finalize(ref)) << taps;
         }
     }
 
