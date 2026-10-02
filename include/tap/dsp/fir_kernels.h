@@ -1,5 +1,5 @@
 /// @file fir_kernels.h
-/// @brief FIR dot-product kernels: planar, SMLALD dual-MAC, and channel-parallel.
+/// @brief FIR dot-product kernels: planar, SMLALD dual-MAC, Helium Q15, and channel-parallel.
 // SPDX-License-Identifier: MIT
 // Copyright 2026 Timothy Place and the DspTap contributors.
 //
@@ -33,10 +33,10 @@
 // ANCHOR: opt_smlald_gate
 // Dual 16x16 MAC (SMLALD) for the Q15 dot product on Arm cores that have
 // the DSP extension but no Helium — the Cortex-M33/M4/M7 class (e.g.
-// Raspberry Pi Pico 2). Gated off when MVE is present: on M55 the compiler
-// already auto-vectorizes the scalar loop with Helium and the intrinsic
-// path would replace vectors with dual-MACs (SampleRateTap
-// docs/PERFORMANCE.md, hypothesis 4). Bit-exactness: each 16x16 product is
+// Raspberry Pi Pico 2). Gated off when MVE is present: the Helium kernel
+// below takes the Q15 dot there, eight lanes per reduction where SMLALD
+// pairs two (SampleRateTap docs/PERFORMANCE.md, hypothesis 4, measured the
+// dual-MAC path against vectors; the next gate records what GCC 13 emits). Bit-exactness: each 16x16 product is
 // exact in int32 and the int64 accumulation is associative, so pairing
 // changes no output bit.
 #if defined(__ARM_FEATURE_DSP) && !defined(__ARM_FEATURE_MVE)
@@ -46,6 +46,25 @@
 #define TAP_DSP_Q15_SMLALD 0
 #endif
 // ANCHOR_END: opt_smlald_gate
+
+// ANCHOR: opt_mve_gate
+// Helium (MVE) for the Q15 dot product on Cortex-M55/M85-class cores. The
+// claim the SMLALD gate above once relied on — that the compiler
+// auto-vectorizes the scalar loop with Helium — does not hold for this loop
+// under arm-none-eabi-gcc 13: the int16 x int16 -> int64 reduction compiles
+// to one scalar SMLALBB per tap (four instructions per MAC with the loads and
+// the low-overhead branch). VMLALDAVA reduces eight 16x16 products into the
+// 64-bit accumulator per instruction. Bit-exactness: each product is exact
+// and the int64 sum is associative, so lane order changes no output bit (the
+// SMLALD argument again). Q15 only: Q31's mac() shifts each product before it
+// accumulates, which no Helium reduction reproduces.
+#if defined(__ARM_FEATURE_MVE) && (__ARM_FEATURE_MVE & 1)
+#include <arm_mve.h>
+#define TAP_DSP_Q15_MVE 1
+#else
+#define TAP_DSP_Q15_MVE 0
+#endif
+// ANCHOR_END: opt_mve_gate
 
 // Channel-parallel dot product for high channel counts (SampleRateTap
 // docs/PERFORMANCE.md, hypothesis C6): history stored frame-major so the
@@ -73,6 +92,53 @@
 
 namespace tap::dsp {
 
+#if TAP_DSP_Q15_MVE
+    namespace detail {
+        // ANCHOR: opt_mve_q15
+        /// acc + sum_t hist[t] * row[t] over taps Q15 products: eight lanes
+        /// per VMLALDAVA over the whole vectors, then one VCTP16-predicated
+        /// step (zeroing loads) for the last taps mod 8: no scalar remainder.
+        inline std::int64_t mve_q15_accumulate(std::int64_t acc, const std::int16_t* TAP_DSP_RESTRICT row,
+                                               const std::int16_t* TAP_DSP_RESTRICT hist, std::size_t taps) noexcept {
+            std::size_t t = 0;
+            for (; t + 8 <= taps; t += 8) { // whole vectors: no predicate in the loop body
+                acc = vmlaldavaq_s16(acc, vld1q_s16(hist + t), vld1q_s16(row + t));
+            }
+            if (t < taps) { // the last 1 to 7 taps, the dead lanes zeroed
+                const mve_pred16_t p = vctp16q(static_cast<std::uint32_t>(taps - t));
+                acc                  = vmlaldavaq_s16(acc, vldrhq_z_s16(hist + t, p), vldrhq_z_s16(row + t, p));
+            }
+            return acc;
+        }
+
+        /// acc + sum_t hist[t] * row[taps - 1 - t]: the row read backward
+        /// through a gather with descending offsets, eight taps per step; the
+        /// last k < 8 taps gather offsets k - 1 ... 0 from the row's start
+        /// under a VCTP16 predicate (the inactive lanes' wrapped offsets are
+        /// never loaded), so no address outside the row is touched.
+        inline std::int64_t mve_q15_accumulate_reversed(std::int64_t acc, const std::int16_t* TAP_DSP_RESTRICT row,
+                                                        const std::int16_t* TAP_DSP_RESTRICT hist,
+                                                        std::size_t                          taps) noexcept {
+            const uint16x8_t down = vddupq_n_u16(7u, 1); // offsets 7, 6, ..., 0
+            std::size_t      t    = 0;
+            for (; t + 8 <= taps; t += 8) {
+                const int16x8_t h = vld1q_s16(hist + t);
+                const int16x8_t r = vldrhq_gather_shifted_offset_s16(row + (taps - 8 - t), down);
+                acc               = vmlaldavaq_s16(acc, h, r);
+            }
+            if (t < taps) {
+                const auto         k = static_cast<std::uint32_t>(taps - t);
+                const mve_pred16_t p = vctp16q(k);
+                const int16x8_t    h = vldrhq_z_s16(hist + t, p);
+                const int16x8_t    r = vldrhq_gather_shifted_offset_z_s16(row, vddupq_n_u16(k - 1u, 1), p);
+                acc                  = vmlaldavaq_s16(acc, h, r);
+            }
+            return acc;
+        }
+        // ANCHOR_END: opt_mve_q15
+    } // namespace detail
+#endif
+
     // ANCHOR: rs_dot_row
     /// Dot product of a coefficient row against a history window, in the
     /// sample type's accumulator domain (see sample_traits.h): tap-order
@@ -81,6 +147,11 @@ namespace tap::dsp {
     inline S dot_row(const typename sample_traits<S>::coeff* TAP_DSP_RESTRICT row, const S* TAP_DSP_RESTRICT hist,
                      std::size_t taps) noexcept {
         using tr = sample_traits<S>;
+#if TAP_DSP_Q15_MVE
+        if constexpr (std::is_same_v<S, std::int16_t>) {
+            return tr::finalize(detail::mve_q15_accumulate(0, row, hist, taps));
+        }
+#endif
 #if TAP_DSP_Q15_SMLALD
         if constexpr (std::is_same_v<S, std::int16_t>) {
             std::int64_t acc = 0;
@@ -126,6 +197,11 @@ namespace tap::dsp {
                                                            const typename sample_traits<S>::coeff* TAP_DSP_RESTRICT row,
                                                            const S* TAP_DSP_RESTRICT hist, std::size_t taps) noexcept {
         using tr = sample_traits<S>;
+#if TAP_DSP_Q15_MVE
+        if constexpr (std::is_same_v<S, std::int16_t>) {
+            return detail::mve_q15_accumulate(acc, row, hist, taps);
+        }
+#endif
 #if TAP_DSP_Q15_SMLALD
         if constexpr (std::is_same_v<S, std::int16_t>) {
             std::size_t t = 0;
@@ -169,6 +245,11 @@ namespace tap::dsp {
     inline S dot_row_reversed(const typename sample_traits<S>::coeff* TAP_DSP_RESTRICT row,
                               const S* TAP_DSP_RESTRICT hist, std::size_t taps) noexcept {
         using tr = sample_traits<S>;
+#if TAP_DSP_Q15_MVE
+        if constexpr (std::is_same_v<S, std::int16_t>) {
+            return tr::finalize(detail::mve_q15_accumulate_reversed(0, row, hist, taps));
+        }
+#endif
 #if TAP_DSP_Q15_SMLALD
         if constexpr (std::is_same_v<S, std::int16_t>) {
             std::int64_t acc = 0;
