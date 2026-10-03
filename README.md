@@ -321,7 +321,11 @@ Pinned by `tests/test_decimate.cpp`: the tap counts against the searched
 minima, the float output sample-for-sample against the numpy reference,
 the passband and stopband numbers measured from the shipped coefficients,
 unity DC (exact in Q15), the group delay, and Q15 tracking float within the
-format's floor.
+format's floor. Q15 stores `M·h` (peak tap 1.0) rather than `h` (peak
+1 / M, a sixth of the Q1.14 range at by 6) and divides the M back out in
+the single rounding (`finalize_divided`, below), so its quantized tables
+attain the economy stopband: −72.3 / −71.7 / −71.0 dB by 2 / 3 / 6, where
+`h` itself attained −68.8 / −66.6 / −61.1 dB.
 
 ## `tap::dsp::nn` — dense and GRU inference kernels
 
@@ -492,8 +496,9 @@ here. A power-of-two D widens finalize's shift (exact; `D = 1` *is*
 `finalize`); otherwise Q31 takes the exact round-half-up quotient and Q15 a
 multiply-back by `round(2^26 / D)`, exact at every multiple of `D·2^14` (all
 65 536 DC values pinned for D = 1 … 8) and the exact quotient except within
-`D·2^-11` of a rounding boundary. SampleRateTap's rational engine adopts it
-for its Q15 decimators.
+`D·2^-11` of a rounding boundary. `decimate.h` adopts it for its Q15 tables
+(`M·h` in one row), and SampleRateTap's rational engine for its Q15
+decimators (each branch at unity).
 
 ### `tap/dsp/fft/fft_arith.h` — butterfly arithmetic for the FFT profiles
 

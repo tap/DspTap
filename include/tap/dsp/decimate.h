@@ -41,7 +41,15 @@
 //     float (double accumulation, the embedded profile, pinned
 //     sample-for-sample against a committed numpy reference), Q15 and Q31
 //     through sample_traits.h with row-sum-preserving quantization so DC
-//     gain stays exactly 1; the Q15 and Q31 profiles are pinned against
+//     gain stays exactly 1. Q15 stores M h, not h: the prototype's peak tap
+//     is the cutoff, 1 / M, so h itself would use 1 / M of the Q1.14 range
+//     and lose about 20 log10 M dB of stopband to coefficient rounding
+//     (economy by 6 attained -61.1 dB); M h peaks at 1.0, still inside
+//     Q1.14, its row sums to M x unity, and finalize_divided (sample_traits.h)
+//     divides the M back out in the single rounding, exact at DC. Attained
+//     Q15 stopband, economy: -72.3 / -71.7 / -71.0 dB by 2 / 3 / 6;
+//     transparent's 100 dB is float's, Q15 reaches -71.0 / -69.8 / -71.8.
+//     Q31 holds h (its 30-bit coefficients keep the design's stopband); the Q15 and Q31 profiles are pinned against
 //     double as measured numbers, and their coefficient tables are bit-pinned
 //     (row sum and FNV-1a-64 per ratio and profile). The decimate_by_*
 //     aliases stay float: they name the
@@ -56,8 +64,10 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 #include "tap/dsp/fir_kernels.h"
@@ -130,11 +140,23 @@ namespace tap::dsp {
         static constexpr std::size_t k_ratio = M;
         static constexpr std::size_t k_up    = 1; ///< the stage ratio, for chain.h's sync_stage
         static constexpr std::size_t k_down  = M;
+        /// What the stored table sums to, in the format's unity: M for Q15,
+        /// whose table is M h (finalize_divided takes the M back out in the
+        /// single rounding), 1 for every other format.
+        static constexpr std::size_t k_table_gain = std::is_same_v<S, std::int16_t> ? M : 1;
+
+        /// The single rounding point, accumulator -> sample.
+        static S finalize_output(typename sample_traits<S>::accum acc) noexcept {
+            return finalize_divided<S, static_cast<std::uint32_t>(k_table_gain)>(acc);
+        }
 
         explicit basic_decimator(const decimate_profile& p = decimate_profile::economy())
             : m_taps(p.taps<M>()) {
             assert(m_taps >= 3 && (m_taps % 2) == 1);
-            const std::vector<double> proto = design_decimator<M>(p);
+            std::vector<double> proto = design_decimator<M>(p);
+            for (double& v : proto) {
+                v *= static_cast<double>(k_table_gain);
+            }
             m_h.resize(m_taps);
             quantize_row_preserving_sum<S>(proto, m_h);
             m_buf.assign(m_taps - 1 + k_block, sample_traits<S>::silence());
@@ -155,7 +177,8 @@ namespace tap::dsp {
                     // Newest sample is x[k*M]; the window holds x[k*M - taps + 1 .. k*M],
                     // oldest first, and the symmetric prototype makes the forward dot
                     // equal to the convolution sum exactly (h[t] == h[taps - 1 - t]).
-                    out[made++] = dot_row<S>(m_h.data(), m_buf.data() + (m_fill - m_taps), m_taps);
+                    out[made++] = finalize_output(accumulate_row<S>(typename sample_traits<S>::accum{}, m_h.data(),
+                                                                    m_buf.data() + (m_fill - m_taps), m_taps));
                 }
                 m_phase = (m_phase + 1) % M;
             }
