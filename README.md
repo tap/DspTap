@@ -397,7 +397,11 @@ Kaiser-windowed sinc with cutoff exactly π/L at length N = 2mL − 1
 `is_nyquist_length`), the centre tap exactly 1.0 and every L-th tap from it
 exactly 0.0 (written as zeros, not libm's 1e−16), every polyphase branch
 normalized to DC gain 1 so the whole sums to L — an interpolator's branch 0
-is a copy, a decimator uses h / L. The response is antisymmetric about the
+is a copy, a decimator uses h / L — and the two halves bit-identical (the
+mirror branches' gains can differ by an ulp, so the second half is copied
+from the first: a mirrored pair that lands in one quantized row then ties
+exactly on every host, and `quantize.h` breaks the tie by index, the same
+way everywhere). The response is antisymmetric about the
 lower rate's Nyquist, so the transition is symmetric (f_p + f_s = r: the
 engine's coverage rule with equality) and a half-band stage computes 2m + 1
 MACs per output instead of 4m − 1. `nyquist_response_db`,

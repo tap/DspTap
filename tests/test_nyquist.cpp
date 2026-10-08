@@ -89,10 +89,22 @@ namespace {
         }
     }
 
-    TEST(Nyquist, IsSymmetric) {
-        const auto h = design(3, 7, 80.0);
-        for (std::size_t i = 0; i < h.size(); ++i) {
-            EXPECT_EQ(h[i], h[h.size() - 1 - i]) << i; // exact: the window and the sinc are both even
+    // Bit-exact, not within rounding: the window and the sinc are even, and
+    // the designer copies the second half from the first after the per-branch
+    // normalization, whose mirror branches are summed in opposite orders and
+    // can carry gains an ulp apart (they did under newlib for (3, 8); the
+    // row-sum quantizer's tie rule needs exactly equal remainders). Every
+    // band of the family's vocabulary at the 70 dB and 120 dB tiers' lengths.
+    TEST(Nyquist, IsSymmetricBitForBit) {
+        for (const std::size_t l : {2u, 3u, 4u, 6u, 8u}) {
+            for (const std::size_t m : {5u, 7u, 8u, 11u, 14u, 25u, 31u}) {
+                for (const double atten : {70.0, 120.0}) {
+                    const auto h = design(l, m, atten);
+                    for (std::size_t i = 0; i < h.size(); ++i) {
+                        EXPECT_EQ(h[i], h[h.size() - 1 - i]) << "L " << l << " m " << m << " tap " << i;
+                    }
+                }
+            }
         }
     }
 
