@@ -100,6 +100,7 @@ namespace tap::dsp {
         }
     };
 
+    // ANCHOR: chain_concept
     /// A synchronous rate-changing stage: the structural minimum a chain
     /// needs. k_up / k_down is the output / input frame ratio (L / M).
     template <typename T>
@@ -113,6 +114,7 @@ namespace tap::dsp {
             { cs.outputs_for(n) } noexcept -> std::same_as<std::size_t>;
             { s.reset() } noexcept;
         };
+    // ANCHOR_END: chain_concept
 
     namespace detail {
 
@@ -239,6 +241,7 @@ namespace tap::dsp {
             return latency_output_frames().value() / out_rate_hz;
         }
 
+        // ANCHOR: chain_flush
         /// End of stream: drains every stage's tail in order (see the file
         /// header); writes flush_output_frames() frames and returns that.
         /// noexcept and allocation-free; reset() before reuse.
@@ -266,6 +269,7 @@ namespace tap::dsp {
             }(std::make_index_sequence<k_stages>{});
             return n;
         }
+        // ANCHOR_END: chain_flush
 
         void reset() noexcept {
             std::apply([](auto&... s) { (s.reset(), ...); }, m_stages);

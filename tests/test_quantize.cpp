@@ -129,6 +129,29 @@ namespace {
         EXPECT_EQ(std::int64_t{q31[0]} + q31[1] + q31[2], 2791728742);
     }
 
+    // The tie rule: equal remainders step the lowest index. A mirrored row
+    // (every designer's output) therefore quantizes identically on every
+    // host, since its mirrored pairs tie exactly; and the one step a tie
+    // absorbs cannot be split, so the quantized row is NOT mirrored.
+    TEST(Quantize, TiesStepTheLowestIndex) {
+        // Scaled: 4915.45, 6553.2, 4915.45 -> rounded 4915, 6553, 4915 (sum
+        // 16383) against the exact 16384.1 -> 16384: one step up, and the
+        // outer taps tie for the largest remainder (0.45 against 0.2).
+        const std::vector<double> row{0.3 + 0.25 / 16384.0, 0.4 - 0.4 / 16384.0, 0.3 + 0.25 / 16384.0};
+        std::vector<std::int16_t> q(row.size());
+        quantize_row_preserving_sum<std::int16_t>(row, q);
+        EXPECT_EQ(std::int64_t{q[0]} + q[1] + q[2], 16384);
+        EXPECT_EQ(q[0], 4916); // the tie's lower index took the step
+        EXPECT_EQ(q[1], 6553);
+        EXPECT_EQ(q[2], 4915);
+        // The row's mirror is the row, and it quantizes to the same table:
+        // the step lands at index 0 again, not at the mirrored index.
+        const std::vector<double> mirror{row[2], row[1], row[0]};
+        std::vector<std::int16_t> qm(mirror.size());
+        quantize_row_preserving_sum<std::int16_t>(mirror, qm);
+        EXPECT_EQ(qm, q);
+    }
+
     TEST(Quantize, FloatIsPlainConversion) {
         const std::vector<double> row{0.25, -0.125, 1.0, -0.9999, 0.0};
         std::vector<float>        q(row.size());

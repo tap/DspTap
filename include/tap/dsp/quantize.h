@@ -35,6 +35,16 @@ namespace tap::dsp {
     /// llround(exact_sum * k_coeff_scale), so a table built row-by-row holds
     /// DC gain within one coefficient LSB across all phases.
     ///
+    /// Ties: when several taps share the largest remainder, the step goes
+    /// to the lowest index (the strict comparison keeps the first). That is
+    /// the whole tie rule, and it is deterministic only as far as the input
+    /// is: the designers mirror their halves bit for bit (nyquist.h,
+    /// kaiser.h), so a mirrored pair that lands in one row ties exactly on
+    /// every host and quantizes the same way. A row whose last bits differ
+    /// between hosts (a design through a different libm, un-mirrored) can
+    /// quantize differently where a near-tie decides a step; the family's
+    /// tables are bit-pinned per host for exactly that reason.
+    ///
     /// The algorithm is selected by the trait's k_is_fixed_point property:
     /// for the floating formats (double, float) this is a plain conversion
     /// (no correction runs; k_coeff_scale is 1). The +/-1 correction steps

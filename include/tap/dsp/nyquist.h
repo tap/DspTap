@@ -30,6 +30,17 @@
 //     copy. The whole filter therefore sums to L, kaiser.h's
 //     design_prototype convention. A decimator by L uses h / L (sum 1); the
 //     fixed-point rows land on exact unity through quantize.h.
+//   - Symmetry: h[i] == h[N - 1 - i] bit for bit. The window and the sinc
+//     are even, but the per-branch normalization is not: branch j and its
+//     mirror branch (-2 - j) mod L are summed in opposite orders, and their
+//     sums can differ in the last bit (measured: equal under glibc, unequal
+//     under newlib for the third-band m = 8 design), which would leave the
+//     two halves an ulp apart. The second half is therefore copied from the
+//     first after normalization, so a mirrored pair of taps that lands in
+//     one quantized row (a row of a whole-filter decimator, or an L-phase
+//     row of a mixed ratio) has exactly equal remainders on every host and
+//     quantize.h breaks the tie the same way everywhere (by index). Each
+//     branch still sums to 1 within double rounding.
 //   - Symmetric transition: the response is antisymmetric about F_hi / (2L)
 //     = r / 2, so a passband edge f_p and a stopband edge f_s satisfy
 //     f_p + f_s = r (the Nyquist property in frequency, sum over k of
@@ -85,7 +96,9 @@ namespace tap::dsp {
     /// @param beta       Kaiser shape parameter (kaiser_beta)
     ///
     /// Centre tap exactly 1.0, every L-th tap from it exactly 0.0, each
-    /// branch normalized to DC gain 1 (sum(h) == L); see the file header.
+    /// branch normalized to DC gain 1 (sum(h) == L), the two halves
+    /// bit-identical; see the file header.
+    // ANCHOR: nyq_design
     inline void design_nyquist(std::span<double> h, std::size_t num_phases, double beta) noexcept {
         const std::size_t n = h.size();
         if (!is_nyquist_length(num_phases, n)) {
@@ -138,7 +151,13 @@ namespace tap::dsp {
                 h[i] *= gain;
             }
         }
+        // Exact symmetry (the file header): the mirror branches' gains can
+        // differ by an ulp, so the second half is the first half, copied.
+        for (std::size_t i = c + 1; i < n; ++i) {
+            h[i] = h[n - 1 - i];
+        }
     }
+    // ANCHOR_END: nyq_design
 
     /// Magnitude response of an L-th-band design in dB, 0 dB at DC, at the
     /// normalized frequency f_norm = f / F_hi (F_hi = L * r, the filter's own
@@ -188,6 +207,7 @@ namespace tap::dsp {
     /// -119.3 dB on 8192, a sidelobe the coarse grid steps over; 16384 points
     /// agree with 65536 within 0.003 dB for every design up to N = 399). A
     /// caller that pins a count states the grid it was found on.
+    // ANCHOR: nyq_search
     inline std::size_t search_nyquist_m(std::size_t num_phases, double passband_frac, double stopband_atten_db,
                                         double margin_db = 1.0, std::size_t max_m = 256,
                                         std::size_t grid_points = 1024) {
@@ -203,5 +223,6 @@ namespace tap::dsp {
         }
         return 0;
     }
+    // ANCHOR_END: nyq_search
 
 } // namespace tap::dsp
