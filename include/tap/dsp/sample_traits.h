@@ -220,11 +220,13 @@ namespace tap::dsp {
     /// Q31 fixed-point datapath (samples are int32_t in Q0.31).
     ///
     /// Coefficients are stored in Q1.30 (one headroom bit for the ~1.0 peak
-    /// tap). A full-precision product would be Q0.31 x Q1.30 = 62 bits, which
-    /// overflows int64 once ~48 of them are summed, so each product is
-    /// pre-shifted down 16 bits (Q45) before accumulation; the discarded bits
-    /// sit 14 bits below the final Q31 LSB, far beneath the format's noise
-    /// floor. finalize() rounds Q45 -> Q31 with saturation.
+    /// tap). A full-precision product would be Q0.31 x Q1.30, 61 bits and a
+    /// sign: one row of unity DC gain sums inside int64, but the headroom is
+    /// two bits, and a polyphase decimator sums up to M rows under one
+    /// finalize (accumulate_row), which overflows at M = 4. So each product
+    /// is pre-shifted down 16 bits (Q45) before accumulation; the discarded
+    /// bits sit 14 bits below the final Q31 LSB, far beneath the format's
+    /// noise floor. finalize() rounds Q45 -> Q31 with saturation.
     template <>
     struct sample_traits<std::int32_t> {
         using coeff = std::int32_t;
