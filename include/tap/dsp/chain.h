@@ -22,15 +22,20 @@
 //     and returns the frames the last stage wrote; it is noexcept and
 //     allocation-free, working in chunks of k_block input frames through
 //     scratch buffers sized at construction (every intermediate count is
-//     bounded by n * k_up / k_down + 2 per stage, the stages' contract).
-//     Bit-identical for any chunking of the same stream, because every
-//     stage is.
+//     bounded by n * k_up / k_down + 2 per stage: the bound every stage
+//     keeps from a state reached by its own process() or flush(), which is
+//     the only kind a chained stage is ever in, because the chain resets its
+//     stages at construction and exposes them read-only; a stage's own
+//     pull() can leave it holding up to L - 1 outputs more). Bit-identical
+//     for any chunking of the same stream, because every stage is.
 //   - outputs_for(n) composes forward from the current position of every
 //     stage: exactly what the next process(n) call returns.
 //   - frames_needed(k): the smallest n with outputs_for(n) >= k, composed
-//     backward stage by stage; a pull that delivers exactly frames_needed(k)
-//     frames yields exactly k outputs (outputs_for(frames_needed(k)) == k,
-//     and one frame fewer yields fewer).
+//     backward stage by stage: outputs_for(frames_needed(k)) >= k and
+//     outputs_for(frames_needed(k) - 1) < k. Not an equality: one input to
+//     an interpolating stage completes L outputs at once, so process() of
+//     frames_needed(k) frames can write more than k; size the output by
+//     outputs_for(). (A single stage's pull() stops at k; a chain has none.)
 //   - latency_output_frames(): the sum over stages of each stage's group
 //     delay converted to the chain's output rate, an exact rational
 //     (exact_ratio, reduced); latency_seconds(out_rate_hz) is its double.
@@ -148,10 +153,13 @@ namespace tap::dsp {
         }
 
         /// Output frames a stage can produce for n input frames: floor(nL/M)
-        /// plus one for the ceiling and one for the phase it starts in (the
-        /// bound every stage's contract keeps: a decimator emits at most
-        /// ceil(n/M), an interpolator exactly nL, a mixed L/M stage at most
-        /// ceil(nL/M) + 1 from mid-superblock).
+        /// plus one for the ceiling and one for the phase it starts in. The
+        /// bound holds from any state a stage's own process() or flush()
+        /// leaves it in (a decimator emits at most ceil(n/M), an interpolator
+        /// exactly nL, a mixed L/M stage at most ceil(nL/M) + 1 from
+        /// mid-superblock); a stage's pull() can stop with up to L - 1
+        /// outputs banked and break it, which is why chain resets the stages
+        /// it is given and never hands them out mutable.
         template <typename T>
         constexpr std::size_t max_outputs_for(std::size_t n) noexcept {
             return (n * static_cast<std::size_t>(T::k_up)) / static_cast<std::size_t>(T::k_down) + 2;
@@ -184,6 +192,10 @@ namespace tap::dsp {
         chain(std::size_t channels, First first, Rest... rest)
             : m_stages(std::move(first), std::move(rest)...)
             , m_channels(channels) {
+            // The stages arrive in whatever state their previous owner left
+            // them in; the scratch bound below assumes the process/flush-
+            // reached kind, so start every stage from its zero-primed state.
+            reset();
             // Scratch i holds stage i's output for a k_block-frame chunk fed to
             // any stage at or before it (process feeds stage 0, flush feeds
             // every stage in turn); the last stage writes to the caller's
@@ -277,10 +289,9 @@ namespace tap::dsp {
 
         std::size_t channels() const noexcept { return m_channels; }
 
-        template <std::size_t I>
-        auto& stage() noexcept {
-            return std::get<I>(m_stages);
-        }
+        /// Stage I, read-only: a chained stage is driven only through the
+        /// chain (its own pull() would break the scratch bound, see
+        /// detail::max_outputs_for).
         template <std::size_t I>
         const auto& stage() const noexcept {
             return std::get<I>(m_stages);

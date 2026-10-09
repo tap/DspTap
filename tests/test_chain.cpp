@@ -5,7 +5,7 @@
 // as the rational engine's plan asks (M0): a chain of two decimators is the
 // two run in sequence bit for bit, for any chunking, from a fresh state and
 // after reset; outputs_for composes to exactly what process writes from
-// every phase; frames_needed is the exact inverse; the latency is the exact
+// every phase; frames_needed is the smallest n that reaches k; the latency is the exact
 // rational the stages' delays compose to; flush drains every stage's tail and
 // equals zero padding bit for bit, from every phase, in every sample format;
 // and the concept admits basic_decimator and rejects a type missing a member.
@@ -14,6 +14,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <numbers>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -190,6 +192,67 @@ namespace {
         ASSERT_EQ(a.size(), b.size());
         c.process(x.data(), x.size(), b.data());
         EXPECT_TRUE(a == b);
+    }
+
+    // A stage arrives in whatever state its previous owner left it in; the
+    // chain's scratch bound (detail::max_outputs_for) assumes the state its
+    // own process() or flush() leaves a stage in, so the constructor resets
+    // every stage: a chain built from a used decimator equals one built from
+    // a fresh one, bit for bit, from the first frame.
+    TEST(Chain, StagesAreResetAtConstruction) {
+        const auto                x = test_signal<float>(500);
+        basic_decimator<float, 2> used;
+        basic_decimator<float, 3> used3;
+        std::vector<float>        scratch(used.outputs_for(7) + used3.outputs_for(7));
+        used.process(x.data(), 7, scratch.data());  // phase 1 of 2
+        used3.process(x.data(), 7, scratch.data()); // phase 1 of 3
+        chain<basic_decimator<float, 2>, basic_decimator<float, 3>> from_used(std::move(used), std::move(used3));
+        chain<basic_decimator<float, 2>, basic_decimator<float, 3>> fresh(basic_decimator<float, 2>{},
+                                                                          basic_decimator<float, 3>{});
+        ASSERT_EQ(from_used.outputs_for(x.size()), fresh.outputs_for(x.size()));
+        EXPECT_EQ(from_used.frames_needed(10), fresh.frames_needed(10));
+        std::vector<float> a(fresh.outputs_for(x.size())), b(a.size());
+        EXPECT_EQ(fresh.process(x.data(), x.size(), a.data()), a.size());
+        EXPECT_EQ(from_used.process(x.data(), x.size(), b.data()), b.size());
+        EXPECT_TRUE(a == b);
+    }
+
+    // A chained stage is driven only through the chain: stage<I>() is
+    // read-only, so a caller cannot pull() it into a state the scratch
+    // bound does not cover.
+    template <typename C>
+    concept hands_out_a_mutable_stage = requires(C& c) { c.template stage<0>().reset(); };
+
+    TEST(Chain, StagesAreReadOnlyThroughTheChain) {
+        using chain_t = chain<basic_decimator<float, 2>, basic_decimator<float, 3>>;
+        static_assert(!hands_out_a_mutable_stage<chain_t>);
+        static_assert(std::is_same_v<decltype(std::declval<chain_t&>().stage<0>()), const basic_decimator<float, 2>&>);
+        static_assert(std::is_same_v<decltype(std::declval<chain_t&>().stage<1>()), const basic_decimator<float, 3>&>);
+        chain_t           c(basic_decimator<float, 2>{}, basic_decimator<float, 3>{});
+        const std::size_t taps_of_a_fresh_by_2 = basic_decimator<float, 2>{}.taps();
+        EXPECT_EQ(c.stage<0>().taps(), taps_of_a_fresh_by_2);
+    }
+
+    // The scratch bound the chain sizes by, pinned on the primitive it was
+    // proven on: from every state process() can leave a decimator in,
+    // outputs_for(n) <= n L / M + 2.
+    template <std::size_t M>
+    void scratch_bound_holds_from_every_process_reached_state() {
+        using stage_t = basic_decimator<float, M>;
+        stage_t            d;
+        std::vector<float> x(400, 0.125f), y(400);
+        for (std::size_t phase = 0; phase < 2 * M; ++phase) {
+            for (std::size_t n = 0; n <= 200; ++n) {
+                const std::size_t bound = tap::dsp::detail::max_outputs_for<stage_t>(n);
+                EXPECT_LE(d.outputs_for(n), bound) << "M " << M << " phase " << phase << " n " << n;
+            }
+            d.process(x.data(), 1, y.data());
+        }
+    }
+    TEST(Chain, ScratchBoundHoldsFromEveryProcessReachedState) {
+        scratch_bound_holds_from_every_process_reached_state<2>();
+        scratch_bound_holds_from_every_process_reached_state<3>();
+        scratch_bound_holds_from_every_process_reached_state<6>();
     }
 
     // flush() is zero padding: its output is a prefix of the padded stream's,
