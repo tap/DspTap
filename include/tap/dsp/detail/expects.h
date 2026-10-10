@@ -58,6 +58,18 @@
 // inside inline and template functions, so every translation unit of an
 // image must agree on TAP_DSP_HAS_EXCEPTIONS (one exception setting per
 // image).
+//
+// raise is forced inline (TAP_DSP_RAISE_INLINE) so a call to it costs its
+// caller's inliner exactly what the `throw` it replaces did. Left to GCC,
+// a [[noreturn]] template stays out of line, and a constructor that
+// rejects through it grew enough, as GCC estimates size, to stop being
+// inlined into its own caller; that caller then lost the constants the
+// constructor had been propagating into the streaming loops. Measured on
+// SampleRateTap's rational engine under arm-none-eabi-gcc 13.2.1 (its A3,
+// 2026-10-10): with raise out of line the Cortex-M55 streaming rows read
+// +11 … +37 % and the Cortex-M33 Q15 rows +16 … +51 %, with a `throw` in
+// the constructor or raise forced inline every row is exact to the
+// instruction. The body is one throw, so the force costs no size.
 
 #pragma once
 
@@ -75,12 +87,21 @@
 #define TAP_DSP_HAS_EXCEPTIONS 0
 #endif
 
+// `inline`, forced where the compiler has a spelling for it (the file comment).
+#if defined(__GNUC__) || defined(__clang__)
+#define TAP_DSP_RAISE_INLINE __attribute__((always_inline)) inline
+#elif defined(_MSC_VER)
+#define TAP_DSP_RAISE_INLINE __forceinline
+#else
+#define TAP_DSP_RAISE_INLINE inline
+#endif
+
 namespace tap::dsp {
 
     /// Rejects at construction time: throws E(args...) where the build has
     /// exceptions, std::terminate()s where it does not (the file comment).
     template <typename E, typename... Args>
-    [[noreturn]] inline void raise(Args&&... args) {
+    [[noreturn]] TAP_DSP_RAISE_INLINE void raise(Args&&... args) {
 #if TAP_DSP_HAS_EXCEPTIONS
         throw E(std::forward<Args>(args)...);
 #else
