@@ -1,5 +1,7 @@
 /// @file expects.h
-/// @brief TAP_EXPECTS — the house precondition check (STYLE.md §4), in its minimal form.
+/// @brief The two contract idioms: TAP_EXPECTS, the house precondition check (STYLE.md §4) in
+/// its minimal form, and tap::dsp::raise, the construction-time rejection that throws where
+/// the build has exceptions and terminates where it does not.
 // SPDX-License-Identifier: MIT
 // Copyright 2026 Timothy Place and the DspTap contributors.
 //
@@ -32,11 +34,59 @@
 // one name, and a loader that coalesces them makes one image run the
 // other's precondition policy. Same remedy: keep the definition uniform
 // across the images of one process, or hide visibility.
+//
+// tap::dsp::raise<E>(args...) is for the other kind of failure: not a
+// precondition the caller is bound to meet, but a construction-time
+// rejection of a value the caller could not have checked without the
+// library's own arithmetic — a configuration that fails the design rules,
+// an allocation the platform refused. Where the translation unit is
+// compiled with C++ exceptions (TAP_DSP_HAS_EXCEPTIONS is 1: __cpp_exceptions
+// on GCC and Clang, _CPPUNWIND under MSVC's /EH) it is `throw E(args...)`,
+// the contract every hosted consumer and test battery pins
+// (std::invalid_argument on a bad configuration, std::bad_alloc on a refused
+// allocation). Compiled with exceptions off (-fno-exceptions, the default of
+// the Pico SDK, Zephyr and most Cortex-M firmware trees) a `throw` does not
+// compile and no handler for E exists anywhere in the image, so the call is
+// a contract violation and terminates — std::terminate(), through the
+// handler the firmware installed, if any — exactly as the standard
+// library's own allocation failure already does there. Every header that
+// rejects through raise therefore compiles either way, and the release-mode
+// tool is the same as for preconditions: the predicate the class offers
+// beside the rejection (a validate() that returns the reason, a
+// supports_size), checked before constructing, so that such a firmware never
+// reaches the call. The ODR hazard above applies unchanged: raise expands
+// inside inline and template functions, so every translation unit of an
+// image must agree on TAP_DSP_HAS_EXCEPTIONS (one exception setting per
+// image).
 
 #pragma once
 
 #include <cassert>
+#include <exception>
+#include <utility>
 
 #if !defined(TAP_EXPECTS)
 #define TAP_EXPECTS(cond) assert(cond)
 #endif
+
+#if defined(__cpp_exceptions) || defined(_CPPUNWIND)
+#define TAP_DSP_HAS_EXCEPTIONS 1
+#else
+#define TAP_DSP_HAS_EXCEPTIONS 0
+#endif
+
+namespace tap::dsp {
+
+    /// Rejects at construction time: throws E(args...) where the build has
+    /// exceptions, std::terminate()s where it does not (the file comment).
+    template <typename E, typename... Args>
+    [[noreturn]] inline void raise(Args&&... args) {
+#if TAP_DSP_HAS_EXCEPTIONS
+        throw E(std::forward<Args>(args)...);
+#else
+        (static_cast<void>(args), ...);
+        std::terminate();
+#endif
+    }
+
+} // namespace tap::dsp

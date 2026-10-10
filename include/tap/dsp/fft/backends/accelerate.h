@@ -89,7 +89,8 @@ namespace tap::dsp::detail {
         static constexpr bool        k_is_shareable = false;
 
         /// @pre n is a power of two in [k_min_size, k_max_size] (TAP_EXPECTS).
-        /// @throws std::bad_alloc if vDSP cannot allocate its twiddle tables.
+        /// @throws std::bad_alloc if vDSP cannot allocate its twiddle tables
+        /// (through tap::dsp::raise: terminates where exceptions are off).
         explicit accelerate_real_fft_f32(std::size_t n)
             : m_n(static_cast<int>(n))
             , m_log2n(static_cast<int>(std::lround(std::log2(static_cast<double>(n))))) {
@@ -103,10 +104,12 @@ namespace tap::dsp::detail {
             // below, which is undefined behaviour — and an allocation failure
             // on a loaded machine is exactly the shape of fault that presents
             // as an intermittent one. Fail here instead, where construction
-            // is already allowed to throw and the caller can fall back.
+            // is already allowed to throw and the caller can fall back
+            // (tap::dsp::raise: a throw with exceptions, std::terminate()
+            // without them, detail/expects.h).
             FFTSetup setup = vDSP_create_fftsetup(static_cast<vDSP_Length>(m_log2n), kFFTRadix2);
             if (setup == nullptr) {
-                throw std::bad_alloc();
+                raise<std::bad_alloc>();
             }
             m_setup = std::shared_ptr<std::remove_pointer_t<FFTSetup>>(setup, vDSP_destroy_fftsetup);
             // Over-allocated by k_align_pad so the halves can be handed to

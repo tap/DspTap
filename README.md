@@ -585,6 +585,30 @@ pi: use `std::numbers::pi`, which is the double the helpers use.
 `tap::dsp::detail` re-exports the same three functions by using-declaration for
 the headers' own call sites.
 
+## `tap/dsp/detail/expects.h` — the two contract idioms
+
+`TAP_EXPECTS(cond)` is the house precondition (STYLE.md §4): `assert` under a
+name that says contract — a check in a debug build, nothing in a release
+build, never a throw — for what the caller is bound to meet, with the
+release-mode predicate beside it (`fft.h`'s power-of-two size has
+`supports_size`). `tap::dsp::raise<E>(args...)` is the construction-time
+rejection of what the caller could not check without the library's own
+arithmetic: `throw E(args...)` where the translation unit has exceptions
+(`TAP_DSP_HAS_EXCEPTIONS` is 1), `std::terminate()` where it does not
+(`-fno-exceptions`, the default of the Pico SDK, Zephyr and most Cortex-M
+firmware trees), so every header compiles either way and a rejected
+configuration is an exception on a host and a contract violation on such a
+firmware — what the standard library's own allocation failure already is
+there. The predicate beside the rejection (a `validate()` that returns the
+reason) is what such a firmware checks first. `accelerate.h`'s refused vDSP
+table is the one site in this tree; the SampleRateTap engines' constructors,
+which validate by throwing today, are the consumers it was written for.
+Pinned by `tests/test_expects.cpp` (hosted and on the QEMU legs: `raise`
+throws exactly `E` with the caller's text and is `[[noreturn]]`; `TAP_EXPECTS`
+does not evaluate its argument in a release build) and by
+`expects.PublicHeadersCompileWithoutExceptions`, which compiles every public
+header under `-fno-exceptions` on the hosted GCC and Clang legs.
+
 ## Notebooks
 
 The notebooks drive the **actual shipping C++** through the C ABI in
