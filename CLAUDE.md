@@ -64,7 +64,10 @@ asset's contract summary.
 - **Real-time safe by construction.** Geometry fixed at construction, every buffer allocated
   there; processing is `noexcept` and allocation-free. Numerically fragile recursions (e.g. the
   order-48 Levinson–Durbin inside `pvoc`) run in double even in the float profile — documented
-  where it happens.
+  where it happens. Construction-time rejection goes through `tap::dsp::raise<E>(...)`
+  (`detail/expects.h`): a throw where the build has exceptions, `std::terminate()` where it does
+  not, so every header compiles under `-fno-exceptions` (`expects.PublicHeadersCompileWithoutExceptions`
+  pins it); a precondition the caller is bound to meet is `TAP_EXPECTS`, never a throw.
 - **Hot loops stay plain.** The expensive inner loops (YIN's difference function above all) are
   written as contiguous, branch-light scalar code on purpose: they are the designated seams for
   future MVE/HVX backends behind the same contract.
