@@ -264,6 +264,16 @@ target_link_libraries(tap_dsp_analysis_typed PRIVATE
 # END Stage 3c addition
 # ==============================================================================
 
+# The heap meter (tap/dsp/analysis/heap_meter.h) in an executable of its own:
+# its test TU defines TAP_DSP_HEAP_METER_REPLACE_GLOBAL_NEW, which replaces the
+# global operator new and delete for the whole program, gtest included. It runs
+# on every leg, the QEMU ones too (newlib's malloc behind it there).
+tap_dsp_add_gtest_executable(tap_dsp_heap_meter
+    SOURCES test_heap_meter.cpp)
+target_link_libraries(tap_dsp_heap_meter PRIVATE
+    tap::dsp
+    tap_dsp_warnings)
+
 # ==============================================================================
 # BEGIN Stage 6 addition: the tidy gate's view of bench/ and tools/.
 # The style job (.github/workflows/style.yml, a taphouse file) configures the
