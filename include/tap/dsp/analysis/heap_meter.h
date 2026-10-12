@@ -105,26 +105,30 @@ namespace tap::dsp::analysis {
 
 namespace tap::dsp::analysis::detail::heap_meter_state {
 
-    // In front of every block: what delete needs. Its size is a multiple of the
-    // default new alignment, so the block behind it keeps that alignment.
-    struct alignas(__STDCPP_DEFAULT_NEW_ALIGNMENT__) block_header {
+    // In front of every block: what delete needs. The space it takes is
+    // rounded up to the default new alignment, so the block behind it keeps
+    // that alignment (a rounded size, not alignas: MSVC's /W4 warns when an
+    // alignment specifier pads a structure).
+    struct block_header {
         std::size_t bytes;
         void*       base;
         bool        counted;
     };
+    inline constexpr std::size_t k_header_bytes = (sizeof(block_header) + __STDCPP_DEFAULT_NEW_ALIGNMENT__ - 1)
+                                                  / __STDCPP_DEFAULT_NEW_ALIGNMENT__ * __STDCPP_DEFAULT_NEW_ALIGNMENT__;
 
     inline void* allocate(std::size_t bytes, std::size_t align) noexcept {
         if (align < __STDCPP_DEFAULT_NEW_ALIGNMENT__) {
             align = __STDCPP_DEFAULT_NEW_ALIGNMENT__;
         }
         // Room for the header and for aligning the block behind it.
-        void* const base = std::malloc(sizeof(block_header) + align + bytes);
+        void* const base = std::malloc(k_header_bytes + align + bytes);
         if (base == nullptr) {
             return nullptr;
         }
-        const auto first = reinterpret_cast<std::uintptr_t>(base) + sizeof(block_header);
+        const auto first = reinterpret_cast<std::uintptr_t>(base) + k_header_bytes;
         const auto user  = (first + align - 1) & ~(static_cast<std::uintptr_t>(align) - 1);
-        auto*      head  = reinterpret_cast<block_header*>(user) - 1;
+        auto*      head  = reinterpret_cast<block_header*>(user - k_header_bytes);
         head->bytes      = bytes;
         head->base       = base;
         head->counted    = open.load(std::memory_order_acquire);
@@ -138,7 +142,7 @@ namespace tap::dsp::analysis::detail::heap_meter_state {
         if (p == nullptr) {
             return;
         }
-        const auto* head = static_cast<const block_header*>(p) - 1;
+        const auto* head = reinterpret_cast<const block_header*>(static_cast<const char*>(p) - k_header_bytes);
         if (head->counted) {
             on_free(head->bytes);
         }

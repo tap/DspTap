@@ -53,8 +53,8 @@ namespace {
     }
 
     TEST(HeapMeter, OverAlignedAllocationsAreAlignedCountedAndFreed) {
-        struct alignas(256) wide {
-            unsigned char bytes[300];
+        struct alignas(256) wide { // exactly two alignments: no padding (MSVC C4324)
+            unsigned char bytes[512];
         };
         const heap_meter meter;
         auto             p = std::unique_ptr<wide>(escape(new wide));
