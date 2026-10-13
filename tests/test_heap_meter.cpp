@@ -10,6 +10,7 @@
 
 #define TAP_DSP_HEAP_METER_REPLACE_GLOBAL_NEW
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <new>
 #include <vector>
@@ -96,6 +97,24 @@ namespace {
         EXPECT_EQ(meter.stats().allocations, 1U);
         EXPECT_EQ(meter.stats().live_bytes, 0U);
         ::operator delete(p);
+    }
+
+    // MSVC's std::allocator pads a request of 4096 bytes or more on x86 and x64
+    // (heap_meter::allocator_request); the meter counts what operator new is
+    // asked for, so a container's bytes are counted through that model.
+    TEST(HeapMeter, AContainerIsCountedAsItsAllocatorsRequest) {
+        static_assert(heap_meter::allocator_request(4095) == 4095);
+        static_assert(heap_meter::allocator_request(4096) == 4096 + heap_meter::k_big_allocation_padding);
+        const heap_meter meter;
+        {
+            const std::vector<char>   small(4095);
+            const std::vector<double> big(1000); // 8000 bytes
+            EXPECT_EQ(meter.stats().live_bytes,
+                      heap_meter::allocator_request(4095) + heap_meter::allocator_request(8000));
+        }
+        EXPECT_EQ(meter.stats().live_bytes, 0U);
+        std::printf("[ measured ] std::allocator pads a request of %zu bytes or more by %zu bytes\n",
+                    heap_meter::k_big_allocation_bytes, heap_meter::k_big_allocation_padding);
     }
 
     TEST(HeapMeter, EachMeterStartsFromZero) {
