@@ -568,6 +568,17 @@ Fisher-weighted ratio pooling). Instrument floors on exact synthetic signals
 are pinned by `tests/test_analysis.cpp`, so a consumer's quality gate never
 silently rests on a degraded instrument.
 
+`heap_meter.h` is the footprint instrument: a `heap_meter` scope reports the
+bytes allocated through the global `operator new` while it is open — still
+live, at peak, in total — and the allocation count. The counting replacements
+of every form of the global `operator new` and `operator delete` are emitted
+only in the one translation unit that defines
+`TAP_DSP_HEAP_METER_REPLACE_GLOBAL_NEW` before including the header, so a
+footprint test lives in an executable of its own. The counts are the requested
+bytes, not the allocator's, so a footprint formula can be pinned against them
+exactly. Pinned by `tests/test_heap_meter.cpp` (its own target), on every host
+and QEMU leg.
+
 ## `tap/dsp/math.h` — periodic Hann and decibel helpers
 
 The three scalar formulas the primitives build on, public so consumers call
