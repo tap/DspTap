@@ -576,7 +576,11 @@ only in the one translation unit that defines
 `TAP_DSP_HEAP_METER_REPLACE_GLOBAL_NEW` before including the header, so a
 footprint test lives in an executable of its own. The counts are the requested
 bytes, not the allocator's, so a footprint formula can be pinned against them
-exactly. Pinned by `tests/test_heap_meter.cpp` (its own target), on every host
+exactly — written per allocation through `heap_meter::allocator_request(n)`,
+which models what `std::allocator` asks for (MSVC's on x86 and x64 pads a
+request of 4096 bytes or more by `sizeof(void*) + 31`, to align it to 32
+bytes). Not under ASan, TSan or MSan, whose runtimes define `operator new`
+themselves. Pinned by `tests/test_heap_meter.cpp` (its own target), on every host
 and QEMU leg.
 
 ## `tap/dsp/math.h` — periodic Hann and decibel helpers

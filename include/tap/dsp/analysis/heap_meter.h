@@ -27,6 +27,18 @@
 // the meter opened and freed inside it is not counted either way. One meter at
 // a time; the counters are atomic, so allocations from other threads while a
 // meter is open are counted too.
+//
+// What a container asks operator new for is not always the bytes it stores:
+// MSVC's standard library on x86 and x64 pads every std::allocator request of
+// 4096 bytes or more (for a type of default alignment) to align the block to 32
+// bytes, sizeof(void*) + 31 bytes in front of it (one pointer more under
+// _DEBUG). heap_meter::allocator_request(n) is that request for n stored bytes,
+// n on every other library, so a footprint formula written per allocation
+// through it holds on every host.
+//
+// Not under AddressSanitizer, ThreadSanitizer or MemorySanitizer: their runtimes
+// define the global operator new themselves, so the replacement cannot link
+// beside them (an executable that defines the macro is left out of those builds).
 
 #pragma once
 
@@ -91,6 +103,26 @@ namespace tap::dsp::analysis {
 
         /// True when this executable carries the replacement operators.
         static bool installed() noexcept { return detail::heap_meter_state::installed.load(); }
+
+        /// The bytes std::allocator asks operator new for to store n bytes of a
+        /// type of default alignment (see the file comment): n plus
+        /// k_big_allocation_padding from k_big_allocation_bytes up.
+        static constexpr std::size_t allocator_request(std::size_t n) noexcept {
+            return n >= k_big_allocation_bytes ? n + k_big_allocation_padding : n;
+        }
+
+        /// The request size from which MSVC's std::allocator pads, and by how
+        /// much (0 on every other standard library).
+        static constexpr std::size_t k_big_allocation_bytes = 4096;
+#if defined(_MSVC_STL_VERSION) && (defined(_M_IX86) || (defined(_M_X64) && !defined(_M_ARM64EC)))
+#if defined(_DEBUG)
+        static constexpr std::size_t k_big_allocation_padding = 2 * sizeof(void*) + 31;
+#else
+        static constexpr std::size_t k_big_allocation_padding = sizeof(void*) + 31;
+#endif
+#else
+        static constexpr std::size_t k_big_allocation_padding = 0;
+#endif
     };
 
 } // namespace tap::dsp::analysis
