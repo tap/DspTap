@@ -145,6 +145,11 @@ should measure, extend the capi + bridge alongside it.
 ## Consumers & release flow
 
 Changes land here first, then consumers bump their submodule pin (TapTools pins this repo;
-TapTools-Max picks it up transitively through TapTools). After a PR merges via rebase/squash,
+TapTools-Max picks it up transitively through TapTools). The version lives in one place per form:
+`project(DspTap VERSION …)` and `include/tap/dsp/version.h` (`TAP_DSP_VERSION_*`, kept equal by
+`Version.HeaderMatchesTheProjectVersion`); bump both together, and tag the commit that carries them
+`vX.Y.Z`. Tags follow this repo's own cadence, never a consumer's release; consumers assert the
+oldest version they were tested with against `TAP_DSP_VERSION` and name the tag in the commit
+that moves their pin. After a PR merges via rebase/squash,
 repoint any open consumer pins at the identical tree on `main` so they stay reachable after branch
 cleanup.
