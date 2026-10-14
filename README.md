@@ -657,6 +657,27 @@ block-floating exponent on speech-like material, and the battery's output
 fingerprints reproduced through the ABI; `sine_analysis.h` /
 `multitone_analysis.h` score Q15 / Q31 spans directly from #30 onward.
 
+## Versioning
+
+`tap/dsp/version.h` states this tree's version as `TAP_DSP_VERSION_MAJOR`,
+`_MINOR` and `_PATCH`, equal to the CMake `project()` version
+(`Version.HeaderMatchesTheProjectVersion` pins the two together), and as one
+integer, `TAP_DSP_VERSION`, packed `(major << 16) | (minor << 8) | patch` like
+the Tap family's C ABI version probes, so it compares in `#if` and
+`static_assert` alike. A tag `vX.Y.Z` marks the commit that carries each
+version. DspTap is tagged on its own cadence, never in lockstep with a
+consumer: a consumer pins a commit, names the tag in the commit that moves
+the pin, and asserts the oldest DspTap it was tested with:
+
+```cpp
+#include "tap/dsp/version.h"
+static_assert(TAP_DSP_VERSION >= TAP_DSP_VERSION_ENCODE(0, 1, 0),
+              "this library needs DspTap 0.1.0 or newer");
+```
+
+Before 1.0 a minor version may break a consumer, so a floor states what was
+tested, not what will keep working.
+
 ## Build
 
 Standalone (builds the srdif engine, plus vDSP on macOS, and runs the

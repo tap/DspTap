@@ -157,6 +157,7 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_quantize.cpp
         test_sample_traits.cpp
         test_spectrum.cpp
+        test_version.cpp
         test_windows_macros.cpp
         test_yin.cpp
     MAIN_FILTER
@@ -164,6 +165,11 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
 target_link_libraries(tap_dsp_tests PRIVATE
     tap::dsp
     tap_dsp_warnings)
+# test_version.cpp pins tap/dsp/version.h to the project() version.
+target_compile_definitions(tap_dsp_tests PRIVATE
+    TAP_DSP_TEST_PROJECT_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+    TAP_DSP_TEST_PROJECT_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+    TAP_DSP_TEST_PROJECT_VERSION_PATCH=${PROJECT_VERSION_PATCH})
 
 # ==============================================================================
 # BEGIN Stage 2a additions (docs/audit-fft-and-code-smells.md, Part 9): the
