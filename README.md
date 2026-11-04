@@ -624,6 +624,17 @@ does not evaluate its argument in a release build) and by
 `expects.PublicHeadersCompileWithoutExceptions`, which compiles every public
 header under `-fno-exceptions` on the hosted GCC and Clang legs.
 
+The whole battery runs in that configuration too, with RTTI off as well: a
+consumer that forbids both builds this way. `-DTAP_DSP_NO_EXCEPTIONS_RTTI=ON`
+compiles this project's own targets with `-fno-exceptions -fno-rtti`
+(GoogleTest and the battery, the benches and the C ABI; GCC and Clang only),
+and CI runs it on Linux and on the M33 and M55 legs, the srdif fingerprints
+included, so the output there is the same bits as everywhere else. In that
+build `raise` terminates (pinned by death tests on the host), and the C ABI's
+create functions terminate on a refused allocation rather than returning
+NULL. No header uses RTTI; the one test that reads it, `TypeNamesCarryTheTag`,
+has a compile-time counterpart that holds in every build.
+
 ## Notebooks
 
 The notebooks drive the **actual shipping C++** through the C ABI in

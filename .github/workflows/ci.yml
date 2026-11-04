@@ -21,13 +21,18 @@ jobs:
           # macOS: float32 defaults to the Apple vDSP backend, so this leg runs
           # the backend-parity suite through vDSP for real.
           - { os: macos-latest,   name: macos-vdsp }
+          # A consumer that forbids both (a current one does): the whole
+          # battery, GoogleTest, the benches and the C ABI under -fno-exceptions
+          # -fno-rtti (TAP_DSP_NO_EXCEPTIONS_RTTI), the srdif fingerprints
+          # included, so the output is the same bits as the other legs'.
+          - { os: ubuntu-latest,  name: linux-no-exceptions-rtti, extra: -DTAP_DSP_NO_EXCEPTIONS_RTTI=ON }
     steps:
       - uses: actions/checkout@v5
 
       # -DTAP_DSP_BUILD_BENCH=ON is read by the benchmark PR's root option once
       # it lands; until then CMake only notes an unused variable.
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DTAP_DSP_WERROR=ON -DTAP_DSP_BUILD_CAPI=ON -DTAP_DSP_BUILD_BENCH=ON
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DTAP_DSP_WERROR=ON -DTAP_DSP_BUILD_CAPI=ON -DTAP_DSP_BUILD_BENCH=ON ${{ matrix.extra }}
 
       - name: Build
         run: cmake --build build --config Release
@@ -114,6 +119,17 @@ jobs:
           - name: cortex-m55
             toolchain: cmake/arm-cortex-m55-mps3.cmake
             extra: "" # CMSIS Helium FFT backend ON by default: the compiler targets MVE-F
+            cmsis: "ON"
+          # The M33 and M55 again, built as a consumer that forbids exceptions
+          # and RTTI builds (TAP_DSP_NO_EXCEPTIONS_RTTI): the same battery, the
+          # same emulation-sized selection, the same pass rule.
+          - name: cortex-m33-no-exceptions-rtti
+            toolchain: cmake/arm-cortex-m33-mps2.cmake
+            extra: -DTAP_DSP_NO_EXCEPTIONS_RTTI=ON
+            cmsis: "OFF"
+          - name: cortex-m55-no-exceptions-rtti
+            toolchain: cmake/arm-cortex-m55-mps3.cmake
+            extra: -DTAP_DSP_NO_EXCEPTIONS_RTTI=ON
             cmsis: "ON"
     steps:
       - uses: actions/checkout@v5

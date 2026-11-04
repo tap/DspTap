@@ -2,16 +2,21 @@
 // Copyright 2026 Timothy Place and the DspTap contributors.
 //
 // Pins the two contract idioms of tap/dsp/detail/expects.h as the battery
-// builds them. Every test target compiles with exceptions (gtest's
-// EXPECT_THROW needs them), so TAP_DSP_HAS_EXCEPTIONS is 1 here and
+// builds them, in both of the configurations it is built in.
+//
+// With exceptions (the default), TAP_DSP_HAS_EXCEPTIONS is 1 and
 // raise<E>(args...) must throw exactly E, constructed from the caller's
-// arguments. The exceptions-off side — raise terminates, every public header
-// compiles — is the compile check beside this file in tests/CMakeLists.txt
-// (expects.PublicHeadersCompileWithoutExceptions): a death test of the
-// terminate would need an exceptions-off gtest, which the battery does not
-// build. TAP_EXPECTS is pinned for the one property a release build can
-// observe: under NDEBUG its argument is not evaluated (the CI batteries run
-// Release / MinSizeRel; a local Debug configure sees the assert instead).
+// arguments. Built with TAP_DSP_NO_EXCEPTIONS_RTTI (the whole battery under
+// -fno-exceptions -fno-rtti, CI's no-exceptions legs), it is 0 and raise must
+// terminate: a death test where gtest has them (the hosted legs), and on bare
+// metal, where a terminate ends the one-shot run, the property is that the
+// build reached every translation unit (TheBatteryBuildsWithoutExceptionsOrRtti)
+// and that raise is still [[noreturn]]. Every public header compiling under
+// -fno-exceptions alone is the compile check beside this file in
+// tests/CMakeLists.txt (expects.PublicHeadersCompileWithoutExceptions).
+// TAP_EXPECTS is pinned for the one property a release build can observe:
+// under NDEBUG its argument is not evaluated (the CI batteries run Release /
+// MinSizeRel; a local Debug configure sees the assert instead).
 
 #include <new>
 #include <stdexcept>
@@ -23,8 +28,10 @@
 
 namespace {
 
+#if TAP_DSP_HAS_EXCEPTIONS
+
     TEST(Expects, TheBatteryBuildsWithExceptions) {
-        static_assert(TAP_DSP_HAS_EXCEPTIONS == 1, "the test battery needs exceptions (EXPECT_THROW)");
+        static_assert(TAP_DSP_HAS_EXCEPTIONS == 1, "this half of the file is the exceptions build");
         EXPECT_EQ(TAP_DSP_HAS_EXCEPTIONS, 1);
     }
 
@@ -48,6 +55,36 @@ namespace {
         EXPECT_THROW(tap::dsp::raise<std::bad_alloc>(), std::bad_alloc);
     }
 
+#else
+
+    // The option reached this translation unit: neither feature is on, so
+    // every other file in the battery was compiled the same way.
+    TEST(Expects, TheBatteryBuildsWithoutExceptionsOrRtti) {
+        static_assert(TAP_DSP_HAS_EXCEPTIONS == 0, "this half of the file is the exceptions-off build");
+#if defined(TAP_DSP_NO_EXCEPTIONS_RTTI)
+#if defined(__cpp_rtti) || defined(__GXX_RTTI)
+#error "TAP_DSP_NO_EXCEPTIONS_RTTI is set but RTTI is on"
+#endif
+#endif
+        EXPECT_EQ(TAP_DSP_HAS_EXCEPTIONS, 0);
+    }
+
+#if GTEST_HAS_DEATH_TEST
+    // Where the build has no exceptions a rejection is a contract violation:
+    // raise terminates (std::terminate(), so the process dies on SIGABRT).
+    TEST(ExpectsDeathTest, RaiseTerminatesWithoutExceptions) {
+        EXPECT_DEATH(tap::dsp::raise<std::invalid_argument>("bad configuration"), "");
+        const std::string reason = "composed";
+        EXPECT_DEATH(tap::dsp::raise<std::runtime_error>(reason), "");
+    }
+
+    TEST(ExpectsDeathTest, RaiseWithoutArgumentsTerminatesWithoutExceptions) {
+        EXPECT_DEATH(tap::dsp::raise<std::bad_alloc>(), "");
+    }
+#endif
+
+#endif
+
     TEST(Expects, RaiseIsNoreturn) {
         // Compiles only because raise is [[noreturn]]: the function has no
         // return statement on this path and -Wreturn-type is an error in the
@@ -59,7 +96,9 @@ namespace {
             return 7;
         };
         EXPECT_EQ(f(false), 7);
+#if TAP_DSP_HAS_EXCEPTIONS
         EXPECT_THROW(f(true), std::invalid_argument);
+#endif // without exceptions, the rejecting path is ExpectsDeathTest's
     }
 
     TEST(Expects, ExpectsDoesNotEvaluateItsArgumentInRelease) {

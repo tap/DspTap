@@ -67,7 +67,12 @@ asset's contract summary.
   where it happens. Construction-time rejection goes through `tap::dsp::raise<E>(...)`
   (`detail/expects.h`): a throw where the build has exceptions, `std::terminate()` where it does
   not, so every header compiles under `-fno-exceptions` (`expects.PublicHeadersCompileWithoutExceptions`
-  pins it); a precondition the caller is bound to meet is `TAP_EXPECTS`, never a throw.
+  pins it); a precondition the caller is bound to meet is `TAP_EXPECTS`, never a throw. No header
+  uses RTTI. The whole battery also runs as a consumer that forbids both builds it
+  (`-DTAP_DSP_NO_EXCEPTIONS_RTTI=ON`: `-fno-exceptions -fno-rtti` on this project's targets,
+  GoogleTest and the C ABI included), on CI's `linux-no-exceptions-rtti` leg and its M33 and M55
+  no-exceptions legs; a test that needs either feature says so with `#if TAP_DSP_HAS_EXCEPTIONS`
+  or `__cpp_rtti` and gives the other build its counterpart.
 - **Hot loops stay plain.** The expensive inner loops (YIN's difference function above all) are
   written as contiguous, branch-light scalar code on purpose: they are the designated seams for
   future MVE/HVX backends behind the same contract.
@@ -100,12 +105,13 @@ preserve: contract tests named for the promise they pin (`RoundTripReproducesInp
 `PureToneOctaveUpThinsOut`); the certified-geometry parity tests for accelerated FFT backends; and
 `tap::dsp::yin` (certified by its own battery) used as the pitch oracle for the shifters.
 
-CI runs the battery on three hosts (linux, windows, macOS with vDSP) and on four bare-metal
-Cortex-M legs under `qemu-system-arm` (`ci.yml`, `embedded`): M4 soft-float and M4F
-(`cmake/arm-cortex-m4-mps2.cmake`, `TAP_DSP_M4_FPU`), M33 (`cmake/arm-cortex-m33-mps2.cmake`) and
-M55 (`cmake/arm-cortex-m55-mps3.cmake`), the one leg where the CMSIS-Helium backend is ON and its
-parity suite runs for real. Each leg builds `tap_dsp_tests` one-shot (`tests/bare_metal_main.cpp`)
-with the `MAIN_FILTER` in `tests/CMakeLists.txt` naming what the emulation budget excludes, plus
+CI runs the battery on three hosts (linux, windows, macOS with vDSP; linux again with
+`TAP_DSP_NO_EXCEPTIONS_RTTI`) and on four bare-metal Cortex-M legs under `qemu-system-arm`
+(`ci.yml`, `embedded`): M4 soft-float and M4F (`cmake/arm-cortex-m4-mps2.cmake`,
+`TAP_DSP_M4_FPU`), M33 (`cmake/arm-cortex-m33-mps2.cmake`) and M55
+(`cmake/arm-cortex-m55-mps3.cmake`), the one leg where the CMSIS-Helium backend is ON and its
+parity suite runs for real; the M33 and M55 run again with `TAP_DSP_NO_EXCEPTIONS_RTTI`. Each leg
+builds `tap_dsp_tests` one-shot (`tests/bare_metal_main.cpp`) with the `MAIN_FILTER` in `tests/CMakeLists.txt` naming what the emulation budget excludes, plus
 the srdif fingerprints, with every FFT sweep capped at `TAP_DSP_TEST_MAX_FFT_N=4096`. The
 instruction-count ratchet (`bench.yml`, `bench/README.md`) runs the same four cores under five
 baseline keys at ±3 %, plus a `hexagon` key (clang 19, v68 + HVX, under `qemu-hexagon`; it
