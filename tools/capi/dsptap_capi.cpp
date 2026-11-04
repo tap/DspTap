@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "tap/dsp/decimate.h"
+#include "tap/dsp/detail/expects.h"
 #include "tap/dsp/fft.h"
 #include "tap/dsp/log_mel.h"
 #include "tap/dsp/psola.h"
@@ -99,6 +100,26 @@ static_assert(!std::is_same_v<dsptap_fft, dsptap_yin> && !std::is_same_v<dsptap_
               "each primitive has its own opaque handle type");
 
 namespace {
+
+    /// Runs `build`, which allocates. Where the build has exceptions, a refused allocation is
+    /// `failure` (NULL or -1, the header's contract); where it does not, the allocator terminates,
+    /// as every allocation's failure does in such a build, and there is nothing to catch
+    /// (detail/expects.h). Every argument was validated before this is reached, so allocation is
+    /// the only failure left.
+    template <typename R, typename F>
+    R guarded(R failure, F&& build) noexcept {
+#if TAP_DSP_HAS_EXCEPTIONS
+        try {
+            return build();
+        }
+        catch (...) {
+            return failure;
+        }
+#else
+        static_cast<void>(failure);
+        return build();
+#endif
+    }
 
     template <typename>
     inline constexpr bool k_always_false = false;
@@ -302,15 +323,12 @@ namespace {
         if (!tap::dsp::log_mel::supports_geometry(g)) { // valid() and the FFT engine's size range
             return -1;
         }
-        try {
+        return guarded<int>(-1, [&]() -> int {
             auto fe     = std::make_unique<tap::dsp::log_mel>(g);
             h->geometry = g;
             h->fe       = std::move(fe);
             return 0;
-        }
-        catch (...) {
-            return -1;
-        }
+        });
     }
 
 } // namespace
@@ -320,7 +338,7 @@ extern "C" {
 // -- fft --------------------------------------------------------------------------------------
 
 dsptap_fft dsptap_fft_create(int size, int profile) DSPTAP_NOEXCEPT {
-    try {
+    return guarded<dsptap_fft>(nullptr, [&]() -> dsptap_fft {
         // Each profile is gated by its own class's supports_size (make_fft_if_supported).
         switch (profile) {
         case DSPTAP_FFT_PROFILE_DOUBLE:
@@ -338,10 +356,7 @@ dsptap_fft dsptap_fft_create(int size, int profile) DSPTAP_NOEXCEPT {
         default: // anything else is a bad argument
             return nullptr;
         }
-    }
-    catch (...) {
-        return nullptr;
-    }
+    });
 }
 
 void dsptap_fft_destroy(dsptap_fft h) DSPTAP_NOEXCEPT {
@@ -455,13 +470,10 @@ dsptap_yin dsptap_yin_create(int window, int tau_min, int tau_max) DSPTAP_NOEXCE
     if (window > std::numeric_limits<int>::max() - tau_max) {
         return nullptr; // yin.h's @pre: window + tau_max (frame_size(), an int sum) must fit an int
     }
-    try {
+    return guarded<dsptap_yin>(nullptr, [&]() -> dsptap_yin {
         return new dsptap_yin_s(static_cast<std::size_t>(window), static_cast<std::size_t>(tau_min),
                                 static_cast<std::size_t>(tau_max));
-    }
-    catch (...) {
-        return nullptr;
-    }
+    });
 }
 
 void dsptap_yin_destroy(dsptap_yin h) DSPTAP_NOEXCEPT {
@@ -512,12 +524,8 @@ dsptap_psola dsptap_psola_create(int max_period) DSPTAP_NOEXCEPT {
     if (max_period < 16 || max_period >= (1 << 26)) {
         return nullptr; // psola.h's @pre: 16 <= max_period < 2^26
     }
-    try {
-        return new dsptap_psola_s(static_cast<std::size_t>(max_period));
-    }
-    catch (...) {
-        return nullptr;
-    }
+    return guarded<dsptap_psola>(
+        nullptr, [&]() -> dsptap_psola { return new dsptap_psola_s(static_cast<std::size_t>(max_period)); });
 }
 
 void dsptap_psola_destroy(dsptap_psola h) DSPTAP_NOEXCEPT {
@@ -559,12 +567,8 @@ dsptap_pvoc dsptap_pvoc_create(int fft_size) DSPTAP_NOEXCEPT {
     if (fft_size <= 0 || !tap::dsp::pvoc::supports_size(static_cast<std::size_t>(fft_size))) {
         return nullptr;
     }
-    try {
-        return new dsptap_pvoc_s(static_cast<std::size_t>(fft_size));
-    }
-    catch (...) {
-        return nullptr;
-    }
+    return guarded<dsptap_pvoc>(nullptr,
+                                [&]() -> dsptap_pvoc { return new dsptap_pvoc_s(static_cast<std::size_t>(fft_size)); });
 }
 
 void dsptap_pvoc_destroy(dsptap_pvoc h) DSPTAP_NOEXCEPT {
@@ -626,15 +630,12 @@ dsptap_log_mel dsptap_log_mel_create(double sample_rate, int frame, int hop, int
     if (!tap::dsp::log_mel::supports_geometry(g)) {
         return nullptr;
     }
-    try {
+    return guarded<dsptap_log_mel>(nullptr, [&]() -> dsptap_log_mel {
         auto h      = std::make_unique<dsptap_log_mel_s>();
         h->geometry = g;
         h->fe       = std::make_unique<tap::dsp::log_mel>(g);
         return h.release();
-    }
-    catch (...) {
-        return nullptr;
-    }
+    });
 }
 
 void dsptap_log_mel_destroy(dsptap_log_mel h) DSPTAP_NOEXCEPT {
@@ -705,7 +706,7 @@ int dsptap_log_mel_process(dsptap_log_mel h, const double* x, int n, double* fea
 
 dsptap_decimator dsptap_decimator_create(int ratio, int transparent) DSPTAP_NOEXCEPT {
     const auto p = transparent != 0 ? tap::dsp::decimate_profile::transparent() : tap::dsp::decimate_profile::economy();
-    try {
+    return guarded<dsptap_decimator>(nullptr, [&]() -> dsptap_decimator {
         switch (ratio) {
         case 2:
             return new decimator_impl<2>(p);
@@ -716,10 +717,7 @@ dsptap_decimator dsptap_decimator_create(int ratio, int transparent) DSPTAP_NOEX
         default:
             return nullptr;
         }
-    }
-    catch (...) {
-        return nullptr;
-    }
+    });
 }
 
 void dsptap_decimator_destroy(dsptap_decimator h) DSPTAP_NOEXCEPT {

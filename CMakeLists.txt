@@ -209,6 +209,26 @@ if(TAP_DSP_WERROR)
         $<$<CXX_COMPILER_ID:MSVC>:/WX>)
 endif()
 
+# The configuration a consumer that forbids both builds in (a current one does,
+# on the M33, M55 and Hexagon): every target this project adds from here on —
+# GoogleTest and the battery, the benchmarks, the C ABI — compiles C++ with
+# -fno-exceptions -fno-rtti. The headers need nothing for it (detail/expects.h:
+# raise terminates without exceptions; no header uses RTTI); the option builds
+# the evidence, and TAP_DSP_NO_EXCEPTIONS_RTTI tells the tests it is in force.
+# Directory scope: it reaches this project's targets only, never a consumer
+# that adds DspTap as a subdirectory, and C (the vendored CMSIS objects) is
+# untouched. GCC and Clang spell the switches so; MSVC is refused rather than
+# half-served.
+option(TAP_DSP_NO_EXCEPTIONS_RTTI "Build DspTap's own targets with -fno-exceptions -fno-rtti" OFF)
+if(TAP_DSP_NO_EXCEPTIONS_RTTI)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$"
+       OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+        message(FATAL_ERROR "TAP_DSP_NO_EXCEPTIONS_RTTI needs GCC or Clang (got ${CMAKE_CXX_COMPILER_ID})")
+    endif()
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions> $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
+    add_compile_definitions($<$<COMPILE_LANGUAGE:CXX>:TAP_DSP_NO_EXCEPTIONS_RTTI=1>)
+endif()
+
 if(TAP_DSP_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)

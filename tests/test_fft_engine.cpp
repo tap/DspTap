@@ -62,18 +62,21 @@ namespace {
     constexpr std::size_t k_expected_min   = 32;
     constexpr std::size_t k_expected_max   = 4096;
     constexpr bool        k_expected_share = false;
+    namespace expected_abi                 = tap::dsp::fft_cmsis; // compiles only where the build opened it
 #elif defined(TAP_DSP_FFT_ACCELERATE)
     using expected_float_default           = tap::dsp::detail::accelerate_real_fft_f32;
     constexpr const char* k_expected_tag   = "fft_vdsp";
     constexpr std::size_t k_expected_min   = 4;
     constexpr std::size_t k_expected_max   = std::size_t{1} << 20;
     constexpr bool        k_expected_share = false;
+    namespace expected_abi                 = tap::dsp::fft_vdsp; // compiles only where the build opened it
 #else
     using expected_float_default           = srdif_f;
     constexpr const char* k_expected_tag   = "fft_srdif";
     constexpr std::size_t k_expected_min   = 4;
     constexpr std::size_t k_expected_max   = std::size_t{1} << 30;
     constexpr bool        k_expected_share = true;
+    namespace expected_abi                 = tap::dsp::fft_srdif; // compiles only where the build opened it
 #endif
 
     static_assert(std::is_same_v<tap::dsp::default_real_fft_engine_t<float>, expected_float_default>,
@@ -84,6 +87,18 @@ namespace {
     static_assert(std::is_same_v<tap::dsp::real_fft::engine, srdif_d>);
     static_assert(std::is_same_v<tap::dsp::real_fft32, tap::dsp::basic_real_fft<float, expected_float_default>>,
                   "the one-argument spelling IS the explicit spelling of the default engine");
+
+    // The tag is in the TYPE, whatever the build's RTTI: each class, named
+    // through the namespace the selection opens, is the class the plain
+    // tap::dsp name denotes. Qualified lookup into an inline namespace finds
+    // only its own members, so these hold only if the class is declared
+    // inside it, and that membership is what puts the tag in the class's
+    // mangled name (the loader's view, which TypeNamesCarryTheTag reads
+    // through typeid where the build has RTTI). The alias above is the other
+    // half: the namespace of any other selection does not exist.
+    static_assert(std::is_same_v<tap::dsp::real_fft32, expected_abi::basic_real_fft<float>>);
+    static_assert(std::is_same_v<tap::dsp::pvoc32, expected_abi::basic_pvoc<float>>);
+    static_assert(std::is_same_v<tap::dsp::log_mel32, expected_abi::basic_log_mel<float>>);
 
     TEST(fft_engine, AbiTagNamesTheSelectedDefault) {
         EXPECT_STREQ(tap::dsp::k_real_fft_abi_tag, k_expected_tag);
@@ -239,8 +254,11 @@ namespace {
     constexpr float k_round_trip_floor_measured = 3.58e-7f;
     constexpr float k_round_trip_pin            = 8.0f * k_round_trip_floor_measured;
 
+    /// `label` names the engine on the [ measured ] line: given by the caller
+    /// rather than read from typeid, so the line is the same with and without
+    /// RTTI (TAP_DSP_NO_EXCEPTIONS_RTTI).
     template <typename Fft>
-    void expect_constructs_and_round_trips(std::size_t n) {
+    void expect_constructs_and_round_trips(std::size_t n, const char* label) {
         ASSERT_TRUE(Fft::supports_size(n)) << "n=" << n;
         Fft                fft(n);
         const auto         x = tap::dsp::test::random_signal<float>(n, 0x2545F491u, 0.5);
@@ -254,9 +272,8 @@ namespace {
         }
         // %lu with a cast rather than %zu: newlib's printf on the QEMU legs
         // does not parse %zu and shifts the arguments that follow it.
-        std::printf("[ measured ] ConstructsAtTheRangeBounds: %s N=%lu worst |back - x| = %.3e (pin %.3e)\n",
-                    typeid(typename Fft::engine).name(), static_cast<unsigned long>(n), static_cast<double>(worst),
-                    static_cast<double>(k_round_trip_pin));
+        std::printf("[ measured ] ConstructsAtTheRangeBounds: %s N=%lu worst |back - x| = %.3e (pin %.3e)\n", label,
+                    static_cast<unsigned long>(n), static_cast<double>(worst), static_cast<double>(k_round_trip_pin));
         EXPECT_LT(worst, k_round_trip_pin) << "n=" << n;
     }
 
@@ -274,16 +291,16 @@ namespace {
     constexpr std::size_t k_host_cap = static_cast<std::size_t>(TAP_DSP_TEST_MAX_FFT_N);
 
     TEST(fft_engine, ConstructsAtTheRangeBounds) {
-        expect_constructs_and_round_trips<tap::dsp::real_fft32>(tap::dsp::real_fft32::k_min_size);
+        expect_constructs_and_round_trips<tap::dsp::real_fft32>(tap::dsp::real_fft32::k_min_size, k_expected_tag);
         expect_constructs_and_round_trips<tap::dsp::real_fft32>(
-            std::min<std::size_t>(tap::dsp::real_fft32::k_max_size, k_host_cap));
-        expect_constructs_and_round_trips<srdif_fft32>(16);
-        expect_constructs_and_round_trips<srdif_fft32>(8192);
+            std::min<std::size_t>(tap::dsp::real_fft32::k_max_size, k_host_cap), k_expected_tag);
+        expect_constructs_and_round_trips<srdif_fft32>(16, "srdif");
+        expect_constructs_and_round_trips<srdif_fft32>(8192, "srdif");
         if (k_host_cap >= (std::size_t{1} << 20)) {
-            expect_constructs_and_round_trips<srdif_fft32>(std::size_t{1} << 20);
+            expect_constructs_and_round_trips<srdif_fft32>(std::size_t{1} << 20, "srdif");
         }
-        expect_constructs_and_round_trips<narrow_fft32>(32);
-        expect_constructs_and_round_trips<narrow_fft32>(4096);
+        expect_constructs_and_round_trips<narrow_fft32>(32, "srdif narrowed to 32..4096");
+        expect_constructs_and_round_trips<narrow_fft32>(4096, "srdif narrowed to 32..4096");
     }
 
     // ------------------------------------------------------------------------

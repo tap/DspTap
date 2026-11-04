@@ -15,9 +15,11 @@
 ///        compiler rejects a yin handle passed to a pvoc function. No exception crosses this
 ///        boundary, from any entry point: every function is noexcept to a C++ caller; the create
 ///        functions (and the log_mel setters, which rebuild) catch allocation failure and return
-///        NULL (-1 for a setter, which then leaves the handle as it was); every other function
-///        performs no allocation, so there is nothing to throw. Geometry — every buffer a process
-///        call touches — is fixed at create.
+///        NULL (-1 for a setter, which then leaves the handle as it was) where the library is
+///        built with exceptions; built without them (-fno-exceptions), a refused allocation
+///        terminates, as every allocation's does in such a build. Every other function performs
+///        no allocation, so there is nothing to throw. Geometry — every buffer a process call
+///        touches — is fixed at create.
 ///
 ///        Changelog (contract-visible): 2026-09-23, Stage 3c — DSPTAP_FFT_PROFILE_Q15 / _Q31
 ///        un-reserved, _Q15_BFP / _Q31_BFP appended, dsptap_fft_fixed_scaling_exponent and the
@@ -58,7 +60,8 @@ extern "C" {
 #endif
 
 /// Every entry point is noexcept to a C++ caller (a C translation unit sees nothing). The create
-/// functions and the log_mel setters catch and report failure (NULL / -1); the rest allocate
+/// functions and the log_mel setters catch and report allocation failure (NULL / -1) where the
+/// build has exceptions, and terminate on it where it does not; the rest allocate
 /// nothing and call only noexcept header functions and plain loops, so they cannot throw (if that
 /// ever changed they would std::terminate rather than unwind into a C frame).
 #ifdef __cplusplus

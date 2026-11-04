@@ -78,6 +78,7 @@
 #include <gtest/gtest.h>
 
 #include "support/signals.h"
+#include "tap/dsp/detail/expects.h"
 #include "tap/dsp/fft.h"
 #include "tap/dsp/fft/srdif.h"
 
@@ -142,14 +143,14 @@ namespace {
 void* operator new(std::size_t n) {
     void* p = counted_malloc(n);
     if (p == nullptr) {
-        throw std::bad_alloc();
+        tap::dsp::raise<std::bad_alloc>(); // throws, or terminates without exceptions
     }
     return p;
 }
 void* operator new[](std::size_t n) {
     void* p = counted_malloc(n);
     if (p == nullptr) {
-        throw std::bad_alloc();
+        tap::dsp::raise<std::bad_alloc>(); // throws, or terminates without exceptions
     }
     return p;
 }
@@ -162,14 +163,14 @@ void* operator new[](std::size_t n, const std::nothrow_t&) noexcept {
 void* operator new(std::size_t n, std::align_val_t al) {
     void* p = counted_aligned_malloc(n, static_cast<std::size_t>(al));
     if (p == nullptr) {
-        throw std::bad_alloc();
+        tap::dsp::raise<std::bad_alloc>(); // throws, or terminates without exceptions
     }
     return p;
 }
 void* operator new[](std::size_t n, std::align_val_t al) {
     void* p = counted_aligned_malloc(n, static_cast<std::size_t>(al));
     if (p == nullptr) {
-        throw std::bad_alloc();
+        tap::dsp::raise<std::bad_alloc>(); // throws, or terminates without exceptions
     }
     return p;
 }
