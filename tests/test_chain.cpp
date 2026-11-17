@@ -8,7 +8,12 @@
 // every phase; frames_needed is the smallest n that reaches k; the latency is the exact
 // rational the stages' delays compose to; flush drains every stage's tail and
 // equals zero padding bit for bit, from every phase, in every sample format;
-// and the concept admits basic_decimator and rejects a type missing a member.
+// the concept admits basic_decimator and rejects a type missing a member, or
+// declaring its channel count at run time or as zero (and a chain of such a
+// stage is not a type); and the chain takes its
+// channel count from its stages and runs a two-channel chain's frames
+// interleaved through its scratch (a mixed count is a compile-fail case,
+// tests/compile_fail/chain_channels.cpp).
 
 #include <cmath>
 #include <cstddef>
@@ -42,6 +47,67 @@ namespace {
         void reset() noexcept {}
     };
     static_assert(!sync_stage<not_a_stage>);
+
+    static_assert(basic_decimator<float, 2>::channels() == 1);
+
+    // Everything a stage needs but the channel count.
+    struct no_channel_count {
+        using sample                        = float;
+        static constexpr std::size_t k_up   = 1;
+        static constexpr std::size_t k_down = 1;
+        std::size_t                  process(const float* /*in*/, std::size_t n, float* /*out*/) noexcept { return n; }
+        std::size_t                  outputs_for(std::size_t n) const noexcept { return n; }
+        void                         reset() noexcept {}
+    };
+    static_assert(!sync_stage<no_channel_count>);
+
+    // The count as a run-time value is not a stage's count.
+    struct runtime_channel_count : no_channel_count {
+        std::size_t channels() const noexcept { return 2; }
+    };
+    static_assert(!sync_stage<runtime_channel_count>);
+
+    // Nor is zero.
+    struct zero_channels : no_channel_count {
+        static constexpr std::size_t channels() noexcept { return 0; }
+    };
+    static_assert(!sync_stage<zero_channels>);
+
+    // So a chain of a stage without a count is not a type.
+    template <typename T>
+    concept chainable = requires { typename chain<T>; };
+    static_assert(!chainable<no_channel_count>);
+    static_assert(chainable<basic_decimator<float, 2>>);
+
+    // A two-channel stage that keeps every second interleaved frame (a 1/2
+    // sample-and-hold, no filter), so where each frame lands is exact and a
+    // chain's two-channel scratch and strides can be checked frame by frame.
+    class stereo_keep_every_second {
+      public:
+        using sample                        = float;
+        static constexpr std::size_t k_up   = 1;
+        static constexpr std::size_t k_down = 2;
+        static constexpr std::size_t channels() noexcept { return 2; }
+
+        std::size_t process(const float* in, std::size_t n, float* out) noexcept {
+            std::size_t made = 0;
+            for (std::size_t i = 0; i < n; ++i) {
+                if (m_odd == 0) {
+                    out[2 * made]     = in[2 * i];
+                    out[2 * made + 1] = in[2 * i + 1];
+                    ++made;
+                }
+                m_odd = 1 - m_odd;
+            }
+            return made;
+        }
+        std::size_t outputs_for(std::size_t n) const noexcept { return m_odd == 0 ? (n + 1) / 2 : n / 2; }
+        void        reset() noexcept { m_odd = 0; }
+
+      private:
+        std::size_t m_odd = 0;
+    };
+    static_assert(sync_stage<stereo_keep_every_second>);
 
     template <typename S>
     class chain_test : public ::testing::Test {};
@@ -327,6 +393,32 @@ namespace {
         static_assert(exact_ratio{1, 2} + exact_ratio{1, 3} == exact_ratio{5, 6});
         static_assert(exact_ratio{160, 147} * exact_ratio{1, 2} == exact_ratio{80, 147});
         EXPECT_DOUBLE_EQ((exact_ratio{80, 3}).value(), 80.0 / 3.0);
+    }
+
+    TEST(Chain, TakesItsChannelCountFromItsStages) {
+        static_assert(chain<basic_decimator<float, 2>, basic_decimator<float, 3>>::channels() == 1);
+        static_assert(chain<stereo_keep_every_second, stereo_keep_every_second>::channels() == 2);
+        static_assert(sync_stage<chain<stereo_keep_every_second, stereo_keep_every_second>>);
+
+        // 301 frames (i, -i), more than four of the chain's 64-frame chunks: two
+        // stages keeping every second frame keep every fourth, both channels
+        // together, through the chain's two-channel scratch.
+        constexpr std::size_t k_frames = 301;
+        std::vector<float>    in(2 * k_frames);
+        for (std::size_t i = 0; i < k_frames; ++i) {
+            in[2 * i]     = static_cast<float>(i);
+            in[2 * i + 1] = -static_cast<float>(i);
+        }
+        chain<stereo_keep_every_second, stereo_keep_every_second> c(stereo_keep_every_second{},
+                                                                    stereo_keep_every_second{});
+        const std::size_t                                         expect = c.outputs_for(k_frames);
+        ASSERT_EQ(expect, std::size_t{76}); // ceil(ceil(301 / 2) / 2)
+        std::vector<float> out(2 * expect);
+        ASSERT_EQ(c.process(in.data(), k_frames, out.data()), expect);
+        for (std::size_t k = 0; k < expect; ++k) {
+            EXPECT_EQ(out[2 * k], static_cast<float>(4 * k)) << "frame " << k;
+            EXPECT_EQ(out[2 * k + 1], -static_cast<float>(4 * k)) << "frame " << k;
+        }
     }
 
 } // namespace

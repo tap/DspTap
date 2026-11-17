@@ -140,6 +140,8 @@ namespace tap::dsp {
         static constexpr std::size_t k_ratio = M;
         static constexpr std::size_t k_up    = 1; ///< the stage ratio, for chain.h's sync_stage
         static constexpr std::size_t k_down  = M;
+        /// One channel: a decimator runs a mono stream (chain.h's sync_stage).
+        static constexpr std::size_t channels() noexcept { return 1; }
         /// What the stored table sums to, in the format's unity: M for Q15,
         /// whose table is M h (finalize_divided takes the M back out in the
         /// single rounding), 1 for every other format.

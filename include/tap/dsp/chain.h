@@ -13,9 +13,9 @@
 // decimate.h, an existing primitive, before any new engine depends on it.
 //
 // The sync_stage concept is structural and minimal: a sample type, the
-// rate ratio k_up / k_down as compile-time numbers, process(), outputs_for()
-// and reset(), which is what decimate.h and the bridge converter already
-// have. Latency composes when every stage reports its own.
+// rate ratio k_up / k_down and the channel count channels() as compile-time
+// numbers, process(), outputs_for() and reset(). Latency composes when every
+// stage reports its own.
 //
 // Contract, as numbers:
 //   - process(in, n, out) feeds n input frames through every stage in order
@@ -55,8 +55,12 @@
 //     reset() before reuse.
 //   - reset() resets every stage.
 //
-// Channels: every stage of a chain must agree on the frame width; the chain
-// is told the count only to size its scratch (decimate.h is mono).
+// Channels: every stage declares its frame width as a compile-time number,
+// a static constexpr channels() of at least 1 (decimate.h's decimators are
+// mono). The stages of a chain must agree (a static_assert names the rule),
+// the chain sizes its scratch by that count and reports it as its own
+// channels(); no constructor takes a count, so none can disagree with the
+// stages at run time.
 
 #pragma once
 
@@ -115,6 +119,10 @@ namespace tap::dsp {
             requires sample_type<typename T::sample>;
             { T::k_up } -> std::convertible_to<std::size_t>;
             { T::k_down } -> std::convertible_to<std::size_t>;
+            // The channel count is the type's: a static constexpr function,
+            // usable as a template argument, of at least one.
+            typename std::integral_constant<std::size_t, T::channels()>;
+            requires T::channels() >= 1;
             { s.process(in, n, out) } noexcept -> std::same_as<std::size_t>;
             { cs.outputs_for(n) } noexcept -> std::same_as<std::size_t>;
             { s.reset() } noexcept;
@@ -175,6 +183,11 @@ namespace tap::dsp {
         static_assert((std::is_same_v<sample, typename Rest::sample> && ...),
                       "every stage of a chain must use the same sample type");
 
+        /// The frame width every stage runs, interleaved.
+        static constexpr std::size_t k_channels = First::channels();
+        static_assert(((Rest::channels() == k_channels) && ...),
+                      "tap::dsp::chain: every stage must run the same channel count");
+
         static constexpr std::size_t k_stages = 1 + sizeof...(Rest);
         static constexpr std::size_t k_block  = 64; ///< input frames per internal chunk
 
@@ -184,14 +197,9 @@ namespace tap::dsp {
         static constexpr std::size_t k_up   = static_cast<std::size_t>(k_ratio.num);
         static constexpr std::size_t k_down = static_cast<std::size_t>(k_ratio.den);
 
-        /// Takes the stages by value (move them in); mono.
+        /// Takes the stages by value (move them in).
         explicit chain(First first, Rest... rest)
-            : chain(std::size_t{1}, std::move(first), std::move(rest)...) {}
-
-        /// Takes the stages by value; channels sizes the scratch only.
-        chain(std::size_t channels, First first, Rest... rest)
-            : m_stages(std::move(first), std::move(rest)...)
-            , m_channels(channels) {
+            : m_stages(std::move(first), std::move(rest)...) {
             // The stages arrive in whatever state their previous owner left
             // them in; the scratch bound below assumes the process/flush-
             // reached kind, so start every stage from its zero-primed state.
@@ -205,9 +213,9 @@ namespace tap::dsp {
                 (widen_scratch_from<E>(cap), ...);
             }(std::make_index_sequence<k_stages>{});
             for (std::size_t i = 0; i + 1 < k_stages; ++i) {
-                m_scratch[i].assign(cap[i] * m_channels, sample_traits<sample>::silence());
+                m_scratch[i].assign(cap[i] * k_channels, sample_traits<sample>::silence());
             }
-            m_zeros.assign(k_block * m_channels, sample_traits<sample>::silence());
+            m_zeros.assign(k_block * k_channels, sample_traits<sample>::silence());
         }
 
         /// Feeds n input frames through every stage; returns the frames the
@@ -216,8 +224,8 @@ namespace tap::dsp {
             std::size_t produced = 0;
             while (n > 0) {
                 const std::size_t take = n < k_block ? n : k_block;
-                produced += run_chunk<0>(in, take, out + produced * m_channels);
-                in += take * m_channels;
+                produced += run_chunk<0>(in, take, out + produced * k_channels);
+                in += take * k_channels;
                 n -= take;
             }
             return produced;
@@ -263,7 +271,7 @@ namespace tap::dsp {
                           "drain it");
             std::size_t produced = 0;
             [&]<std::size_t... I>(std::index_sequence<I...>) {
-                ((produced += flush_stage<I>(out + produced * m_channels)), ...);
+                ((produced += flush_stage<I>(out + produced * k_channels)), ...);
             }(std::make_index_sequence<k_stages>{});
             return produced;
         }
@@ -287,7 +295,8 @@ namespace tap::dsp {
             std::apply([](auto&... s) { (s.reset(), ...); }, m_stages);
         }
 
-        std::size_t channels() const noexcept { return m_channels; }
+        /// The stages' channel count (k_channels); a chain is itself a sync_stage.
+        static constexpr std::size_t channels() noexcept { return k_channels; }
 
         /// Stage I, read-only: a chained stage is driven only through the
         /// chain (its own pull() would break the scratch bound, see
@@ -350,7 +359,7 @@ namespace tap::dsp {
             std::size_t produced = 0;
             while (n > 0) {
                 const std::size_t take = n < k_block ? n : k_block;
-                produced += run_chunk<I>(m_zeros.data(), take, out + produced * m_channels);
+                produced += run_chunk<I>(m_zeros.data(), take, out + produced * k_channels);
                 n -= take;
             }
             return produced;
@@ -384,7 +393,6 @@ namespace tap::dsp {
         }
 
         stages_tuple        m_stages;
-        std::size_t         m_channels;
         std::vector<sample> m_scratch[k_stages > 1 ? k_stages - 1 : 1];
         std::vector<sample> m_zeros; ///< one k_block chunk of silence, what flush feeds
     };

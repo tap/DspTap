@@ -412,6 +412,20 @@ if(NOT TAP_DSP_BARE_METAL AND NOT CMAKE_CROSSCOMPILING
         set_tests_properties(fft_compile_fail.LegacySpellingIsRejectedWithTheD4Message.${_name}
             PROPERTIES RESOURCE_LOCK tap_dsp_compile_fail LABELS compile_fail)
     endforeach()
+    # chain.h's channel rule (A13 of SampleRateTap's roadmap): a chain of stages
+    # running different channel counts fails on the chain's static_assert.
+    add_library(tap_dsp_compile_fail_chain_channels OBJECT EXCLUDE_FROM_ALL compile_fail/chain_channels.cpp)
+    set_target_properties(tap_dsp_compile_fail_chain_channels PROPERTIES EXPORT_COMPILE_COMMANDS OFF)
+    target_link_libraries(tap_dsp_compile_fail_chain_channels PRIVATE tap::dsp tap_dsp_warnings)
+    add_test(NAME chain_compile_fail.MixedChannelCountsAreRejected
+        COMMAND ${CMAKE_COMMAND}
+            -DBUILD_DIR=${PROJECT_BINARY_DIR}
+            -DTARGET=tap_dsp_compile_fail_chain_channels
+            -DCONFIG=$<CONFIG>
+            "-DEXPECT=every stage must run the same channel count"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/expect_compile_failure.cmake)
+    set_tests_properties(chain_compile_fail.MixedChannelCountsAreRejected
+        PROPERTIES RESOURCE_LOCK tap_dsp_compile_fail LABELS compile_fail)
 endif()
 
 # ==============================================================================
