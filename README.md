@@ -424,10 +424,12 @@ spec).
 ### `tap/dsp/chain.h` — the synchronous-stage concept and `chain<>`
 
 The composition point below the family's engines (rational `PLAN.md`, R6):
-the `sync_stage` concept (a `sample` type, the ratio `k_up` / `k_down` as
-compile-time numbers, `process`, `outputs_for`, `reset`) and
-`chain<Stages...>`, which runs the stages in order through scratch sized at
-construction (noexcept, allocation-free, bit-identical for any chunking),
+the `sync_stage` concept (a `sample` type, the ratio `k_up` / `k_down` and
+the channel count `channels()` as compile-time numbers, `process`,
+`outputs_for`, `reset`) and `chain<Stages...>`, which requires its stages to
+run one channel count (a `static_assert` names the rule), runs them in order
+through scratch sized at construction for that count (noexcept,
+allocation-free, bit-identical for any chunking),
 composes `outputs_for` forward and `frames_needed` (the smallest n with
 `outputs_for(n) >= k`; not an equality, an interpolating stage completes L
 outputs per input) backward, reports the chain's group delay as an `exact_ratio` at its
@@ -437,9 +439,13 @@ stage in order is fed its `window_frames()` of zeros (the zero input after
 which its output is silence, `taps - 1` for a decimator) through the stages
 after it, `flush_output_frames()` frames in all, bit-identical to zero
 padding the chain's input. A chain is written by the caller as a type,
-never looked up from a rate pair. `basic_decimator` satisfies the concept
-(`sample`, `k_up`, `k_down`, `window_frames` added), which is how the helper
-is proven on an existing primitive before any new engine depends on it.
+never looked up from a rate pair. The count is never a run-time value: a
+stage declares it as a `static constexpr` `channels()` of at least 1, and no
+chain constructor takes one (since 0.2.0; 0.1.0's chain took the count at run
+time to size its scratch). `basic_decimator` satisfies the concept (`sample`,
+`k_up`, `k_down`, `window_frames` and `channels()`, one, added), which is how
+the helper is proven on an existing primitive before any new engine depends
+on it.
 
 Pinned by `tests/test_chain.cpp`: a chain of the by-2 and by-3 decimators
 equals the two run in sequence bit for bit in every sample format, for
@@ -449,7 +455,12 @@ construction and read-only through the chain; latency 80/3 output frames (40/2 o
 by-2's outputs through the by-3, plus 60/3), the impulse peak where it
 says; flush equal to zero padding bit for bit from every phase in every
 format, `flush_output_frames` exact, the chain silent afterwards; reset
-bit-exact.
+bit-exact; the concept rejecting a stage with no channel count, a run-time
+one or zero; a two-channel chain keeping its frames interleaved through its
+scratch across chunks, and a chain of a stage without a count not a type.
+`tests/compile_fail/chain_channels.cpp` pins that a chain of stages running
+different counts fails on the chain's `static_assert`, as the build's only
+error.
 
 ### `tap/dsp/sample_traits.h` — sample formats: double, float, Q15, Q31
 
@@ -687,7 +698,9 @@ static_assert(TAP_DSP_VERSION >= TAP_DSP_VERSION_ENCODE(0, 1, 0),
 ```
 
 Before 1.0 a minor version may break a consumer, so a floor states what was
-tested, not what will keep working.
+tested, not what will keep working. 0.2.0 is such a break: `chain.h`'s
+stages declare their channel count at compile time and the chain's
+run-time-count constructor is gone (SampleRateTap's A13).
 
 ## Build
 
