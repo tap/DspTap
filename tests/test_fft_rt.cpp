@@ -361,8 +361,13 @@ namespace {
     TEST(fft_rt_guard, CountsAVectorAllocation) {
         allocation_guard guard;
         {
+            // The pointer escapes through a volatile: GCC 15's std::allocator
+            // allocates through __builtin_operator_new, which lets the
+            // compiler elide a new/delete pair whose memory nothing can see,
+            // and an elided allocation never reaches the replacement.
             std::vector<double> v(64);
-            EXPECT_NE(v.data(), nullptr);
+            double* volatile seen = v.data();
+            EXPECT_NE(seen, nullptr);
         }
         EXPECT_GE(guard.allocations_since(), 1u);
     }
