@@ -78,11 +78,17 @@ namespace tap::dsp {
 namespace {
 
     /// Calls a member through a pointer the optimizer cannot see through.
+    /// The object's address is laundered too: with the member pointer
+    /// opaque, the call carries the virtual-dispatch path, which reads a
+    /// vtable word from the object, and GCC 15 warns that read may be
+    /// uninitialized when it can trace the address to the local object
+    /// (-Wmaybe-uninitialized, an error under TAP_DSP_WERROR).
     template <typename Object, typename Result>
     Result call_laundered(const Object& object, Result (Object::*member)() const noexcept) {
-        volatile auto laundered = member;
-        auto          pointer   = laundered;
-        return (object.*pointer)();
+        volatile auto laundered      = member;
+        auto          pointer        = laundered;
+        const Object* volatile where = &object;
+        return (where->*pointer)();
     }
 
     constexpr std::size_t k_n = 512;
