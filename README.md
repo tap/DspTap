@@ -1,5 +1,9 @@
 # DspTap
 
+[![CI](https://github.com/tap/DspTap/actions/workflows/ci.yml/badge.svg)](https://github.com/tap/DspTap/actions/workflows/ci.yml)
+[![Bench](https://github.com/tap/DspTap/actions/workflows/bench.yml/badge.svg)](https://github.com/tap/DspTap/actions/workflows/bench.yml)
+[![Tap House Style](https://github.com/tap/DspTap/actions/workflows/style.yml/badge.svg)](https://github.com/tap/DspTap/actions/workflows/style.yml)
+
 Shared DSP primitives for the **Tap** family of audio libraries. Header-only,
 plain portable C++ (C++20, standard library only), no Max/Min or framework
 dependency — consumed as a git submodule by the individual libraries.
