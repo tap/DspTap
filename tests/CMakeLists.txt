@@ -137,6 +137,7 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
     SOURCES
         test_analysis.cpp
         test_chain.cpp
+        test_chain_iir.cpp
         test_cx_math.cpp
         test_decimate.cpp
         test_expects.cpp
@@ -457,6 +458,22 @@ if(NOT TAP_DSP_BARE_METAL AND NOT CMAKE_CROSSCOMPILING
             "-DEXPECT=every stage must run the same channel count"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/expect_compile_failure.cmake)
     set_tests_properties(chain_compile_fail.MixedChannelCountsAreRejected
+        PROPERTIES RESOURCE_LOCK tap_dsp_compile_fail LABELS compile_fail)
+    # chain.h's exact-latency rule (SampleRateTap's IIR_PLAN I5): a chain with a
+    # recursive stage, which reports only a nominal latency, has no exact
+    # latency_output_frames(); the chain's static_assert says so.
+    add_library(tap_dsp_compile_fail_chain_iir_exact_latency OBJECT EXCLUDE_FROM_ALL
+        compile_fail/chain_iir_exact_latency.cpp)
+    set_target_properties(tap_dsp_compile_fail_chain_iir_exact_latency PROPERTIES EXPORT_COMPILE_COMMANDS OFF)
+    target_link_libraries(tap_dsp_compile_fail_chain_iir_exact_latency PRIVATE tap::dsp tap_dsp_warnings)
+    add_test(NAME chain_compile_fail.RecursiveStageHasNoExactLatency
+        COMMAND ${CMAKE_COMMAND}
+            -DBUILD_DIR=${PROJECT_BINARY_DIR}
+            -DTARGET=tap_dsp_compile_fail_chain_iir_exact_latency
+            -DCONFIG=$<CONFIG>
+            "-DEXPECT=a chain's latency needs every stage to report latency_output_frames"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/expect_compile_failure.cmake)
+    set_tests_properties(chain_compile_fail.RecursiveStageHasNoExactLatency
         PROPERTIES RESOURCE_LOCK tap_dsp_compile_fail LABELS compile_fail)
     # subband.h's whole-delay rule (SampleRateTap's X4_X8_PLAN.md, X10): stages
     # whose delays are compile-time constants and whose D tau_down + tau_up is
