@@ -80,6 +80,10 @@ MACHINES = {
 PREFIX = "tap_dsp_icount_"
 DONE_MARKER = "TAP_DSP_ICOUNT_DONE ok=1"
 COUNT_RE = re.compile(r"TAP_DSP_INSN_COUNT (\d+)")
+# bench/layout/layout_main.cpp brackets k_frames / k_call = 16384 / 128 steps;
+# any other calls= is a counting fault (a marker once fired twice when its
+# code straddled a page boundary).
+LAYOUT_CALLS = 128
 CALL_RE = re.compile(r"TAP_DSP_CALL_MAX (\d+) call=(\d+) calls=(\d+) total=(\d+)")
 DONE_RE = re.compile(r"TAP_DSP_ICOUNT_DONE ok=1 (.*)")
 
@@ -125,6 +129,7 @@ def measure(target: str, plugin: str, binary: str) -> tuple[int, dict[str, str]]
     calls = CALL_RE.search(out)
     if calls:  # a bracketed workload (bench/call_marker.h): its sum and its worst bracket
         fields["call_max"], fields["call_total"] = calls.group(1), calls.group(4)
+        fields["calls"] = calls.group(3)
     return int(m.group(1)), fields
 
 
@@ -164,6 +169,8 @@ def report(args, prefix: str, binaries: list[str]) -> int:
         except MeasurementError as e:
             raise SystemExit(str(e))
         f = fields[scenario]
+        if "calls" in f and int(f["calls"]) != LAYOUT_CALLS:
+            raise SystemExit(f"{binary}: the plugin saw {f['calls']} bracketed calls, not {LAYOUT_CALLS}")
         measured[scenario] = int(f.get("call_total", whole))
         worst[scenario] = int(f.get("call_max", 0))
         print(f"{scenario}: {measured[scenario]} insns streaming, worst step {worst[scenario]}, "
