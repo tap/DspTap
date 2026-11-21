@@ -10,11 +10,19 @@
 //   TAP_DSP_LY_KIND    0 = basic_butterworth_lowpass<float, 4, Ch> at fc = 0.1
 //                      1 = basic_fft_fir<float, Ch>, 127 taps, B = 128 (N = 256)
 //                      2 = chain<the Butterworth, the FFT FIR>
+//                      3 = a gain stage, one gain per channel (0.5 + 0.01 c
+//                          for channel c): stateless, the case where planar
+//                          vectorizes over frames and interleaved only over
+//                          a channel pattern. Bench-local (bench_gain below),
+//                          not a library primitive; planar runs Ch
+//                          bench_gain<1>s, each with its own channel's gain.
 //   TAP_DSP_LY_CH      channels: 1, 2, 6 (5.1) or 12 (7.1.4)
 //   TAP_DSP_LY_PLANAR  0 = one stage of Ch channels over interleaved frames
 //                      1 = Ch mono stages, each over its own contiguous
 //                          channel buffer (copies of one designed stage, so
-//                          both layouts pay one design)
+//                          both layouts pay one design; the gain stages are
+//                          built per channel). Both layouts know their
+//                          channel count at compile time.
 //
 // 16,384 frames per channel in calls of 128 frames, float. Each 128-frame
 // step (one process() call interleaved, Ch calls planar) is bracketed by
@@ -64,10 +72,10 @@ namespace {
     constexpr std::size_t k_ch     = TAP_DSP_LY_CH;
     constexpr std::size_t k_frames = 16384;
     constexpr std::size_t k_call   = 128;
-#if TAP_DSP_LY_KIND != 1
+#if TAP_DSP_LY_KIND == 0 || TAP_DSP_LY_KIND == 2
     constexpr double k_fc = 0.1; ///< the Butterworth's cutoff
 #endif
-#if TAP_DSP_LY_KIND != 0
+#if TAP_DSP_LY_KIND == 1 || TAP_DSP_LY_KIND == 2
     constexpr std::size_t k_taps  = 127; ///< the FFT FIR's taps
     constexpr std::size_t k_block = 128; ///< and its block (N = 256)
 #endif
@@ -77,7 +85,7 @@ namespace {
     template <std::size_t Ch>
     using fir = tap::dsp::basic_fft_fir<float, Ch>;
 
-#if TAP_DSP_LY_KIND != 0
+#if TAP_DSP_LY_KIND == 1 || TAP_DSP_LY_KIND == 2
     std::vector<double> taps() {
         std::vector<double> h(k_taps);
         tap::dsp::design_prototype(h, 1, 0.4, tap::dsp::kaiser_beta(70.0));
@@ -85,9 +93,43 @@ namespace {
     }
 #endif
 
+    /// A per-channel gain as a 1:1 sync_stage over Ch interleaved channels:
+    /// out = in * g[c], g[c] = 0.5 + 0.01 (first + c), the channel count a
+    /// template parameter (as every stage's is).
     template <std::size_t Ch>
-    auto make_stage() {
-#if TAP_DSP_LY_KIND == 0
+    class bench_gain {
+      public:
+        using sample                        = float;
+        static constexpr std::size_t k_up   = 1;
+        static constexpr std::size_t k_down = 1;
+        static constexpr std::size_t channels() noexcept { return Ch; }
+
+        explicit bench_gain(std::size_t first) noexcept {
+            for (std::size_t c = 0; c < Ch; ++c) {
+                m_g[c] = 0.5f + 0.01f * static_cast<float>(first + c);
+            }
+        }
+        std::size_t process(const float* in, std::size_t n, float* out) noexcept {
+            for (std::size_t i = 0; i < n; ++i) {
+                for (std::size_t c = 0; c < Ch; ++c) {
+                    out[i * Ch + c] = in[i * Ch + c] * m_g[c];
+                }
+            }
+            return n;
+        }
+        std::size_t outputs_for(std::size_t n) const noexcept { return n; }
+        void        reset() noexcept {}
+
+      private:
+        std::array<float, Ch> m_g{};
+    };
+    static_assert(tap::dsp::sync_stage<bench_gain<12>>);
+
+    template <std::size_t Ch>
+    auto make_stage([[maybe_unused]] std::size_t first = 0) {
+#if TAP_DSP_LY_KIND == 3
+        return bench_gain<Ch>(first);
+#elif TAP_DSP_LY_KIND == 0
         return bw<Ch>(k_fc);
 #elif TAP_DSP_LY_KIND == 1
         const auto h = taps();
@@ -159,8 +201,13 @@ namespace {
 #else
         const auto                             proto = make_stage<1>();
         std::vector<decltype(make_stage<1>())> stages(k_ch, proto);
-        std::array<std::vector<float>, k_ch>   in;
-        std::array<std::vector<float>, k_ch>   out;
+#if TAP_DSP_LY_KIND == 3
+        for (std::size_t c = 0; c < k_ch; ++c) {
+            stages[c] = make_stage<1>(c); // each mono gain stage carries its own channel's gain
+        }
+#endif
+        std::array<std::vector<float>, k_ch> in;
+        std::array<std::vector<float>, k_ch> out;
         for (auto& v : in) {
             v.resize(k_frames);
         }

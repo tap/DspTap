@@ -8,11 +8,11 @@
 # --report-only, which prints each count and each planar / interleaved
 # ratio and fails only when a binary yields no count.
 #
-# Scenarios: <kind>_f32_ch<C>_<i|p>, kind in {bw, fir, chain}, C in
+# Scenarios: <kind>_f32_ch<C>_<i|p>, kind in {bw, fir, chain, gain}, C in
 # {1, 2, 6, 12}; at one channel the two layouts are the same buffer, so only
 # _i is built.
 
-set(_tap_dsp_layout_kinds bw:0 fir:1 chain:2)
+set(_tap_dsp_layout_kinds bw:0 fir:1 chain:2 gain:3)
 set(_tap_dsp_layout_channels 1 2 6 12)
 
 foreach(_kind IN LISTS _tap_dsp_layout_kinds)
