@@ -8,7 +8,7 @@ Shared DSP primitives for the **Tap** family of audio libraries. Header-only,
 plain portable C++ (C++20, standard library only), no Max/Min or framework
 dependency — consumed as a git submodule by the individual libraries.
 
-Today it holds nine primitives, plus the [FIR substrate](#the-fir-substrate) —
+Today it holds ten primitives, plus the [FIR substrate](#the-fir-substrate) —
 the shared design-math / sample-format / kernel layer under the SampleRateTap
 family's two engines, `async` and `bridge` — and the [scalar helpers](#tapdspmathh--periodic-hann-and-decibel-helpers)
 (`tap/dsp/math.h`) the consuming libraries call instead of re-typing them:
@@ -368,12 +368,11 @@ suppressor's cross-precision pin must be unchanged by the promotion.
 `include/tap/dsp/butterworth.h` designs an even-order Butterworth low-pass
 (order 2 … 16, the bilinear transform with pre-warping, Oppenheim & Schafer
 sec. 7.2) and runs it as a 1:1 `chain` stage over `Ch` interleaved channels:
-`basic_butterworth_lowpass<Sample, Order, Ch, Tail>`, float or double, with
+`basic_butterworth_lowpass<Sample, Order, Ch>`, float or double, with
 `butterworth4<Ch>` / `butterworth4_32<Ch>` for order 4. It is the first slice
 of SampleRateTap's IIR plan (`docs/IIR_PLAN.md`, IIR-a): it lands the biquad
-kernel and the subnormal query (the [recursive substrate](#the-recursive-substrate))
-and the chain's nominal latency, under the plan's contracts for a recursive
-stage.
+kernel (the [recursive substrate](#the-recursive-substrate)) and the chain's
+nominal latency, under the plan's contracts for a recursive stage.
 
 ```cpp
 tap::dsp::basic_butterworth_lowpass<float, 4, 2> lp(0.1); // stereo, -3 dB at 0.1 fs
@@ -474,6 +473,113 @@ smallest n with ln(max_finite) + ln‖Aⁿ‖ < ln(min_normal) over the cascade'
 state-transition matrix (binary lifting over A^(2^j), so a cutoff of a few
 hertz in double costs O(log n) products), plus one frame per section. The
 header states the residue each FTZ setting leaves after it.
+
+## `tap::dsp::subband` — the sub-band round trip
+
+`include/tap/dsp/subband.h` runs a process at a lower rate, where an FFT of
+the same size resolves D times finer, and adds back only what the process
+*changed* (SampleRateTap's `docs/X4_X8_PLAN.md`, 6.3 and X10):
+
+```text
+out[n] = x[n − T] + up(change(down(x)))[n],   T = D·τ_down + D·L_op + τ_up
+```
+
+with τ_down the decimator's delay in low-rate frames, L_op the op's latency
+in whole low-rate frames and τ_up the interpolator's delay in full-rate
+frames. The scaffold holds the full-rate delay line, takes T from its stages
+and runs the low-rate op. It is generic over `chain.h`'s `sync_stage`: Down
+converts by 1/D and Up by D/1 (inverse integer factors, a `static_assert`),
+each a single stage or a `tap::dsp::chain`, and the sample type and channel
+count come from the stages. Everything the op leaves alone reaches the
+output through the delay line untouched, so the decimator's aliasing in the
+bins the op does not touch is never re-injected, no guard band filter is
+needed, and bands compose by addition with no crossover filter (Crochiere
+and Rabiner 1983; Vaidyanathan 1993; Allen 1977 for an STFT op's overlap-add
+modification).
+
+- **Where T comes from** (`exact_delay_stage`): each stage reports an exact
+  latency (`latency_output_frames()` or `latency_input_samples()`, as
+  `chain.h` reads them) or an exact delay path
+  (`delay_path_output_frames()`, the `reports_delay_path` concept: the member
+  a near-linear recursive stage reports, so admitting one needs no DspTap
+  change), and a chain is walked stage by stage. A stage with neither, such
+  as a nonlinear-phase recursive stage, does not compile. A non-whole
+  D·τ_down + τ_up is a `static_assert` when both stages' delays are
+  compile-time constants, and otherwise is rejected at construction through
+  `tap::dsp::raise<std::invalid_argument>`, with `supports(down, up)` as the
+  predicate to check first. An odd-length L-th-band FIR delays mL − 1 samples
+  at its higher rate, so a chain of integer-factor `nyquist.h` stages is
+  always whole.
+- **The op** (`subband_op`): a `sample` type and `channels()` as the stages
+  declare them, `latency_frames()` (L_op), `process(in, n, change)` writing n
+  frames of change (`change[k] = result[k] − in[k − L_op]`, exact zeros for no
+  change), `reset()`, and `window_frames()` if the scaffold is to flush. Its
+  change must stay in the bins up to p·r_low, the stages' passband (X15: a
+  precondition on the op, not enforced; masking belongs to the op).
+- **Identity, by construction:** an op that changes nothing gives x[n − T]
+  bit for bit, for every bit pattern: where the change is exactly zero the
+  delayed input is written as it is (an addition would turn −0 into +0).
+- **Composition:** every band is aligned to A, the largest T
+  (`round_trip_latency(down, up, op)` gives each band's T before
+  construction). A band constructed with `aligned_latency = A` holds its
+  extra A − T as ⌊(A − T) / D⌋ frames at its low rate, before Up, and the
+  (A − T) mod D rest at the full rate. One band writes
+  `subband_output::input_plus_change` and holds the delay line; the others
+  write `subband_output::change_only` and hold none, and the caller adds them.
+- **Memory (X12):** the delay line holds A·Ch samples: with a 4096-point op
+  on SampleRateTap's economy chains, 129 / 258 / 515 KiB of double per channel
+  at D = 4 / 8 / 16. A D = 4 band beside a D = 8 band adds its 16480 extra
+  frames as 4120 at 12 kHz (32 KiB in double). The rest is a few blocks of
+  scratch (the header states each as a formula).
+- **Real time:** construction allocates and may reject; `process()`,
+  `flush()` and `reset()` are noexcept and allocation-free; any chunking
+  writes the same bits, and in-place running (in == out) is allowed.
+  `flush()` feeds `window_frames()` zeros, a bound valid from any state, so
+  it is zero padding by construction.
+- **Formats:** float and double, from the stages. Fixed point is out of scope
+  (a `static_assert`): the sum and the delay line would need a Q-format design
+  of their own.
+
+```cpp
+#include "tap/dsp/subband.h"
+// Down, Up: the caller's stages by 1/D and D/1, a stage or a tap::dsp::chain each
+// (SampleRateTap's rational::down_by8 / up_by8, say); Op: a subband_op.
+tap::dsp::subband_delta<Down, Up, Op> band(std::move(down), std::move(up), std::move(op));
+band.process(in, n, out);                 // out[k] = in[k - T] + the change; noexcept, n frames
+const std::size_t t = band.latency();     // T, a whole number of full-rate frames
+```
+
+| profile | removal floor, worst over the usable band (test stages, 70 dB) | float vs double |
+|---|---|---|
+| `double` | −65.0 dB (D = 4), −61.3 dB (D = 8) | the golden model |
+| `float` | the same within 0.01 dB (0.2 dB at a near-null) | 6.5e-8 max abs (pinned at 1e-7) |
+| Q15 / Q31 | out of scope (a `static_assert`) | |
+
+Pinned by `tests/test_subband.cpp`, typed over float and double, on
+test-local stages built on `nyquist.h` at 70 dB, as `chain.h` was proven on
+`decimate.h` (D = 4 by one 4th-band stage each way, T = 86; D = 8 by ↓4·↓2
+and ↑2·↑4, T = 206): the identity bit for bit, −0, subnormals and the
+largest finite values included, for one stage, chains, two channels, an op
+latency and an aligned latency; a removal at the stages' ripple floor
+(−61.3 to −116 dB at the tones removed, the same figures as the designs'
+responses predict to 0.01 dB) and failing by at least 46 dB with T − 1 or
+T + 1 (2 sin πf), which is what pins T against the signal path, while a tone
+above the band passes unchanged; T as the exact sum of the parts' delays
+from every form, mixed forms in one chain included; any chunking and in-place
+running bit-identical; flush equal to zero padding with both paths drained;
+three bands of different T (206, 86 and 61 with `decimate.h`'s by-2) composed
+by addition, each change-only band's output its own change delayed by
+A − T bit for bit and each band's removal at its floor inside the
+composition; an unmasked change re-injecting a transition-band alias at
+−21.4 dB (X15's honest limit); a delay-path stage accepted bit-identically
+to a latency stage; a stage with neither and a chain holding one refused
+(concept negatives); a lagging change path and a non-whole delay rejected
+at construction; and float tracking double. `tests/compile_fail/subband_non_integer_delay.cpp`
+pins that stages whose delays are compile-time constants and sum to a
+fraction of a sample fail on the class's `static_assert`, as the build's
+only error. The battery runs whole on every QEMU leg (M4 soft-float, M4F,
+M33 and M55, and the M33 and M55 without exceptions or RTTI): nothing is
+excluded.
 
 ## The FIR substrate
 

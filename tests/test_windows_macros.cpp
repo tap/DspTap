@@ -88,6 +88,7 @@
 #include "tap/dsp/pvoc.h"
 #include "tap/dsp/quantize.h"
 #include "tap/dsp/sample_traits.h"
+#include "tap/dsp/subband.h"
 #include "tap/dsp/yin.h"
 
 namespace {

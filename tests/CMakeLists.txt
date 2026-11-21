@@ -159,6 +159,7 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_quantize.cpp
         test_sample_traits.cpp
         test_spectrum.cpp
+        test_subband.cpp
         test_version.cpp
         test_windows_macros.cpp
         test_yin.cpp
@@ -439,6 +440,23 @@ if(NOT TAP_DSP_BARE_METAL AND NOT CMAKE_CROSSCOMPILING
             "-DEXPECT=every stage must run the same channel count"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/expect_compile_failure.cmake)
     set_tests_properties(chain_compile_fail.MixedChannelCountsAreRejected
+        PROPERTIES RESOURCE_LOCK tap_dsp_compile_fail LABELS compile_fail)
+    # subband.h's whole-delay rule (SampleRateTap's X4_X8_PLAN.md, X10): stages
+    # whose delays are compile-time constants and whose D tau_down + tau_up is
+    # not whole fail on the class's static_assert. (Where a delay is decided at
+    # run time the constructor rejects it: test_subband.cpp.)
+    add_library(tap_dsp_compile_fail_subband_non_integer_delay OBJECT EXCLUDE_FROM_ALL
+        compile_fail/subband_non_integer_delay.cpp)
+    set_target_properties(tap_dsp_compile_fail_subband_non_integer_delay PROPERTIES EXPORT_COMPILE_COMMANDS OFF)
+    target_link_libraries(tap_dsp_compile_fail_subband_non_integer_delay PRIVATE tap::dsp tap_dsp_warnings)
+    add_test(NAME subband_compile_fail.NonIntegerDelayIsRejected
+        COMMAND ${CMAKE_COMMAND}
+            -DBUILD_DIR=${PROJECT_BINARY_DIR}
+            -DTARGET=tap_dsp_compile_fail_subband_non_integer_delay
+            -DCONFIG=$<CONFIG>
+            "-DEXPECT=delays are compile-time constants and their sum is not"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/expect_compile_failure.cmake)
+    set_tests_properties(subband_compile_fail.NonIntegerDelayIsRejected
         PROPERTIES RESOURCE_LOCK tap_dsp_compile_fail LABELS compile_fail)
 endif()
 
