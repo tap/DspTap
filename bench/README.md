@@ -497,6 +497,41 @@ is even. The per-core figures differ (a mono biquad keeps its state and
 coefficients in registers across frames, which matters on the M-class
 cores) and are in each key's step summary and `layout-<key>.json`.
 
+Per core, planar / interleaved streaming instructions (the bracket sums;
+`bench.yml` run 152, workflow_dispatch on the IIR-a branch at 7a4a4cf,
+2026-11-21; the counts themselves are in each key's `layout-<key>.json`; the
+`hexagon` key counts packets, not instructions, as its ratchet does):
+
+| key | `bw` 2 | `bw` 6 | `bw` 12 | `fir` 2 | `fir` 6 | `fir` 12 | `chain` 2 | `chain` 6 | `chain` 12 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `m4-softfp` | 0.999 | 0.996 | 0.997 | 1.002 | 1.006 | 1.004 | 1.003 | 0.999 | 1.003 |
+| `m4f` | 0.979 | 0.950 | 0.965 | 1.052 | 1.078 | 1.065 | 1.055 | 1.066 | 1.073 |
+| `m33` | 1.002 | 0.972 | 0.987 | 1.051 | 1.074 | 1.056 | 1.060 | 1.059 | 1.068 |
+| `m55` | 1.002 | 0.958 | 0.979 | 1.059 | 1.097 | 1.056 | 1.068 | 1.077 | 1.074 |
+| `m55-ooura` | 1.002 | 0.958 | 0.979 | 1.040 | 1.064 | 1.042 | 1.052 | 1.057 | 1.062 |
+| `hexagon` | 1.000 | 1.028 | 0.808 | 1.137 | 1.158 | 1.162 | 1.084 | 1.107 | 1.052 |
+
+What the cores say:
+
+- **The FFT FIR and the chain: interleaved everywhere,** by 4 to 10 % on the
+  M-class cores with an FPU and 14 to 16 % for the FFT FIR on Hexagon. The
+  per-block de-interleave is cheaper than running a stage per channel.
+- **The Butterworth alone: planar, slightly, on the embedded cores:** 2 to
+  5 % fewer instructions on the M4F, M33 and M55 at 6 and 12 channels, and
+  19 % fewer on Hexagon at 12. A mono biquad keeps its two states and five
+  coefficients in registers across frames; the interleaved loop reloads them
+  for every channel of every frame. x86-64 is the other way (planar 1.50x at
+  12 channels), where GCC vectorizes the interleaved channel loop.
+- **The soft-float M4: no difference** (within 1 %): the software float
+  arithmetic is nearly all of the count.
+
+So the layout that wins depends on the stage and the core: polyphase and
+block stages favour interleaved on every core; a short recursive stage
+favours per-channel state on the embedded ones, and a frame-major biquad
+kernel that keeps state in registers (a fixed-Ch tile, as SampleRateTap's
+async does for its dot products) is the obvious experiment if that 2 to 5 %
+matters.
+
 ## Provenance
 
 `icount/icount_main.cpp`, `scripts/icount.py` and

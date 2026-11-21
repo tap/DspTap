@@ -402,6 +402,11 @@ double d = lp.nominal_latency_output_frames();           // group delay at DC
   - `iir_tail::free_running` is the plain recursion. It has no
     `window_frames()` (a chain holding it cannot flush), and its `process()`
     states the plan's I9 precondition, `TAP_EXPECTS(subnormals_flushed<S>())`.
+- **Layout:** one stage of `Ch` channels runs each frame through every
+  channel's sections in turn. On x86-64 that is 1.5x cheaper than 12 mono
+  stages (GCC vectorizes the channel loop); on the M4F, M33, M55 and Hexagon
+  the mono stages are 2 to 19 % cheaper, because a mono biquad keeps its
+  state in registers across frames (`bench/README.md`, "Layout").
 - **Formats:** float keeps its states and products in float (I14). Measured
   against double, order 4, white noise at 0.9: 1.9e-7 at fc = 0.25, 4.3e-7 at
   0.07, 6.0e-6 at 0.01 (x86-64). Q15 / Q31 wait for the plan's I8.
@@ -444,9 +449,10 @@ tap::dsp::exact_ratio d = fir.latency_output_frames(); // B + (L - 1) / 2 for li
 - **Work:** all of it lands on the frame that completes a block (2·Ch
   transforms of 2B), so the worst single call is a block's work.
 - **Layout:** the FFT wants each channel contiguous, so a block
-  de-interleaves and re-interleaves. On x86-64 that still costs less than a
-  stage per channel (planar 1.04 to 1.06 times the instructions); the
-  per-core counts are `bench/README.md`'s "Layout".
+  de-interleaves and re-interleaves. That still costs less than a stage per
+  channel on every core CI counts: planar is 1.04 to 1.10 times the
+  interleaved instructions on x86-64 and the M4F, M33 and M55, and 1.14 to
+  1.16 on Hexagon (`bench/README.md`, "Layout").
 - Lives in the FFT's ABI-tag namespace (it holds a `basic_real_fft` by value).
 
 Pinned by `tests/test_fft_fir.cpp`: the direct convolution and the B-frame
