@@ -7,7 +7,7 @@ designs iir_tables.h declares (SampleRateTap's docs/IIR_PLAN.md, I4 and I13).
     python3 tools/iir/gen_iir_tables.py     # from the repository root, in the
                                             # venv tools/iir/requirements.txt pins
 
-Versions the committed header was generated with: Python 3.11.15, numpy 2.4.6,
+Versions the committed header was generated with: Python 3.11.18, numpy 2.4.6,
 scipy 1.17.1, mpmath 1.4.1 (tools/iir/requirements.txt). The optimizers'
 results can move in their last digits under another scipy; the tests pin what
 each row promises (the spec it meets), not the digits.
