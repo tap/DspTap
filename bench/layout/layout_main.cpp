@@ -118,7 +118,7 @@ namespace {
     /// collect it on the host (--toggle-collect='*layout_step*') as the
     /// plugin collects the bracket on QEMU.
     template <typename F>
-    [[gnu::noinline]] void layout_step(F&& f) {
+    TAP_DSP_BENCH_NOINLINE void layout_step(F&& f) {
         tap_dsp_call_begin();
         f();
         tap_dsp_call_end();

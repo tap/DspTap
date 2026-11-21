@@ -18,16 +18,23 @@
 
 #include <cstdint>
 
+/// noinline in every compiler's spelling (MSVC rejects [[gnu::noinline]] under /WX).
+#if defined(_MSC_VER) && !defined(__clang__)
+#define TAP_DSP_BENCH_NOINLINE __declspec(noinline)
+#else
+#define TAP_DSP_BENCH_NOINLINE __attribute__((noinline))
+#endif
+
 namespace tap::dsp::bench::detail {
     inline volatile std::uint32_t g_call_marker = 0;
 } // namespace tap::dsp::bench::detail
 
 extern "C" {
 // NOLINTBEGIN(readability-identifier-naming)
-[[gnu::noinline]] inline void tap_dsp_call_begin() noexcept {
+TAP_DSP_BENCH_NOINLINE inline void tap_dsp_call_begin() noexcept {
     tap::dsp::bench::detail::g_call_marker = 1;
 }
-[[gnu::noinline]] inline void tap_dsp_call_end() noexcept {
+TAP_DSP_BENCH_NOINLINE inline void tap_dsp_call_end() noexcept {
     tap::dsp::bench::detail::g_call_marker = 2;
 }
 // NOLINTEND(readability-identifier-naming)
