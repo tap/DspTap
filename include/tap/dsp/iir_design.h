@@ -703,6 +703,22 @@ namespace tap::dsp {
         return r;
     }
 
+    /// A cascade of sections' group delay at f, in samples: per section the
+    /// numerator's delay less the denominator's, a polynomial P = sum_k p_k
+    /// z^-k delaying by Re(sum_k k p_k z^-k / P). Away from the numerators'
+    /// zeros (in the passband).
+    inline double sections_group_delay(std::span<const iir_section> s, double f) noexcept {
+        const std::complex<double> zi  = std::polar(1.0, -2.0 * std::numbers::pi * f);
+        const std::complex<double> zi2 = zi * zi;
+        double                     tau = 0.0;
+        for (const iir_section& c : s) {
+            const std::complex<double> b = c.b0 + c.b1 * zi + c.b2 * zi2;
+            const std::complex<double> a = 1.0 + c.a1 * zi + c.a2 * zi2;
+            tau += std::real((c.b1 * zi + 2.0 * c.b2 * zi2) / b) - std::real((c.a1 * zi + 2.0 * c.a2 * zi2) / a);
+        }
+        return tau;
+    }
+
     /// The Chebyshev II design's response at f (cycles per sample).
     inline std::complex<double> cheby2_response(const cheby2_design& d, double f) noexcept {
         return sections_response(std::span<const iir_section>(d.sections.data(), d.count), f);

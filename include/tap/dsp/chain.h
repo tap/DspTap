@@ -41,7 +41,41 @@
 //     (exact_ratio, reduced); latency_seconds(out_rate_hz) is its double.
 //     Each stage reports latency_output_frames() (an exact_ratio in its own
 //     output frames) or latency_input_samples() (an integer at its input
-//     rate, decimate.h's form); the chain converts either.
+//     rate, decimate.h's form); the chain converts either. It compiles only
+//     for a chain whose every stage reports one of them (a static_assert
+//     names the rule): a recursive stage has no exact latency.
+//   - The nominal latency, for chains with recursive (IIR) stages
+//     (SampleRateTap's docs/IIR_PLAN.md, I5), in doubles at the chain's
+//     output rate, composed over the stages as the exact latency is:
+//       nominal_latency_output_frames()   the sum of each stage's nominal:
+//                                         an exact stage's exact latency, a
+//                                         recursive stage's own (its DC group
+//                                         delay, or a near-linear stage's
+//                                         delay path), each converted;
+//       latency_deviation_output_frames() how far the chain's passband delay
+//                                         strays from it, at most: the sum of
+//                                         the stages' (0 for an exact stage);
+//                                         a bound, tight when the stages'
+//                                         maxima share a frequency (the band
+//                                         edge, for the half-bands);
+//       group_delay_output_frames(f)      the delay at f, cycles per chain
+//                                         output frame: each stage's at the
+//                                         same frequency in its own frames
+//                                         (f times the ratio after it), an
+//                                         exact stage's constant there (a
+//                                         linear-phase FIR delays every
+//                                         frequency alike), converted and
+//                                         summed. f within the chain's
+//                                         passband, below every stage's
+//                                         Nyquist.
+//     A stage reports a nominal by nominal_latency_output_frames(),
+//     latency_deviation_output_frames() and group_delay_output_frames(f) (all
+//     three, doubles, in its own output frames and cycles per output frame;
+//     reports_nominal_latency), or by an exact latency; a chain of stages
+//     reporting neither cannot (a static_assert names the rule). A chain
+//     reports all three itself, so it nests. A near-linear stage's delay path
+//     (subband.h's delay_path_output_frames()) is its nominal; neither
+//     latency_output_frames() nor the sync_stage concept changes.
 //   - flush(out): end of stream. Feeds each stage, in order, window_frames()
 //     zeros at its own input and runs what it produces through the stages
 //     after it, so every stage's tail is drained and written;
@@ -144,6 +178,23 @@ namespace tap::dsp {
             { s.window_frames() } noexcept -> std::convertible_to<std::size_t>;
         };
 
+    } // namespace detail
+
+    // ANCHOR: chain_nominal_latency
+    /// A stage that reports a nominal latency (IIR_PLAN I5): a recursive
+    /// stage's, in its own output frames, with how far its passband delay
+    /// strays from it and its delay at any frequency (cycles per output
+    /// frame). A tap::dsp::chain reports it too.
+    template <typename T>
+    concept reports_nominal_latency = requires(const T& s, double f) {
+        { s.nominal_latency_output_frames() } -> std::convertible_to<double>;
+        { s.latency_deviation_output_frames() } -> std::convertible_to<double>;
+        { s.group_delay_output_frames(f) } -> std::convertible_to<double>;
+    };
+    // ANCHOR_END: chain_nominal_latency
+
+    namespace detail {
+
         /// A stage's group delay in its own output frames, from whichever
         /// form it reports.
         template <typename T>
@@ -151,12 +202,52 @@ namespace tap::dsp {
             if constexpr (reports_latency_output<T>) {
                 return s.latency_output_frames();
             }
+            else if constexpr (reports_latency_input<T>) {
+                return exact_ratio{static_cast<std::uint64_t>(s.latency_input_samples()), 1}
+                       * exact_ratio{static_cast<std::uint64_t>(T::k_up), static_cast<std::uint64_t>(T::k_down)};
+            }
             else {
+                // A recursive stage has no exact latency (its nominal is
+                // nominal_latency_output_frames()); the rule, as the only error.
                 static_assert(
                     reports_latency_input<T>,
                     "a chain's latency needs every stage to report latency_output_frames() or latency_input_samples()");
-                return exact_ratio{static_cast<std::uint64_t>(s.latency_input_samples()), 1}
-                       * exact_ratio{static_cast<std::uint64_t>(T::k_up), static_cast<std::uint64_t>(T::k_down)};
+                return exact_ratio{};
+            }
+        }
+
+        /// The nominal-latency triple of one stage in its own output frames:
+        /// its own where it reports one, else its exact latency as a constant
+        /// group delay.
+        template <typename T>
+        double stage_nominal_latency(const T& s) noexcept {
+            if constexpr (reports_nominal_latency<T>) {
+                return static_cast<double>(s.nominal_latency_output_frames());
+            }
+            else {
+                static_assert(reports_latency_output<T> || reports_latency_input<T>,
+                              "a chain's nominal latency needs every stage to report an exact latency or "
+                              "nominal_latency_output_frames(), latency_deviation_output_frames() and "
+                              "group_delay_output_frames(f)");
+                return stage_latency_output_frames(s).value();
+            }
+        }
+        template <typename T>
+        double stage_latency_deviation(const T& s) noexcept {
+            if constexpr (reports_nominal_latency<T>) {
+                return static_cast<double>(s.latency_deviation_output_frames());
+            }
+            else {
+                return 0.0;
+            }
+        }
+        template <typename T>
+        double stage_group_delay(const T& s, double f) noexcept {
+            if constexpr (reports_nominal_latency<T>) {
+                return static_cast<double>(s.group_delay_output_frames(f));
+            }
+            else {
+                return stage_nominal_latency(s);
             }
         }
 
@@ -260,6 +351,43 @@ namespace tap::dsp {
         double latency_seconds(double out_rate_hz) const noexcept {
             return latency_output_frames().value() / out_rate_hz;
         }
+
+        // ANCHOR: chain_nominal_members
+        /// The chain's nominal latency at its output rate (the file header):
+        /// every stage's nominal, converted and summed. For an all-exact chain
+        /// it is latency_output_frames().value().
+        double nominal_latency_output_frames() const noexcept {
+            double total = 0.0;
+            [&]<std::size_t... I>(std::index_sequence<I...>) {
+                ((total += detail::stage_nominal_latency(std::get<I>(m_stages)) * ratio_after<I>().value()), ...);
+            }(std::make_index_sequence<k_stages>{});
+            return total;
+        }
+
+        /// How far the chain's passband delay strays from the nominal, at most:
+        /// the stages' deviations, converted and summed (0 for an all-exact
+        /// chain).
+        double latency_deviation_output_frames() const noexcept {
+            double total = 0.0;
+            [&]<std::size_t... I>(std::index_sequence<I...>) {
+                ((total += detail::stage_latency_deviation(std::get<I>(m_stages)) * ratio_after<I>().value()), ...);
+            }(std::make_index_sequence<k_stages>{});
+            return total;
+        }
+
+        /// The chain's group delay at f, cycles per output frame, in output
+        /// frames: each stage's at f times the ratio after it (the same
+        /// frequency in its own output frames), converted and summed.
+        double group_delay_output_frames(double f) const noexcept {
+            double total = 0.0;
+            [&]<std::size_t... I>(std::index_sequence<I...>) {
+                ((total += detail::stage_group_delay(std::get<I>(m_stages), f * ratio_after<I>().value())
+                           * ratio_after<I>().value()),
+                 ...);
+            }(std::make_index_sequence<k_stages>{});
+            return total;
+        }
+        // ANCHOR_END: chain_nominal_members
 
         // ANCHOR: chain_flush
         /// End of stream: drains every stage's tail in order (see the file
