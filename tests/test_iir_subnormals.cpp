@@ -10,7 +10,7 @@
 //     everything on the soft-float M4), silence after signal leaves the
 //     states at a residue of a few multiples of the smallest subnormal, which
 //     the stated bound holds, and the output there is that residue, not
-//     silence; the counterpart of IirKernel.SilenceDecaysToExactZero;
+//     silence; the counterpart of iir_kernel.SilenceDecaysToExactZero;
 //   - NeverTouchesTheFloatingPointEnvironment in the other host state (the
 //     bits clear), the counterpart of IirKernel's;
 //   - the precondition compiled out: in a Debug build these calls would
@@ -86,9 +86,9 @@ namespace {
             }
             const std::size_t bound = residue_bound(d);
             std::printf("[ measured ] %s, order %d, a = %.4f: after the window the state holds %.0f x and the output "
-                        "%.0f x the smallest subnormal (bound %zu)\n",
+                        "%.0f x the smallest subnormal (bound %lu)\n",
                         std::is_same_v<real, float> ? "float" : "double", d.order, d.coefficients[d.count - 1],
-                        state / dmin, out / dmin, bound);
+                        state / dmin, out / dmin, static_cast<unsigned long>(bound));
             EXPECT_LE(state, static_cast<double>(bound) * dmin);
             EXPECT_LE(out, static_cast<double>(bound) * dmin) << "a residue, not a signal";
             EXPECT_LT(state, static_cast<double>(std::numeric_limits<real>::min())) << "only subnormals are left";

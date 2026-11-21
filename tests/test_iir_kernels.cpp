@@ -287,7 +287,7 @@ namespace {
 
     /// The largest pole radius per path sample of a design: its largest
     /// one-multiplier coefficient.
-    double largest_radius(const nonlinear_halfband_design& d) {
+    [[maybe_unused]] double largest_radius(const nonlinear_halfband_design& d) {
         return d.coefficients[d.count - 1];
     }
 
@@ -344,8 +344,8 @@ namespace {
                 EXPECT_TRUE(zero(st));
                 EXPECT_LE(frames, window) << "near-linear N" << d.order;
             }
-            std::printf("[ measured ] %s: the nonlinear states reach exactly zero within %zu frames at worst\n",
-                        std::is_same_v<real, float> ? "float" : "double", longest);
+            std::printf("[ measured ] %s: the nonlinear states reach exactly zero within %lu frames at worst\n",
+                        std::is_same_v<real, float> ? "float" : "double", static_cast<unsigned long>(longest));
         }
     }
 
@@ -436,7 +436,9 @@ namespace {
     // Cross-precision: float states against double (I14)
     // ------------------------------------------------------------------------
 
-    TEST(IirKernelCrossPrecision, FloatTracksDoubleWithinTheI14Floor) {
+    class iir_kernel_cross_precision : public flush_to_zero_fixture {};
+
+    TEST_F(iir_kernel_cross_precision, FloatTracksDoubleWithinTheI14Floor) {
         // White noise at 0.9 of full scale through every tabulated structure,
         // float against double on the same float input; error power re a
         // full-scale sine's. IIR-0 measured -137.1 dB at worst (120 dB, 5/12,

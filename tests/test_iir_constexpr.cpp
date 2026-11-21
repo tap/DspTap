@@ -42,7 +42,6 @@
 // 414,830.
 
 #include <bit>
-#include <cinttypes>
 #include <cstdint>
 #include <cstdio>
 #include <span>
@@ -121,7 +120,10 @@ namespace {
     }
 
     void check(std::span<const pins::row> rows, const char* name, std::uint64_t got) {
-        std::printf("[ measured ] %-26s 0x%016" PRIx64 "\n", name, got);
+        // Two 32-bit halves: newlib's printf on the QEMU legs parses neither
+        // %zu nor PRIx64 (srdif's fingerprint test does the same).
+        std::printf("[ measured ] %-26s 0x%08lx%08lx\n", name, static_cast<unsigned long>(got >> 32),
+                    static_cast<unsigned long>(got & 0xffffffffu));
         EXPECT_EQ(got, pinned(rows, name)) << name << ": a constexpr table's bits moved";
     }
 

@@ -131,7 +131,15 @@ endfunction()
 # candidate at the 8th band) are excluded for the same reason as the Kaiser
 # ones: each is a sweep of double DFTs per candidate length,
 # target-independent design numbers that cost tens of seconds of soft-float
-# emulation.
+# emulation. So are the six recursive design sweeps of test_iir_design.cpp
+# (the committed type II FIRs and the Kaiser custom search, the near-linear,
+# nonlinear and four-path stopbands on the 16384-point grid, the L-inf gains
+# recomputed on their grid): 141 of IirDesign's 144 s on the M33, double
+# responses of design-time numbers. IirDesign's structural pins (orders,
+# ulps against mpmath, the committed rows' fields, the Chebyshev II's spec),
+# every recursive kernel suite (test_iir_kernels.cpp, test_iir_fixed.cpp,
+# test_chain_iir.cpp), the constexpr bit pins and the subnormals battery run
+# on every leg.
 # ------------------------------------------------------------------------------
 tap_dsp_add_gtest_executable(tap_dsp_tests
     SOURCES
@@ -167,7 +175,7 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_windows_macros.cpp
         test_yin.cpp
     MAIN_FILTER
-        "*-psola_test/1.*:pvoc_test/1.*:yin_test/1.*:log_mel_test/1.*:nn_test/1.*:Kaiser.FastPrototypeMeetsSpec:Kaiser.BalancedPrototypeMeetsSpec:Kaiser.TransparentPrototypeMeetsSpec:Kaiser.EconomyPrototypeMeetsSpec:Kaiser.RationalPhaseCountMeetsSpec:Kaiser.CompensatedSpecsHoldAt16k:Nyquist.SearchFindsTheMinimal*:Nyquist.SearchGrid*:MultitoneAnalysis.*")
+        "*-psola_test/1.*:pvoc_test/1.*:yin_test/1.*:log_mel_test/1.*:nn_test/1.*:Kaiser.FastPrototypeMeetsSpec:Kaiser.BalancedPrototypeMeetsSpec:Kaiser.TransparentPrototypeMeetsSpec:Kaiser.EconomyPrototypeMeetsSpec:Kaiser.RationalPhaseCountMeetsSpec:Kaiser.CompensatedSpecsHoldAt16k:Nyquist.SearchFindsTheMinimal*:Nyquist.SearchGrid*:MultitoneAnalysis.*:IirDesign.GuardBandFirTablesMeetTheirSpec:IirDesign.GuardBandLinearCustomDesignMeetsItsSpec:IirDesign.NearLinearTablesMeetTheirSpecOnTheGrid:IirDesign.HalfbandMeetsItsSpecOnTheGrid:IirDesign.Cheby2CommittedGainsAreTheLinfGains:IirDesign.FourpathTablesMeetTheFoldingBandSpec")
 target_link_libraries(tap_dsp_tests PRIVATE
     tap::dsp
     tap_dsp_warnings)
