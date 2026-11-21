@@ -8,7 +8,7 @@ designers (include/tap/dsp/iir_design.h), at 60 digits.
     python3 tools/iir/gen_cx_reference.py   # from the repository root, in the
                                             # venv tools/iir/requirements.txt pins
 
-Versions the committed header was generated with: Python 3.11.15, mpmath
+Versions the committed header was generated with: Python 3.11.18, mpmath
 1.4.1 (numpy and scipy are not used here). Each reference value is written as
 a double-double (hi + lo, the nearest double and the next 53 bits), so the
 tests measure an error in ulps of the double under test without the
