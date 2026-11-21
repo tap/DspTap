@@ -149,6 +149,8 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_fft_srdif.cpp
         test_fir_kernels.cpp
         test_iir_design.cpp
+        test_iir_fixed.cpp
+        test_iir_kernels.cpp
         test_kaiser.cpp
         test_log_mel.cpp
         test_math.cpp
@@ -286,6 +288,19 @@ target_link_libraries(tap_dsp_analysis_typed PRIVATE
 # ==============================================================================
 # END Stage 3c addition
 # ==============================================================================
+
+# The recursive kernels' honest limit without the host's flush-to-zero
+# (test_iir_subnormals.cpp, IIR_PLAN I9) in an executable of its own: it is
+# built with TAP_DSP_ALLOW_SUBNORMALS, which compiles the kernels' debug-build
+# precondition out, and the macro must be the same in every translation unit
+# of an image (subnormals.h), so it cannot join tap_dsp_tests. It runs on
+# every leg, the QEMU ones too.
+tap_dsp_add_gtest_executable(tap_dsp_iir_subnormals
+    SOURCES test_iir_subnormals.cpp)
+target_compile_definitions(tap_dsp_iir_subnormals PRIVATE TAP_DSP_ALLOW_SUBNORMALS)
+target_link_libraries(tap_dsp_iir_subnormals PRIVATE
+    tap::dsp
+    tap_dsp_warnings)
 
 # The heap meter (tap/dsp/analysis/heap_meter.h) in an executable of its own:
 # its test TU defines TAP_DSP_HEAP_METER_REPLACE_GLOBAL_NEW, which replaces the

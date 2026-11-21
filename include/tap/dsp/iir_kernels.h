@@ -98,8 +98,24 @@
 //     never does). I9 decided against a per-sample check.
 //   - Subnormals: without the host's flush-to-zero, or on a target with no
 //     bit for the type (subnormals.h's table), a state decays to a residue of
-//     a few multiples of the smallest subnormal and stays there, and on x86
-//     the silence after signal runs about ten times slower.
+//     a few multiples of the smallest subnormal and stays there (measured: 2
+//     at 70 dB 3/8, 7 at 120 dB 5/12 for the half-bands; 4 to 16 for the
+//     Chebyshev II cascades), and on x86 the silence after signal runs about
+//     ten times slower. Under flush-to-zero the allpass sections (both
+//     half-band variants, the four-path stage) reach an exactly zero state.
+//   - The floating biquad cascade under flush-to-zero: once |a2 y| falls
+//     below the smallest normal its product flushes, and for that sample the
+//     section runs as a first-order recursion with |a1| > 1, which lifts it
+//     again; so the guard band filter's Chebyshev II of order 7 or more can
+//     hold a zero-input limit cycle at a few times the smallest normal and
+//     never reach an exactly zero state, from some states and not others:
+//     measured from full-scale square-wave starts, up to 13.1 times in this
+//     transposed direct form II (about 3e-37 in float, 3e-307 in double),
+//     and direct form I in floating point does the same (up to 7.1 times).
+//     Orders 3 and 5 at 1/3 drain to zero. The fixed-point cascade
+//     (magnitude truncation) always drains. A guard band stage's flush
+//     window (IIR_PLAN I6) therefore cannot promise an exactly zero state
+//     in floating point at those orders: IIR-c's to decide.
 //   - Contraction: the floating kernels are written as plain expressions, so
 //     a compiler that contracts them into FMAs (GCC by default where the
 //     target has one, Clang within a statement) moves float and double
