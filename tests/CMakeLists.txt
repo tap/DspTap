@@ -137,6 +137,7 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
     SOURCES
         test_analysis.cpp
         test_chain.cpp
+        test_cx_math.cpp
         test_decimate.cpp
         test_expects.cpp
         test_fft.cpp
@@ -147,6 +148,7 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_fft_routing.cpp
         test_fft_srdif.cpp
         test_fir_kernels.cpp
+        test_iir_design.cpp
         test_kaiser.cpp
         test_log_mel.cpp
         test_math.cpp
@@ -243,6 +245,20 @@ tap_dsp_add_gtest_executable(tap_dsp_srdif_fingerprint
 target_compile_options(tap_dsp_srdif_fingerprint PRIVATE ${_tap_dsp_nocontract_cxx})
 target_compile_definitions(tap_dsp_srdif_fingerprint PRIVATE TAP_DSP_TEST_MAX_FFT_N=${TAP_DSP_TEST_MAX_FFT_N})
 target_link_libraries(tap_dsp_srdif_fingerprint PRIVATE
+    tap::dsp
+    tap_dsp_warnings)
+
+# The constexpr recursive designs' bits (test_iir_constexpr.cpp, pins in
+# support/iir_constexpr_pins.h; SampleRateTap's IIR_PLAN I4, IIR-0's bit
+# test moved in): every compiler CI runs evaluates the same tables at compile
+# time and must print one row of fingerprints. Its own target for the same
+# reason as the srdif fingerprints: -ffp-contract=off, so its run-time
+# evaluation of the same functions (a custom design) is pinned to the
+# compile-time bits too. Small: it runs everywhere, the QEMU legs included.
+tap_dsp_add_gtest_executable(tap_dsp_iir_constexpr
+    SOURCES test_iir_constexpr.cpp)
+target_compile_options(tap_dsp_iir_constexpr PRIVATE ${_tap_dsp_nocontract_cxx})
+target_link_libraries(tap_dsp_iir_constexpr PRIVATE
     tap::dsp
     tap_dsp_warnings)
 

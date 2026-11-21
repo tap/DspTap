@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Timothy Place and the DspTap contributors.
+#
+# The generators in tools/iir/ (gen_iir_tables.py, gen_cx_reference.py) and
+# the versions their committed outputs were produced with, on Python 3.11
+# (the versions SampleRateTap's IIR-0 spike ran: its root requirements.lock
+# for numpy and scipy, plus mpmath). The near-linear and four-path designs
+# come out of scipy's HiGHS and SLSQP, so another scipy can move their last
+# digits; regenerate with these pins to reproduce the committed tables.
+#
+#   python3.11 -m venv build-iir-venv
+#   build-iir-venv/bin/pip install -r tools/iir/requirements.txt
+#   build-iir-venv/bin/python tools/iir/gen_iir_tables.py
+#   build-iir-venv/bin/python tools/iir/gen_cx_reference.py
+numpy==2.4.6
+scipy==1.17.1
+mpmath==1.4.1
