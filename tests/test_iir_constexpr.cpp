@@ -36,10 +36,11 @@
 // Constant-evaluation cost (I4: keep every evaluation well under MSVC's
 // documented default of 100,000 steps), measured by bisecting clang 18's
 // -fconstexpr-steps and g++ 13's -fconstexpr-ops-limit over one table each:
-// the order-17 half-band (120 dB, 5/12, d = 1, the largest tabulated) 5,844
-// clang steps (30,792 g++ operations), the order-11 Chebyshev II (120 dB)
-// 2,739 (21,544): IIR-0's prototype took 30,487 and, with the L-inf sweep,
-// 414,830.
+// the order-17 half-band (120 dB, 5/12, d = 1, the largest tabulated)
+// 11,090 clang steps (42,593 g++ operations), the order-11 Chebyshev II
+// (120 dB) 4,749 (30,495), since cx_math.h forms its exact product in
+// integers (5,844 and 3,093 clang steps with Dekker's): IIR-0's prototype
+// took 30,487 and, with the L-inf sweep, 414,830.
 
 #include <bit>
 #include <cstdint>

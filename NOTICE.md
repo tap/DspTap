@@ -226,8 +226,11 @@ They carry a copyright and no license, so nothing of theirs is in this tree.
     and the limit-cycle argument: Jackson 1969.
   - The constexpr math (`detail/cx_math.h`): textbook series and reductions
     (Taylor series, the atanh series of the logarithm, Newton's iteration),
-    Cody and Waite's split-constant argument reduction, Dekker's exact
-    product (1971).
+    Cody and Waite's split-constant argument reduction, and the exact
+    product of two doubles as their significands' integer product
+    (schoolbook multiplication, rounded to nearest even), which replaced
+    Dekker's two-product (1971) when GCC's fused multiply-add was found to
+    change it.
 - **The iterative designs (committed, `tools/iir/gen_iir_tables.py`).** The
   near-linear half-band's structure is Renfors and Saramäki's (1987); its
   method is IIR-0's derivation from that structure, an iterated linear

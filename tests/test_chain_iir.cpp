@@ -342,7 +342,9 @@ namespace {
         // its nominal; subband.h reads the same number.
         using stage_t = near_linear_down2<float>;
         using chain_t = chain<stage_t, stage_t>;
-        chain_t c(stage_t(k_near_linear_halfband<70, 3, 8, 2>), stage_t(k_near_linear_halfband<70, 3, 8, 1>));
+        // Braces: MSVC reads stage_t(k_near_linear_halfband<...>) here as a
+        // parameter declaration (the most vexing parse).
+        chain_t c(stage_t{k_near_linear_halfband<70, 3, 8, 2>}, stage_t{k_near_linear_halfband<70, 3, 8, 1>});
         EXPECT_DOUBLE_EQ(c.nominal_latency_output_frames(), 1.5 + 7.0);
         EXPECT_EQ(detail::exact_delay_output_frames(c), (exact_ratio{17, 2}));
         // The passband delay strays from it by at most the stages' stated

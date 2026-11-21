@@ -25,9 +25,9 @@
 /// in nyquist.h. The recursive designers of iir_design.h are constexpr, over
 /// detail/cx_math.h's transcendentals, because a recursive design is a
 /// handful of coefficients (at most 16 per half-band, five per Chebyshev II
-/// section), a few thousand constant-evaluation steps (5,844 Clang steps for
-/// the largest tabulated), not a table of thousands of taps; their iterative
-/// designs are committed tables instead (iir_tables.h).
+/// section), about ten thousand constant-evaluation steps (11,090 Clang
+/// steps for the largest tabulated), not a table of thousands of taps; their
+/// iterative designs are committed tables instead (iir_tables.h).
 // ANCHOR_END: kai_design_note
 #pragma once
 

@@ -18,11 +18,13 @@
 // at construction calls the same functions at run time).
 //
 // Every function is a textbook method (the series and reductions of any
-// numerical-analysis text; Dekker 1971 for the exact product):
+// numerical-analysis text; the exact product is the significands' integer
+// product, schoolbook multiplication):
 //   - sqrt: Newton's iteration on the mantissa scaled into [1/4, 1) by an
 //     even power of two, then one correction step whose residual x - r^2 is
-//     formed exactly from Dekker's two-product (Veltkamp's split), so the
-//     result is the correctly rounded root but for rare halfway cases;
+//     formed exactly from the exact product (exact_product: in integers, so
+//     a compiler's fused multiply-add cannot change it), so the result is
+//     the correctly rounded root but for rare halfway cases;
 //   - sin_pi, cos_pi, tan_pi: sin and cos of pi t for a double t, reduced
 //     exactly in t (t mod 2 and the octant are exact operations on the
 //     double, Sterbenz's lemma), then the Taylor series of sin or cos on
@@ -98,23 +100,73 @@ namespace tap::dsp::detail::cx {
         return static_cast<int>((std::bit_cast<std::uint64_t>(x) >> 52) & 0x7ffu) - 1023;
     }
 
-    /// Dekker's exact product: a * b == hi + lo for |a|, |b| < 2^995 and no
-    /// underflow (Veltkamp's split into 26-bit halves).
+    /// The integer significand of a finite double's bits (the implicit bit
+    /// included for a normal number), and the power of two it scales by.
+    constexpr std::uint64_t significand(std::uint64_t bits) noexcept {
+        constexpr std::uint64_t frac_mask = (std::uint64_t{1} << 52) - 1u;
+        return ((bits >> 52) & 0x7ffu) == 0 ? (bits & frac_mask) : ((bits & frac_mask) | (std::uint64_t{1} << 52));
+    }
+    constexpr int significand_scale(std::uint64_t bits) noexcept {
+        const int field = static_cast<int>((bits >> 52) & 0x7ffu);
+        return (field == 0 ? 1 : field) - 1075;
+    }
+
+    /// The exact product: a * b == hi + lo, hi the correctly rounded product
+    /// (ties to even: IEEE's a * b) and lo the remainder, for finite a and b
+    /// whose product and remainder are normal numbers (the designers stay
+    /// there). Formed in integers, the significands' 106-bit product by
+    /// schoolbook 32-bit halves, so that no floating-point product in it is
+    /// inexact: a compiler that contracts a * b + c into a fused multiply-add
+    /// (GCC at its default -ffp-contract=fast wherever the ISA has one)
+    /// cannot change it. It changed Dekker's two-product (Veltkamp's split),
+    /// whose split product is inexact by design: under GCC with FMA, sqrt
+    /// came out an ulp from libm (tests/test_cx_math.cpp).
     struct two_product {
         double hi = 0.0;
         double lo = 0.0;
     };
     constexpr two_product exact_product(double a, double b) noexcept {
-        constexpr double split = 134217729.0; // 2^27 + 1
-        const double     ca    = split * a;
-        const double     a_hi  = ca - (ca - a);
-        const double     a_lo  = a - a_hi;
-        const double     cb    = split * b;
-        const double     b_hi  = cb - (cb - b);
-        const double     b_lo  = b - b_hi;
-        const double     p     = a * b;
-        const double     e     = ((a_hi * b_hi - p) + a_hi * b_lo + a_lo * b_hi) + a_lo * b_lo;
-        return {p, e};
+        const std::uint64_t abits = std::bit_cast<std::uint64_t>(a);
+        const std::uint64_t bbits = std::bit_cast<std::uint64_t>(b);
+        const std::uint64_t sa    = significand(abits);
+        const std::uint64_t sb    = significand(bbits);
+        if (sa == 0 || sb == 0) {
+            return {a * b, 0.0}; // a signed zero, exactly
+        }
+        // P = A B (at most 106 bits) as two 64-bit halves.
+        const std::uint64_t a0  = sa & 0xffffffffu;
+        const std::uint64_t a1  = sa >> 32;
+        const std::uint64_t b0  = sb & 0xffffffffu;
+        const std::uint64_t b1  = sb >> 32;
+        const std::uint64_t p00 = a0 * b0;
+        const std::uint64_t p01 = a0 * b1;
+        const std::uint64_t p10 = a1 * b0;
+        const std::uint64_t mid = (p00 >> 32) + (p01 & 0xffffffffu) + (p10 & 0xffffffffu);
+        const std::uint64_t ph  = (a1 * b1) + (p01 >> 32) + (p10 >> 32) + (mid >> 32);
+        const std::uint64_t pl  = (mid << 32) | (p00 & 0xffffffffu);
+        // P = q 2^s + r with q rounded to 53 bits, ties to even; s <= 53.
+        const int     width = static_cast<int>(ph != 0 ? 64 + std::bit_width(ph) : std::bit_width(pl));
+        const int     s     = width > 53 ? width - 53 : 0;
+        std::uint64_t q     = s == 0 ? pl : ((ph << (64 - s)) | (pl >> s));
+        std::int64_t  r     = 0;
+        if (s > 0) {
+            const std::uint64_t rem  = pl & ((std::uint64_t{1} << s) - 1u);
+            const std::uint64_t half = std::uint64_t{1} << (s - 1);
+            if (rem > half || (rem == half && (q & 1u) != 0)) {
+                ++q; // up to 2^53, still exact as a double
+                r = static_cast<std::int64_t>(rem) - static_cast<std::int64_t>(std::uint64_t{1} << s);
+            }
+            else {
+                r = static_cast<std::int64_t>(rem);
+            }
+        }
+        // q <= 2^53 and |r| <= 2^52 are exact as doubles, so every
+        // floating-point operation from here is an exact scaling by 2^k.
+        const int    e   = significand_scale(abits) + significand_scale(bbits);
+        const double hi  = ldexp(static_cast<double>(q), s + e);
+        const double lo  = ldexp(static_cast<double>(r), e);
+        const bool   neg = ((abits ^ bbits) >> 63) != 0;
+        return neg ? two_product{-hi, -lo} : two_product{hi, lo};
     }
 
     /// sqrt(x) for finite x >= 0 (0 for x <= 0); correctly rounded but for
