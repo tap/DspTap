@@ -521,9 +521,10 @@ search at every tabulated point. Three steps are rewritten by algebra to
 remove a cancellation (the nome step, IIR-0's amendment; a = (1 − x²)/(1 + x)²;
 1 − w²/k as a difference of squares), and every tabulated coefficient is
 within **13.2 ulps** of mpmath at 60 digits (IIR-0 promised 15; the prototype
-lost up to 94,049). The largest evaluation takes 5,844 of Clang 18's
+lost up to 94,049). The largest evaluation takes 11,090 of Clang 18's
 constant-evaluation steps (the order-17 half-band; the order-11 Chebyshev II
-2,739), against MSVC's documented default of 100,000. The bits are pinned
+4,749; the exact product in integers roughly doubled both), against MSVC's
+documented default of 100,000. The bits are pinned
 per design (`tests/test_iir_constexpr.cpp`, IIR-0's bit test moved in), one
 row for every compiler CI runs, srdif's rule. A custom spec calls the same
 functions at run time. The Chebyshev II's L-inf gain distribution (Jackson
