@@ -9,8 +9,8 @@
 // rational holds only the stage types. Published literature only; NOTICE.md
 // keeps the clean-room record and traces every formula below to its source.
 //
-// The structures (Valenzuela and Constantinides 1983; Vaidyanathan 1993,
-// section 5.3, the power-symmetric IIR filter and its allpass decomposition):
+// The structures (Valenzuela and Constantinides 1983; Vaidyanathan 1993, the
+// power-symmetric IIR filter and its allpass decomposition):
 //
 //   H(z) = 1/2 [A0(z^2) + z^-1 A1(z^2)]
 //
@@ -55,15 +55,18 @@
 //     (detail/cx_math.h); the named spec points are compile-time constants
 //     (k_nonlinear_halfband<A, PassNum, PassDen, D>), and a custom spec calls
 //     the same function at run time. Accuracy: every tabulated coefficient
-//     within the error tests/test_iir_design.cpp pins against an mpmath leg
-//     at 60 digits (tools/iir/gen_cx_reference.py), under the 15 ulps
-//     IIR-0's amendment promised; bits pinned per compiler in
+//     within 13.2 ulps of an mpmath leg at 60 digits (tools/iir/
+//     gen_cx_reference.py; tests/test_iir_design.cpp pins 13.5), under the
+//     15 ulps IIR-0's amendment promised; bits pinned per compiler in
 //     tests/test_iir_constexpr.cpp (one row for every compiler CI runs).
-//     The nome step is the cancellation-free form 1 - k'^(1/2) =
-//     k^2 / ((1 + k'^(1/2)) (1 + k')) (IIR-0, SampleRateTap#104), and the
-//     last step a = (1 - x) / (1 + x) is evaluated as a = (1 - x^2) /
-//     (1 + x)^2 with 1 - x^2 = w^2 (1 + k)^2 / (k (1 + w^2)^2), both algebra
-//     on the published formulas that removes a cancellation.
+//     Three steps are rewritten by algebra on the published formulas, each
+//     removing a cancellation: the nome step's 1 - k'^(1/2) = k^2 / ((1 +
+//     k'^(1/2)) (1 + k')) (IIR-0, SampleRateTap#104; without it the relaxed
+//     designs lost up to 94,049 ulps); the last step a = (1 - x) / (1 + x)
+//     as a = (1 - x^2) / (1 + x)^2 with 1 - x^2 = w^2 (1 + k)^2 / (k (1 +
+//     w^2)^2); and 1 - w^2 / k as (t - w)(t + w) / k, t = tan(pi f_pass),
+//     whose difference is exact where w nears t at the band edge (15.4 ulps
+//     at worst without the last, 13.2 with it).
 //   - Orders at the tabulated spec points (the closed form, reproducing
 //     IIR-0's grid search): N9 / N5 / N5 / N3 at the three 70 dB points (d =
 //     1 / 2 / 4 / 8), N17 / N9 / N7 / N5 at 120 dB, 5/12.
@@ -83,7 +86,7 @@
 //     from the stopband edge that follows, Os = Op cosh(acosh(D) / n): the
 //     analogue prototype's poles the scaled reciprocals of Chebyshev I poles,
 //     its zeros at j Os / cos(theta_k), the bilinear transform with
-//     prewarping (Antoniou 2006; the inverse-Chebyshev case of Gazsi 1985),
+//     prewarping (Antoniou 2006),
 //     (n - 1) / 2 biquads each pairing a pole pair with the zero pair of the
 //     same theta, and one first-order section with its zero at z = -1;
 //     sections ordered by increasing pole radius, each at unity DC gain.
@@ -95,6 +98,12 @@
 //     point and order (orders 3 to 11; tools/iir/gen_iir_tables.py) and
 //     applied in constexpr (k_guard_band_cheby2<A, PassNum, PassDen, Order>);
 //     cheby2_linf_gains() computes them at run time for a custom design.
+//     Every committed factor is exactly 1.0: with the sections in this order,
+//     each at unity DC gain, every partial cascade of every committed design
+//     peaks at DC, so there the L-inf distribution is unity DC gain per
+//     section (tests/test_iir_design.cpp pins it; a custom design need not
+//     share it). Accuracy against the mpmath leg: 3.4 ulps at worst over
+//     every committed section, the stop edges within 0.6.
 //   - The linear guard band form: even-length symmetric (type II) FIR,
 //     linear phase, a zero at Nyquist by its symmetry. Committed tables by
 //     scipy.signal.remez at every (spec point, Chebyshev order) where it

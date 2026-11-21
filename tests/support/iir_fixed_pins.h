@@ -7,7 +7,10 @@
 // xorshift32 samples at 0.9 of full scale, seed 0x5eed), concatenated in the
 // order test_iir_fixed.cpp runs them. Integer arithmetic only, so one row
 // holds for every compiler and target CI runs; a target that needs a second
-// row is a finding.
+// row is a finding. Measured 2026-11-21: g++ 13.3 and clang++ 18.1 on
+// x86-64 Linux, arm-none-eabi-gcc 13.2.1 on the M4, M4F, M33 and M55 legs
+// (with and without exceptions and RTTI), and the Hexagon clang 19.1.5
+// under qemu-hexagon, every one printing these values.
 
 #pragma once
 

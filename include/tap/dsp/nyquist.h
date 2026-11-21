@@ -51,7 +51,9 @@
 //     engine's criterion, so tap counts step by 2L. Direct DFT by rotator:
 //     no FFT, no dependency; design time only.
 //
-// Runtime double, like every designer here (kaiser.h's design note); the
+// Runtime double, like every FIR designer here (kaiser.h's design note,
+// whose scope since 0.3.0 excludes the constexpr recursive designers of
+// iir_design.h: a handful of coefficients each, not long FIR tables); the
 // designer itself is noexcept and allocation-free, the search allocates.
 
 #pragma once
