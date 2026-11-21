@@ -454,8 +454,9 @@ interleaved API?" has a number per core. It is informational by decision
 (the maintainer's, 2026-11-21): no baselines, no tolerance, no failure.
 
 - **Binaries:** `tap_dsp_layout_<kind>_f32_ch<C>_<i|p>`, kind `bw` (order-4
-  Butterworth, fc = 0.1), `fir` (the FFT FIR, 127 taps, B = 128, N = 256) or
-  `chain` (the two chained); C = 1, 2, 6, 12 (mono, stereo, 5.1, 7.1.4); `i`
+  Butterworth, fc = 0.1), `fir` (the FFT FIR, 127 taps, B = 128, N = 256),
+  `chain` (the two chained) or `gain` (a per-channel gain, `bench_gain` in
+  `layout_main.cpp`: the stateless case, bench-local, not a primitive); C = 1, 2, 6, 12 (mono, stereo, 5.1, 7.1.4); `i`
   = one stage of C channels over interleaved frames, `p` = C mono stages
   over contiguous channel buffers (copies of one designed stage). One
   channel builds `_i` only. 16,384 frames per channel in calls of 128,
@@ -488,6 +489,7 @@ bracketed step, `--toggle-collect='*layout_step*'`; 2026-11-21):
 | `bw` | 609,152 | 1,100,672 | 1,217,664 | 1.106 | 3,214,336 | 3,648,256 | 1.135 | 2,969,984 | 7,293,952 | 2.456 |
 | `fir` | 2,921,344 | 5,619,712 | 5,823,616 | 1.036 | 16,545,792 | 17,559,680 | 1.061 | 32,885,632 | 35,002,496 | 1.064 |
 | `chain` | 3,506,816 | 6,738,944 | 7,052,928 | 1.047 | 19,902,336 | 21,149,312 | 1.063 | 36,070,144 | 41,722,368 | 1.157 |
+| `gain` | 29,568 | 67,072 | 58,880 | 0.878 | 363,520 | 171,136 | 0.471 | 658,432 | 339,328 | 0.515 |
 
 On the host, interleaved is the cheaper layout for all three, the FFT FIR
 included (its per-block de-interleave costs less than a stage per channel),
@@ -529,10 +531,36 @@ What the cores say:
 - **The soft-float M4: no difference** (within 1 %): the software float
   arithmetic is nearly all of the count.
 
+The gain stage (`bench.yml` run 157 at 25aee9e; both layouts with the channel
+count a template parameter; host: x86-64, GCC 13.3, callgrind):
+
+| key | `gain` 2 | `gain` 6 | `gain` 12 |
+|---|---:|---:|---:|
+| host (x86-64) | 0.878 | 0.471 | 0.515 |
+| `m4-softfp` | 1.018 | 1.041 | 1.050 |
+| `m4f` | 1.012 | 1.301 | 1.403 |
+| `m33` | 1.012 | 1.301 | 1.403 |
+| `m55` | 1.248 | 0.276 | 0.291 |
+| `m55-ooura` | 1.248 | 0.276 | 0.291 |
+| `hexagon` | 1.008 | 1.013 | 1.014 |
+
+A stateless stage turns the picture around where the vector unit is wide:
+planar runs each channel's samples contiguously and vectorizes over frames,
+while interleaved vectorizes only over the channel pattern. So on the M55
+planar is 3.5 times cheaper at 6 and 12 channels (stereo, whose pattern fits
+Helium's lanes, is the exception: interleaved 1.25 times cheaper) and on
+x86-64 twice as cheap; on the scalar M4F and M33 interleaved is cheaper (the
+mono stages pay a loop and a call per channel: planar 1.30 / 1.40 times at
+6 / 12); Hexagon and the soft-float M4 are within 5 %. A standalone measurement of the
+same gain loops (outside a stage) also showed that planar does not care
+whether its channel count is a template parameter (within 2 %), while
+interleaved does, by up to 12 times on the M55 at 2 channels.
+
 So the layout that wins depends on the stage and the core: block and
 polyphase stages favour interleaved on every core; a short recursive stage
 favours interleaved where the compiler vectorizes the channel loop (x86-64,
-the M55) and per-channel state on Hexagon at high counts.
+the M55) and per-channel state on Hexagon at high counts; a stateless stage
+favours planar on the wide-vector cores and interleaved on the scalar ones.
 
 ## Provenance
 
