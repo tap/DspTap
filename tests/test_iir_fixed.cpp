@@ -29,7 +29,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cinttypes>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -116,8 +115,13 @@ namespace {
         return out;
     }
 
+    // The fixed-point batteries run the double structure beside the format, so
+    // they run as a host would too: FTZ set (the double kernels state the
+    // precondition).
     template <typename S>
-    class iir_fixed : public ::testing::Test {};
+    class iir_fixed : public flush_to_zero_fixture {};
+
+    class iir_fixed_floor : public flush_to_zero_fixture {};
 
     using fixed_types = ::testing::Types<std::int16_t, std::int32_t>;
     TYPED_TEST_SUITE(iir_fixed, fixed_types);
@@ -442,10 +446,11 @@ namespace {
                 worst_guard = std::max(worst_guard, frames);
             }
         }
-        std::printf("[ measured ] %s: silence to an exactly zero state within %zu frames (nonlinear; bound %zu), %zu "
-                    "(near-linear), %zu (guard band cascade)\n",
-                    std::is_same_v<sample, std::int16_t> ? "Q15" : "Q31", worst_nonlinear, worst_bound,
-                    worst_near_linear, worst_guard);
+        std::printf("[ measured ] %s: silence to an exactly zero state within %lu frames (nonlinear; bound %lu), %lu "
+                    "(near-linear), %lu (guard band cascade)\n",
+                    std::is_same_v<sample, std::int16_t> ? "Q15" : "Q31", static_cast<unsigned long>(worst_nonlinear),
+                    static_cast<unsigned long>(worst_bound), static_cast<unsigned long>(worst_near_linear),
+                    static_cast<unsigned long>(worst_guard));
         // IIR-0's magnitude-truncation bounds at the largest designs (Q15 / Q31,
         // 120 dB, 5/12, d = 1): near-linear 518 / 1003 low-rate frames.
         EXPECT_LE(worst_near_linear, (std::is_same_v<sample, std::int16_t> ? 518u : 1003u));
@@ -456,7 +461,7 @@ namespace {
     // The Q15 floor (IIR-0's measurement)
     // ------------------------------------------------------------------------
 
-    TEST(IirFixedFloor, Q15FloorIsTheOutputsOwnRounding) {
+    TEST_F(iir_fixed_floor, Q15FloorIsTheOutputsOwnRounding) {
         // A sine at 997/48000 of the higher rate, -1 dBFS, quantized to Q15,
         // through the Q15 decimator and through the double structure on the
         // same input; error power re a full-scale sine's, 2^14 outputs after
@@ -544,8 +549,10 @@ namespace {
                                                                : tap::dsp::test::iir_fixed_pins::k_q31;
         ASSERT_EQ(got.size(), std::size(pin));
         for (std::size_t i = 0; i < got.size(); ++i) {
-            std::printf("[ measured ] %s %-30s 0x%016" PRIx64 "\n",
-                        std::is_same_v<sample, std::int16_t> ? "Q15" : "Q31", pin[i].name, got[i]);
+            // Two 32-bit halves: newlib's printf parses neither %zu nor PRIx64.
+            std::printf("[ measured ] %s %-30s 0x%08lx%08lx\n", std::is_same_v<sample, std::int16_t> ? "Q15" : "Q31",
+                        pin[i].name, static_cast<unsigned long>(got[i] >> 32),
+                        static_cast<unsigned long>(got[i] & 0xffffffffu));
             EXPECT_EQ(got[i], pin[i].fingerprint) << pin[i].name << ": a fixed-point output bit moved";
         }
     }

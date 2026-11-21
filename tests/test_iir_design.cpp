@@ -10,11 +10,15 @@
 // promise what their rows say. The bits themselves are
 // tests/test_iir_constexpr.cpp's.
 //
-// On the QEMU legs (tests/CMakeLists.txt, MAIN_FILTER) the grid sweeps are
-// excluded by name, as the Kaiser and Nyquist searches are: dense double
-// responses of every design, target-independent numbers that cost minutes
-// of soft-float emulation. The structural pins (orders, ulps, symmetry, the
-// committed rows' fields) run on every leg.
+// On the QEMU legs (tests/CMakeLists.txt, MAIN_FILTER) the six grid sweeps
+// are excluded by name, as the Kaiser and Nyquist searches are: dense double
+// responses of every design, target-independent numbers that cost 141 s of
+// soft-float emulation on the M33 (GuardBandFirTablesMeetTheirSpec 62 s,
+// GuardBandLinearCustomDesignMeetsItsSpec 42, NearLinearTablesMeetTheirSpec-
+// OnTheGrid 13, HalfbandMeetsItsSpecOnTheGrid 10, Cheby2CommittedGainsAre-
+// TheLinfGains 9, FourpathTablesMeetTheFoldingBandSpec 5). The structural
+// pins (orders, ulps against mpmath, symmetry, the committed rows' fields,
+// the Chebyshev II's spec) run on every leg.
 
 #include <algorithm>
 #include <array>
@@ -438,7 +442,8 @@ namespace {
         const double      p    = 3.0 / 8.0;
         const double      edge = design_cheby2_lowpass(5, p, 70).stop_edge;
         const std::size_t n    = search_guard_band_linear_length(p, edge, 70);
-        std::printf("[ measured ] Kaiser type II guard band filter, 70 dB from %.4f: %zu taps (remez: 40)\n", edge, n);
+        std::printf("[ measured ] Kaiser type II guard band filter, 70 dB from %.4f: %lu taps (remez: 40)\n", edge,
+                    static_cast<unsigned long>(n));
         ASSERT_GT(n, 40u);
         std::vector<double> h(n);
         design_guard_band_linear(h, p, edge, 70);

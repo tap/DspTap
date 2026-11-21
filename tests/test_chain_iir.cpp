@@ -28,6 +28,7 @@
 #include <cmath>
 #include <complex>
 #include <cstdint>
+#include <limits>
 #include <numbers>
 #include <span>
 #include <type_traits>
@@ -367,7 +368,7 @@ namespace {
         // order 7 or more never drains to an exactly zero state (it holds a
         // zero-input limit cycle at a few times the smallest normal under
         // flush-to-zero: iir_kernels.h's honest limit,
-        // IirKernel.TheGuardBandCascadeHoldsALimitCycleAtTheSmallestNormal),
+        // iir_kernel.TheGuardBandCascadeHoldsALimitCycleAtTheSmallestNormal),
         // so no window would make its flush end in silence.
         using sample         = TypeParam;
         using guard_t        = guard_1to1<sample>;
@@ -443,7 +444,18 @@ namespace {
                 ASSERT_EQ(a[i], b[i]) << "fed " << fed << " output " << i;
             }
             for (std::size_t i = expect; i < made; ++i) {
-                ASSERT_EQ(b[i], sample{}) << "fed " << fed << " output " << i << ": silence past the flush";
+                if constexpr (!std::is_floating_point_v<sample> || k_subnormal_control<sample>) {
+                    ASSERT_EQ(b[i], sample{}) << "fed " << fed << " output " << i << ": silence past the flush";
+                }
+                else {
+                    // No bit flushes this type here (double on the M4F and
+                    // M33, everything on the soft-float M4): past the flush
+                    // is the subnormal residue, the honest limit
+                    // (iir_kernels.h; test_iir_subnormals.cpp).
+                    ASSERT_LE(std::fabs(static_cast<double>(b[i])),
+                              32.0 * static_cast<double>(std::numeric_limits<sample>::denorm_min()))
+                        << "fed " << fed << " output " << i << ": a residue past the flush";
+                }
             }
         }
     }
