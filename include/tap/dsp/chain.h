@@ -62,9 +62,15 @@
 //     count of zero input frames after which its output is silence (its
 //     history length: taps - 1 for an M-branch decimator); each stage reports
 //     it, and a chain of stages that do not cannot flush (a static_assert
-//     names the rule). flush() equals zero-padding the chain's input, bit for
-//     bit: its output is a prefix of the padded stream's, and every padded
-//     output beyond it is silence. The chain is left in the zero-fed state;
+//     names the rule). For a chain of FIR stages flush() equals
+//     zero-padding the chain's input, bit for bit: its output is a prefix of
+//     the padded stream's, and every padded output beyond it is silence. A
+//     recursive stage (butterworth.h) does not end in exact silence: after
+//     its window its tail is the client's arithmetic's, a residue a few
+//     hundred times the smallest normal value at most. Padding feeds that
+//     residue on to the stages after it, flush feeds them pure zeros, so in
+//     a chain holding one the two agree up to the residue, and what follows
+//     the flush is the residue. The chain is left in the zero-fed state;
 //     reset() before reuse.
 //   - reset() resets every stage.
 //

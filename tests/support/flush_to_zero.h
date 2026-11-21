@@ -1,16 +1,25 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 Timothy Place and the DspTap contributors.
 //
-// Test support: set flush-to-zero on the calling thread the way a host would
-// (subnormals.h's table), and restore exactly the previous control word on
-// destruction, so the rest of the battery on the same thread is untouched.
-// The library never does this (I9: the host's job); only tests and hosts do.
+// Test support: the battery playing the client. Set flush-to-zero on the
+// calling thread the way a client would (x86: MXCSR FTZ and DAZ; AArch64:
+// FPCR.FZ; Cortex-M with an FPU: FPSCR.FZ), and restore exactly the previous
+// control word on destruction, so the rest of the battery on the same thread
+// is untouched. The library never touches the control register; only its
+// clients (and these tests, standing in for one) do.
 
 #pragma once
 
 #include <cstdint>
 
-#include "tap/dsp/subnormals.h"
+#if defined(__x86_64__) || defined(_M_X64) || defined(__SSE_MATH__) || defined(__SSE2_MATH__)                          \
+    || (defined(_M_IX86_FP) && _M_IX86_FP >= 1)
+#include <xmmintrin.h>
+#define TAP_DSP_FTZ_X86 1
+#elif defined(_M_ARM64) && defined(_MSC_VER)
+#include <intrin.h>
+#define TAP_DSP_FTZ_A64_MSVC 1
+#endif
 
 namespace tap_test {
 
@@ -69,6 +78,19 @@ namespace tap_test {
 #else
         0u;
 #endif
+
+    /// Whether this target has a flush bit governing S (the soft-float M4 and
+    /// double on the M4F / M33 have none; Hexagon is not modelled).
+    template <typename S>
+    constexpr bool has_flush_bit() noexcept {
+#if defined(TAP_DSP_FTZ_X86) || defined(TAP_DSP_FTZ_A64_MSVC) || defined(__aarch64__)
+        return true;
+#elif defined(__ARM_FP)
+        return sizeof(S) == 4 ? (__ARM_FP & 0x4) != 0 : (__ARM_FP & 0x8) != 0;
+#else
+        return false;
+#endif
+    }
 
     /// Sets (on = true) or clears the flush bits for its lifetime; restores the word after.
     class scoped_flush_to_zero {

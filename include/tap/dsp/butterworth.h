@@ -4,10 +4,11 @@
 // Copyright 2026 Timothy Place and the DspTap contributors.
 //
 // The first slice of SampleRateTap's IIR plan's DspTap part (IIR-a): the
-// biquad cascade kernel (biquad.h), the subnormal query (subnormals.h), the
-// chain's nominal latency (chain.h) and one recursive stage that exercises
-// them, a Butterworth low-pass, under the plan's decided contracts for a
-// recursive stage in a chain: latency I5, flush I6, subnormals I9.
+// biquad cascade kernel (biquad.h), the chain's nominal latency (chain.h) and
+// one recursive stage that exercises them, a Butterworth low-pass, under the
+// plan's contracts for a recursive stage in a chain: latency I5 and flush
+// I6. Subnormals are the client's (I9: the client sets flush-to-zero; this
+// code neither sets it nor checks it).
 //
 // Design (Oppenheim & Schafer, "Discrete-Time Signal Processing", 3rd ed.,
 // 2010, sec. 7.2: the bilinear transform with frequency pre-warping, and
@@ -45,24 +46,21 @@
 //     group delay at DC, and passband_group_delay_deviation_output_frames()
 //     = the largest |group_delay(f) - nominal| over the passband 0 <= f <=
 //     fc, on a 1,024-point grid (a Butterworth's group delay peaks near fc).
-//   - The tail (biquad.h): a template argument, iir_tail::exact_zero by
-//     default. Under the host's flush-to-zero a float biquad can hold a
-//     limit cycle just above the smallest normal value instead of
-//     decaying to zero (biquad.h has the mechanism and the measurement), so
-//     the plan's I6 contract needs the kernel's help:
-//     - exact_zero: window_frames() = biquad.h's flush window, a
-//       design-time constant; after that many zero input frames the state
-//       is EXACTLY zero, with or without the host's FTZ, so chain.h's
-//       FlushEqualsZeroPaddingBitForBit holds unchanged. No subnormal
-//       precondition: no state lives below T = 2^-100 (float) / 2^-967
-//       (double), so none goes subnormal. Below T the filter drops the
-//       state (nonlinear 600 dB down in float).
-//     - free_running: the plain recursion. No window_frames(), so a chain
-//       holding it cannot flush. process() states the plan's I9
-//       precondition, TAP_EXPECTS(subnormals_flushed<S>()), on targets where
-//       a bit governs S (subnormals.h), and compiles nothing elsewhere or
-//       under TAP_DSP_ALLOW_SUBNORMALS: flushing subnormals is the host's
-//       job. Honest limit: the tail never reaches silence on its own.
+//   - Flush (the plan's I6): window_frames() = biquad.h's flush window, a
+//     design-time constant: the zero input frames after which the exact
+//     recursion's state is below the smallest normal value. What the
+//     arithmetic leaves after it depends on the client (biquad.h): usually
+//     exact silence; without FTZ a subnormal residue (below the smallest
+//     normal value); under FTZ, for some designs, a limit cycle just above
+//     it, growing as the cutoff falls (measured on x86-64, from full scale:
+//     up to 124 times std::numeric_limits<S>::min() at order 8, fc = 0.002,
+//     float; 99 times at order 4, fc = 0.002, double; none for most designs
+//     between 0.01 and 0.3). Pinned bound: 256 times the smallest normal
+//     value (3e-36 in float, about -700 dB re full scale), orders 2 ... 8,
+//     cutoffs 0.002 ... 0.49, either FTZ setting
+//     (`butterworth_test.TheTailAfterTheWindowIsBounded`). In a chain, flush()
+//     therefore equals zero padding up to that residue rather than bit for
+//     bit, and what follows it is the residue, not exact silence (chain.h).
 //   - Non-finite input poisons the state until reset() (I9: no per-sample
 //     check).
 //   - Formats: double (golden) and float (float states and products, I14).
@@ -81,7 +79,6 @@
 
 #include "tap/dsp/biquad.h"
 #include "tap/dsp/detail/expects.h"
-#include "tap/dsp/subnormals.h"
 
 namespace tap::dsp {
 
@@ -115,7 +112,7 @@ namespace tap::dsp {
     }
 
     /// An order-N Butterworth low-pass as a 1:1 chain stage over Ch interleaved channels.
-    template <typename S, std::size_t N, std::size_t Ch = 1, iir_tail Tail = iir_tail::exact_zero>
+    template <typename S, std::size_t N, std::size_t Ch = 1>
     class basic_butterworth_lowpass {
         static_assert(N >= 2 && N <= 16 && N % 2 == 0, "basic_butterworth_lowpass: even orders 2 ... 16");
         static_assert(Ch >= 1, "basic_butterworth_lowpass: at least one channel");
@@ -127,7 +124,6 @@ namespace tap::dsp {
         static constexpr std::size_t k_order    = N;
         static constexpr std::size_t k_sections = N / 2;
         static constexpr std::size_t channels() noexcept { return Ch; }
-        static constexpr iir_tail    k_tail = Tail;
 
         /// The construction-time check, as a value: empty when cutoff is designable.
         static constexpr const char* validate(double cutoff) noexcept {
@@ -144,9 +140,7 @@ namespace tap::dsp {
             }
             m_sections = design_butterworth_lowpass<N>(cutoff);
             m_kernel.set(m_sections);
-            if constexpr (Tail == iir_tail::exact_zero) {
-                m_window = flush_window_frames<S>(m_sections);
-            }
+            m_window             = flush_window_frames<S>(m_sections);
             m_nominal            = group_delay_samples(m_sections, 0.0);
             double        dev    = 0.0;
             constexpr int k_grid = 1024;
@@ -157,12 +151,8 @@ namespace tap::dsp {
             m_deviation = dev;
         }
 
-        /// n interleaved frames in, n out. free_running only: the host
-        /// flushes subnormals (a debug-build precondition, subnormals.h).
+        /// n interleaved frames in, n out.
         std::size_t process(const S* in, std::size_t n, S* out) noexcept {
-            if constexpr (Tail == iir_tail::free_running) {
-                TAP_DSP_EXPECTS_SUBNORMALS_FLUSHED(S);
-            }
             m_kernel.process(in, n, out);
             return n;
         }
@@ -170,12 +160,9 @@ namespace tap::dsp {
         std::size_t outputs_for(std::size_t n) const noexcept { return n; }
         void        reset() noexcept { m_kernel.reset(); }
 
-        /// Zero input frames after which the state is exactly zero (exact_zero only).
-        std::size_t window_frames() const noexcept
-            requires(Tail == iir_tail::exact_zero)
-        {
-            return m_window;
-        }
+        /// Zero input frames after which the exact recursion's state is below
+        /// the smallest normal value (the residue: the file header).
+        std::size_t window_frames() const noexcept { return m_window; }
 
         /// Group delay at f cycles per sample, 0 <= f < 1/2, in frames.
         double group_delay_output_frames(double f) const noexcept { return group_delay_samples(m_sections, f); }
@@ -190,12 +177,12 @@ namespace tap::dsp {
         bool is_silent() const noexcept { return m_kernel.is_silent(); }
 
       private:
-        double                                   m_cutoff;
-        std::array<biquad_coefficients, N / 2>   m_sections{};
-        basic_biquad_cascade<S, N / 2, Ch, Tail> m_kernel;
-        std::size_t                              m_window    = 0;
-        double                                   m_nominal   = 0.0;
-        double                                   m_deviation = 0.0;
+        double                                 m_cutoff;
+        std::array<biquad_coefficients, N / 2> m_sections{};
+        basic_biquad_cascade<S, N / 2, Ch>     m_kernel;
+        std::size_t                            m_window    = 0;
+        double                                 m_nominal   = 0.0;
+        double                                 m_deviation = 0.0;
     };
 
     template <std::size_t Ch = 1>

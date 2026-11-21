@@ -1,6 +1,6 @@
 /// @file biquad.h
 /// @brief The second-order-section (biquad) cascade kernel: transposed direct form II over float and double,
-/// its group delay, and its exact-zero flush window.
+/// its group delay, and its flush window.
 // SPDX-License-Identifier: MIT
 // Copyright 2026 Timothy Place and the DspTap contributors.
 //
@@ -38,61 +38,42 @@
 //   - Non-finite input poisons the state until reset() (the plan's I9: an
 //     honest limit, no per-sample check).
 //
-// The tail: two policies, a template argument (iir_tail).
+// Subnormals are the client's business. Nothing in this header reads,
+// writes or tests the floating-point control register, and nothing in the
+// kernel flushes or clamps a small state: the client that runs the stage
+// sets flush-to-zero (and DAZ on x86) on its audio threads, or does not.
+// What each choice gives, measured on x86-64 (stated so nobody is
+// surprised):
+//   - Without FTZ, a decaying float state passes through the subnormal
+//     range, where x86 arithmetic is slow (the classic CPU spike on
+//     silence), and settles at a few multiples of the smallest subnormal.
+//   - With FTZ the decay usually ends at exact zero, but not always: FTZ
+//     flushes each product on its own, so near the smallest normal value a
+//     section can lose a2 y while s1 survives, and with |a1| > 1 s1 then
+//     grows until a2 y is normal again. The state then holds a limit cycle
+//     just above the smallest normal value. Measured, float, from full
+//     scale: none at order 4 for cutoffs 0.005 ... 0.25; 5 times the
+//     smallest normal value at order 4, fc = 0.45; up to 49 times at order 8
+//     (fc = 0.005); the same in transposed DF II, DF I and DF II. A
+//     first-order section (the plan's allpasses) cannot hold one: flushing
+//     its one product only shrinks it.
+//   So the tail of a recursive stage is not, in general, exact silence;
+//   butterworth.h states the bound its battery pins.
 //
-// Why there are two (measured, x86-64 and by construction): under the
-// host's flush-to-zero a float biquad does NOT in general decay to exact
-// zero. FTZ flushes each product on its own, so near the smallest normal
-// value a section can lose a2 y while s1 survives; with |a1| > 1 (any pole
-// pair with a real part above 1/2) s1 then grows by |a1| until a2 y is
-// normal again, and the state settles into a limit cycle a few times the
-// smallest normal value. An order-4 Butterworth at fc = 0.1 holds one
-// forever in transposed DF II, DF I and (at other cutoffs) DF II, float and
-// double alike; the plan's IIR-0 measured exact decay for its first-order
-// allpass sections only, whose products can only shrink when flushed. So
-// the plan's I6 contract (after window_frames() zeros the state is exactly
-// zero) needs the kernel's help for biquads:
+// The flush window (the plan's I6, with its formula). With zero input the
+// cascade is x' = A x, A the 2S x 2S state-transition matrix. The state
+// holds at most max_finite / G (the state headroom), G = sup_m ||A^m||_inf.
+// The window is the smallest n with
 //
-//   - iir_tail::exact_zero (the default): after each section's update, if
-//     both its state words are below T in magnitude, both are set to zero
-//     (branch-free: a compare and two selects). T = 2^(digits + 2) times
-//     the smallest normal value: 2^-100 in float (-602 dB re full scale),
-//     2^-967 in double. Every product of a state above T with a
-//     coefficient stays normal, so FTZ never acts on a live state, and the
-//     joint test cannot strand one word (zeroing a single word is what
-//     FTZ does, and what cycles). The tail reaches exact zero within
-//     flush_window_frames<S>(sections) zero frames with or without the
-//     host's FTZ, so this policy states no subnormal precondition. Below
-//     T the filter is not linear: a state that small is dropped. Cost:
-//     about 26 % more time per sample on x86-64 at order 4, mono, float
-//     (one dependent chain; the instruction counts on CI's legs are in
-//     bench/README.md).
-//   - iir_tail::free_running: the plain recursion. Under FTZ the tail can
-//     hold a limit cycle at a few times the smallest normal value, and
-//     without it a few to some hundred multiples of the smallest subnormal
-//     (measured up to 114 at order 8, fc = 0.005, float), so the stage
-//     has no exact window: a stage built on it offers no window_frames()
-//     and a chain holding it cannot flush (chain.h's static_assert). Its
-//     process() states the plan's I9 precondition, subnormals_flushed<S>(),
-//     because without FTZ x86 spends its silence in subnormal arithmetic.
+//     ln(max_finite) + ln ||A^n||_inf  <  ln(min_normal),
 //
-// The flush window (exact_zero; the plan's I6: the count of zero input
-// frames after which the state is exactly zero, so chain.h's flush
-// contract holds unchanged). With zero input the cascade is x' = A x, A
-// the 2S x 2S state-transition matrix. The state holds at most
-// max_finite / G (the state headroom), G = sup_m ||A^m||_inf. The window
-// is the smallest n with
-//
-//     ln(max_finite) + ln ||A^n||_inf  <  ln(T),
-//
-// because then every later state obeys ||x_m|| <= ||A^n|| ||A^(m-n)|| ||x_0||
-// <= ||A^n|| G max_finite / G < T, where every section is zeroed; plus a
-// margin of one frame per section (the zeroed sections pass silence down
-// the cascade one section per frame at most; IIR-0 found the same margin).
-// n is found by binary lifting over A^(2^j), kept normalized with a
-// separate log scale, so the design costs O(log n) matrix products even at
-// a cutoff of a few hertz in double (n in the millions). The count is a
-// design-time constant.
+// because then every later state of the exact recursion obeys ||x_m|| <=
+// ||A^n|| ||A^(m-n)|| ||x_0|| <= ||A^n|| G max_finite / G < min_normal; plus
+// a margin of one frame per section (IIR-0's margin). What the arithmetic
+// leaves there is the residue above. n is found by binary lifting over
+// A^(2^j), kept normalized with a separate log scale, so the design costs
+// O(log n) matrix products even at a cutoff of a few hertz in double (n in
+// the millions). The count is a design-time constant.
 
 #pragma once
 
@@ -105,25 +86,9 @@
 #include <type_traits>
 #include <vector>
 
-#include "tap/dsp/subnormals.h"
+#include "tap/dsp/detail/expects.h"
 
 namespace tap::dsp {
-
-    /// What a recursive kernel does with its tail (the file header).
-    enum class iir_tail {
-        exact_zero,   ///< zero a section's state jointly below T: an exact flush window
-        free_running, ///< the plain recursion: no exact window, the host's FTZ required
-    };
-
-    /// T, the exact_zero policy's threshold: 2^(digits + 2) times the smallest normal value.
-    template <typename S>
-    constexpr S biquad_tail_threshold() noexcept {
-        S t = std::numeric_limits<S>::min();
-        for (int i = 0; i < std::numeric_limits<S>::digits + 2; ++i) {
-            t *= S(2);
-        }
-        return t;
-    }
 
     /// One second-order section, normalized so a0 = 1.
     struct biquad_coefficients {
@@ -228,8 +193,8 @@ namespace tap::dsp {
 
     } // namespace detail
 
-    /// Zero input frames after which an iir_tail::exact_zero cascade's state
-    /// is exactly zero, from any state format S can hold (the file header).
+    /// Zero input frames after which the exact recursion's state is below the
+    /// smallest normal value of S, from any state S can hold (the file header).
     /// Design-time: O(log n) products of 2S x 2S matrices.
     template <typename S, std::size_t N>
     std::size_t flush_window_frames(const std::array<biquad_coefficients, N>& sections) {
@@ -240,7 +205,7 @@ namespace tap::dsp {
         a.normalize();
 
         const double start  = std::log(static_cast<double>(std::numeric_limits<S>::max()));
-        const double target = std::log(static_cast<double>(biquad_tail_threshold<S>()));
+        const double target = std::log(static_cast<double>(std::numeric_limits<S>::min()));
         auto         done   = [&](const mat& p) { return start + p.log_norm() < target; };
 
         // Powers A^(2^j) until one alone satisfies the condition.
@@ -272,7 +237,7 @@ namespace tap::dsp {
     }
 
     /// The cascade kernel: N sections, Ch interleaved channels, float or double.
-    template <typename S, std::size_t N, std::size_t Ch, iir_tail Tail = iir_tail::exact_zero>
+    template <typename S, std::size_t N, std::size_t Ch>
     class basic_biquad_cascade {
         static_assert(std::is_same_v<S, float> || std::is_same_v<S, double>,
                       "basic_biquad_cascade: float and double; Q15 / Q31 are the IIR plan's I8 (fixed-point "
@@ -301,16 +266,9 @@ namespace tap::dsp {
                         const coeffs& c  = m_c[s];
                         S*            st = m_state[s][ch].data();
                         const S       y  = c.b0 * x + st[0];
-                        S             s0 = c.b1 * x - c.a1 * y + st[1];
-                        S             s1 = c.b2 * x - c.a2 * y;
-                        if constexpr (Tail == iir_tail::exact_zero) {
-                            const bool below = (s0 < k_t && s0 > -k_t) && (s1 < k_t && s1 > -k_t);
-                            s0               = below ? S(0) : s0;
-                            s1               = below ? S(0) : s1;
-                        }
-                        st[0] = s0;
-                        st[1] = s1;
-                        x     = y;
+                        st[0]            = c.b1 * x - c.a1 * y + st[1];
+                        st[1]            = c.b2 * x - c.a2 * y;
+                        x                = y;
                     }
                     out[i * Ch + ch] = x;
                 }
@@ -338,7 +296,6 @@ namespace tap::dsp {
         }
 
       private:
-        static constexpr S k_t = biquad_tail_threshold<S>();
         struct coeffs {
             S b0, b1, b2, a1, a2;
         };

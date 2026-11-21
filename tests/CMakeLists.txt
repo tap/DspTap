@@ -159,7 +159,6 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_quantize.cpp
         test_sample_traits.cpp
         test_spectrum.cpp
-        test_subnormals.cpp
         test_version.cpp
         test_windows_macros.cpp
         test_yin.cpp

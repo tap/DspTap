@@ -5,11 +5,10 @@
 // magnitude at DC, the cutoff and Nyquist; the stage against a double-
 // precision direct recursion; chunking and channel independence bit for bit;
 // the group delay, its nominal and its passband deviation (the IIR plan's
-// I5); the exact_zero tail reaching exact zero within window_frames() from a
-// full-scale drive with and without the host's flush-to-zero (I6), and the
-// free_running tail's limit cycle under FTZ, pinned as the honest limit that
-// made exact_zero necessary; the free_running precondition (I9); that the
-// stage never touches the floating-point environment; and the rejections.
+// I5); the tail after window_frames() bounded with the client's FTZ on and
+// off (I6), and the limit cycle FTZ leaves some designs in, pinned as the
+// honest limit; that the stage never touches the floating-point environment
+// (the client owns it); and the rejections.
 
 #include <algorithm>
 #include <array>
@@ -30,7 +29,6 @@ namespace {
 
     using tap::dsp::basic_butterworth_lowpass;
     using tap::dsp::biquad_coefficients;
-    using tap::dsp::iir_tail;
     using tap_test::scoped_flush_to_zero;
 
     template <typename S>
@@ -172,41 +170,42 @@ namespace {
         EXPECT_GT(f.passband_group_delay_deviation_output_frames(), 0.0);
     }
 
-    // The exact_zero tail: after window_frames() zeros, the state is exactly
-    // zero, from a full-scale square drive and from a drive near the format's
-    // largest value, with and without the host's flush-to-zero.
+    // After window_frames() zeros the tail is the client's arithmetic's
+    // (biquad.h): exact silence, a subnormal residue without FTZ, or under
+    // FTZ a limit cycle just above the smallest normal value for some
+    // designs. Whatever it is, it is below 256 times the smallest normal
+    // value, from a full-scale square drive and from one near the format's
+    // largest value, with the client's FTZ on and off.
     template <typename S, std::size_t N>
-    void drains_to_exact_zero(double fc, bool ftz_on) {
+    void tail_is_bounded(double fc, bool ftz_on) {
         scoped_flush_to_zero            mode(ftz_on);
         basic_butterworth_lowpass<S, N> f(fc);
+        const S                         bound = S(256) * std::numeric_limits<S>::min();
         for (const S amp : {S(1), static_cast<S>(std::numeric_limits<S>::max() / S(1e6))}) {
             f.reset();
             auto x = square<S>(4000, 5, amp);
             f.process(x.data(), x.size(), x.data());
-            std::vector<S> z(f.window_frames(), S(0));
+            std::vector<S> z(2 * f.window_frames(), S(0));
             f.process(z.data(), z.size(), z.data());
-            EXPECT_TRUE(f.is_silent()) << "fc " << fc << " ftz " << ftz_on;
-            std::vector<S> more(64, S(0));
-            f.process(more.data(), more.size(), more.data());
-            for (const S v : more) {
-                ASSERT_EQ(v, S(0));
+            for (std::size_t i = f.window_frames(); i < z.size(); ++i) {
+                ASSERT_LE(std::fabs(z[i]), bound) << "fc " << fc << " ftz " << ftz_on << " frame " << i;
             }
         }
     }
 
-    TYPED_TEST(butterworth_test, ExactZeroTailDrainsWithinTheWindow) {
+    TYPED_TEST(butterworth_test, TheTailAfterTheWindowIsBounded) {
         using sample_type = TypeParam;
         // Double's windows are about 8 times float's (its range is), and
         // double is software on the M4, M4F and M33 legs: two cutoffs there.
         constexpr bool is_float = std::is_same_v<sample_type, float>;
-        for (const double fc : {0.02, 0.1, 0.25, 0.45}) {
-            if (!is_float && (fc == 0.02 || fc == 0.45)) {
+        for (const double fc : {0.005, 0.02, 0.1, 0.25, 0.45}) {
+            if (!is_float && (fc == 0.005 || fc == 0.02 || fc == 0.45)) {
                 continue;
             }
             for (const bool ftz : {true, false}) {
-                drains_to_exact_zero<sample_type, 4>(fc, ftz);
+                tail_is_bounded<sample_type, 4>(fc, ftz);
                 if (is_float) {
-                    drains_to_exact_zero<sample_type, 8>(fc, ftz);
+                    tail_is_bounded<sample_type, 8>(fc, ftz);
                 }
             }
         }
@@ -215,73 +214,57 @@ namespace {
     TEST(Butterworth, WindowIsADesignTimeConstant) {
         // Values recorded with this design (x86-64; a change is a change to
         // the design or the window formula).
-        EXPECT_EQ((basic_butterworth_lowpass<float, 4>(0.1).window_frames()), 701u);
-        EXPECT_EQ((basic_butterworth_lowpass<double, 4>(0.1).window_frames()), 6041u);
-        EXPECT_EQ((basic_butterworth_lowpass<float, 8>(0.25).window_frames()), 814u);
+        EXPECT_EQ((basic_butterworth_lowpass<float, 4>(0.1).window_frames()), 780u);
+        EXPECT_EQ((basic_butterworth_lowpass<double, 4>(0.1).window_frames()), 6207u);
+        EXPECT_EQ((basic_butterworth_lowpass<float, 8>(0.25).window_frames()), 906u);
     }
 
-    // The honest limit that made exact_zero necessary: the plain recursion
-    // never reaches silence on its own. Under the host's FTZ (where a bit
-    // governs float) it holds a limit cycle just above the smallest normal
-    // value; without one (the soft-float M4, or no host FTZ) the state
-    // sticks at a few multiples of the smallest subnormal. Either way the
-    // residue is tiny: below 16 times the smallest normal value.
-    TEST(Butterworth, FreeRunningNeverReachesSilenceOnItsOwn) {
-        const bool           ftz = tap::dsp::has_subnormal_flush_control<float>();
-        scoped_flush_to_zero mode(ftz);
-        basic_butterworth_lowpass<float, 4, 1, iir_tail::free_running> f(0.1);
-        auto                                                           x = square<float>(4000, 7);
+    // The honest limit, pinned both ways on every leg (none skips). Where a
+    // flush bit governs float, the client's FTZ leaves an order-8 design at
+    // fc = 0.45 in a limit cycle above the smallest normal value (12.8 times
+    // it, measured on x86-64) that never ends; without FTZ (and on the
+    // soft-float M4, which has no bit) the residue stays below the smallest
+    // normal value.
+    TEST(Butterworth, UnderFlushToZeroSomeDesignsNeverFallSilent) {
+        constexpr bool                      bit = tap_test::has_flush_bit<float>();
+        scoped_flush_to_zero                mode(bit);
+        basic_butterworth_lowpass<float, 8> f(0.45);
+        auto                                x = square<float>(4000, 5);
         f.process(x.data(), x.size(), x.data());
-        std::vector<float> z(200000, 0.0f);
+        std::vector<float> z(100000, 0.0f);
         f.process(z.data(), z.size(), z.data());
-        EXPECT_FALSE(f.is_silent());
         float tail = 0.0f;
         for (std::size_t i = z.size() - 1000; i < z.size(); ++i) {
             tail = std::max(tail, std::fabs(z[i]));
         }
-        EXPECT_LT(tail, 16.0f * std::numeric_limits<float>::min());
+        if (bit) {
+            EXPECT_FALSE(f.is_silent());
+            EXPECT_GE(tail, std::numeric_limits<float>::min());
+            EXPECT_LE(tail, 256.0f * std::numeric_limits<float>::min());
+        }
+        else {
+            EXPECT_LT(tail, std::numeric_limits<float>::min());
+        }
     }
 
-    // A free_running stage has no window, so a chain holding it cannot flush.
     template <typename T>
     concept has_window = requires(const T& t) { t.window_frames(); };
     static_assert(has_window<basic_butterworth_lowpass<float, 4>>);
-    static_assert(!has_window<basic_butterworth_lowpass<float, 4, 1, iir_tail::free_running>>);
     static_assert(tap::dsp::sync_stage<basic_butterworth_lowpass<float, 4, 2>>);
-    static_assert(tap::dsp::sync_stage<basic_butterworth_lowpass<double, 8, 12, iir_tail::free_running>>);
+    static_assert(tap::dsp::sync_stage<basic_butterworth_lowpass<double, 8, 12>>);
 
+    // The library leaves the floating-point environment to its client.
     TEST(Butterworth, NeverTouchesTheFloatingPointEnvironment) {
         for (const bool on : {true, false}) {
             scoped_flush_to_zero                mode(on);
             const auto                          before = tap_test::fp_control_bits();
             basic_butterworth_lowpass<float, 4> a(0.1);
-#if defined(NDEBUG)
-            basic_butterworth_lowpass<float, 4, 1, iir_tail::free_running> b(0.1);
-#endif
-            auto x = square<float>(512, 3);
+            auto                                x = square<float>(512, 3);
             a.process(x.data(), x.size(), x.data());
-#if defined(NDEBUG)
-            b.process(x.data(), x.size(), x.data());
-#endif
             a.reset();
             EXPECT_EQ(tap_test::fp_control_bits(), before);
         }
     }
-
-#if !defined(NDEBUG) && defined(GTEST_HAS_DEATH_TEST) && GTEST_HAS_DEATH_TEST
-    void run_free_running_without_ftz() {
-        scoped_flush_to_zero                                           off(false);
-        basic_butterworth_lowpass<float, 4, 1, iir_tail::free_running> f(0.1);
-        float                                                          x = 1.0f;
-        f.process(&x, 1, &x);
-    }
-
-    TEST(Butterworth, FreeRunningPreconditionFiresWithoutFlushToZero) {
-        if constexpr (tap::dsp::has_subnormal_flush_control<float>()) {
-            EXPECT_DEATH(run_free_running_without_ftz(), "");
-        }
-    }
-#endif
 
     TEST(Butterworth, ValidateNamesTheCutoffRule) {
         using bw = basic_butterworth_lowpass<double, 4>;

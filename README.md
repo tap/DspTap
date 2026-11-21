@@ -388,20 +388,20 @@ double d = lp.nominal_latency_output_frames();           // group delay at DC
   delay. It reports `group_delay_output_frames(f)`, the nominal latency (the
   DC group delay) and the passband deviation (the largest stray up to the
   cutoff); `chain` composes them with its exact stages.
-- **The tail (I6, `Tail`):** under the host's flush-to-zero a float biquad
-  does not in general decay to zero. FTZ flushes products one at a time, and
-  a section with |a1| > 1 then holds a limit cycle just above the smallest
-  normal value (order 4 at fc = 0.1, float and double, in transposed DF II,
-  DF I and DF II alike). So:
-  - `iir_tail::exact_zero` (the default) zeroes a section's state when both
-    its words fall below T (2^-100 in float, 2^-967 in double), and
-    `window_frames()` is the exact count of zero frames after which the state
-    is zero, with or without the host's FTZ, so `chain::flush()` keeps its
-    contract. The cost is about 26 % more time at order 4, mono, float, on
-    x86-64.
-  - `iir_tail::free_running` is the plain recursion. It has no
-    `window_frames()` (a chain holding it cannot flush), and its `process()`
-    states the plan's I9 precondition, `TAP_EXPECTS(subnormals_flushed<S>())`.
+- **Subnormals are the client's.** Nothing here reads, writes or checks the
+  floating-point control register, and nothing flushes a small state: the
+  software that runs the stage sets flush-to-zero (and DAZ on x86) on its
+  audio threads, or does not.
+- **Flush (I6):** `window_frames()` is the plan's count of zero frames after
+  which the exact recursion's state is below the smallest normal value.
+  What the arithmetic leaves after it depends on the client: usually exact
+  silence; without FTZ a subnormal residue; under FTZ, for some designs, a
+  limit cycle just above the smallest normal value, because FTZ flushes each
+  product on its own (measured up to 124 times `FLT_MIN` at order 8,
+  fc = 0.002; pinned below 256 times). So in a chain holding it,
+  `chain::flush()` equals zero padding up to that residue (an all-FIR chain
+  keeps the bit-for-bit equality), and the tail after it is that residue,
+  not exact silence.
 - **Layout:** one stage of `Ch` channels runs each frame through every
   channel's sections in turn. On x86-64 that is 1.5x cheaper than 12 mono
   stages (GCC vectorizes the channel loop); on the M4F, M33, M55 and Hexagon
@@ -415,12 +415,11 @@ Pinned by `tests/test_butterworth.cpp`: the magnitude at DC, the cutoff and
 Nyquist, at orders 4 and 8 over six cutoffs; the sections ordered by pole
 radius; float and double against a double reference recursion; chunking and
 channel independence bit for bit; the group delay against the phase's
-numerical derivative, and the passband deviation; the exact_zero tail
-reaching exact zero within `window_frames()` from full scale and from
-10^-6 of the format's largest value, with and without FTZ; the window values;
-the free_running limit cycle under FTZ (the honest limit that made
-exact_zero necessary); the free_running precondition (Debug); the
-floating-point control bits untouched; the rejections. Every QEMU leg runs
+numerical derivative, and the passband deviation; the tail after
+`window_frames()` below 256 times the smallest normal value, from full scale
+and from 10^-6 of the format's largest value, with the client's FTZ on and
+off; the window values; the limit cycle FTZ leaves an order-8 design in (the
+honest limit); the floating-point control bits untouched; the rejections. Every QEMU leg runs
 it (`tap_dsp_tests`).
 
 ## `tap::dsp::fft_fir` — FIR filtering by fast convolution (overlap-save)
@@ -466,26 +465,14 @@ construction rules. Every QEMU leg runs it, CMSIS-DSP behind it on the M55.
 
 ### `tap/dsp/biquad.h` — the biquad cascade kernel
 
-`basic_biquad_cascade<Sample, Sections, Ch, Tail>`: transposed direct form
-II over float and double, interleaved channels, the two tail policies above,
-`group_delay_samples()` from the double design, and `flush_window_frames<S>()`,
-the exact_zero window: the smallest n with ln(max_finite) + ln‖Aⁿ‖ < ln(T)
-over the cascade's state-transition matrix (binary lifting over A^(2^j),
-so a cutoff of a few hertz in double costs O(log n) products), plus one
-frame per section. Checked against the decay from full-scale drives at
-cutoffs 0.0005 … 0.45, orders 4 and 8, float and double, with and without
-FTZ: the window held with 2 to 20 % to spare everywhere.
-
-### `tap/dsp/subnormals.h` — does this thread flush subnormals?
-
-Flushing subnormals is the host's job (SampleRateTap's IIR plan, I9).
-`has_subnormal_flush_control<S>()` says whether a control bit governs `S` on
-this target (x86 MXCSR, AArch64 FPCR, the Cortex-M FPSCR for float, and for
-double only where the FPU has it), and `subnormals_flushed<S>()` reads it
-without writing anything, false wherever no bit exists. The header carries
-the plan's table of what a host sets on each target. Pinned by
-`tests/test_subnormals.cpp` (the trait per target, the bit read both ways,
-the control word untouched).
+`basic_biquad_cascade<Sample, Sections, Ch>`: transposed direct form II over
+float and double, interleaved channels, the plain recursion (no flushing, no
+clamping: subnormals are the client's), `group_delay_samples()` from the
+double design, and `flush_window_frames<S>()`, the plan's I6 window: the
+smallest n with ln(max_finite) + ln‖Aⁿ‖ < ln(min_normal) over the cascade's
+state-transition matrix (binary lifting over A^(2^j), so a cutoff of a few
+hertz in double costs O(log n) products), plus one frame per section. The
+header states the residue each FTZ setting leaves after it.
 
 ## The FIR substrate
 
@@ -598,8 +585,9 @@ scratch across chunks, and a chain of a stage without a count not a type;
 a Butterworth and an FFT FIR in a stereo chain as the two run in sequence
 for any chunking; the nominal latency, deviation and group delay composed
 across a Butterworth and a decimator, and an all-exact chain's nominal
-latency equal to its exact one; flush equal to zero padding bit for bit over
-a chain of a Butterworth, an FFT FIR and a decimator, with and without FTZ.
+latency equal to its exact one; flush equal to zero padding up to the
+recursive residue over a chain of a Butterworth, an FFT FIR and a decimator,
+with the client's FTZ on and off.
 `tests/compile_fail/chain_channels.cpp` pins that a chain of stages running
 different counts fails on the chain's `static_assert`, as the build's only
 error.

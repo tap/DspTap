@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <numbers>
 #include <type_traits>
 #include <utility>
@@ -501,9 +502,11 @@ namespace {
     }
 
     // Flush over a chain holding a recursive stage, a block stage and a
-    // decimator: zero padding bit for bit, from several phases, and silence
-    // after (the IIR plan's I6, unchanged).
-    TYPED_TEST(one_to_one_test, FlushEqualsZeroPaddingBitForBitWithRecursiveAndBlockStages) {
+    // decimator: zero padding up to the recursive stage's residue, from
+    // several phases, with the client's FTZ on and off; after it, that
+    // residue rather than exact silence (butterworth.h). An all-FIR chain
+    // keeps the bit-for-bit equality (FlushEqualsZeroPaddingBitForBit).
+    TYPED_TEST(one_to_one_test, FlushEqualsZeroPaddingUpToTheRecursiveResidue) {
         using sample_type = TypeParam;
         using bw          = basic_butterworth_lowpass<sample_type, 4>;
         using fir         = basic_fft_fir<sample_type>;
@@ -529,11 +532,18 @@ namespace {
                 std::vector<sample_type> b(padded.outputs_for(zeros));
                 const std::size_t        made = padded.process(z.data(), zeros, b.data());
                 ASSERT_GT(made, expect);
+                // The recursive stage's residue (butterworth.h: below 256
+                // times the smallest normal value), through the FIR stages'
+                // gain (the sum of |h| of each, below 2): flush and padding
+                // agree up to it (padding keeps feeding the residue on,
+                // flush feeds the next stage pure zeros), and the padded
+                // stream after the flush is at most it.
+                const sample_type residue = sample_type(1024) * std::numeric_limits<sample_type>::min();
                 for (std::size_t i = 0; i < expect; ++i) {
-                    ASSERT_EQ(a[i], b[i]) << "fed " << fed << " output " << i;
+                    ASSERT_LE(std::fabs(a[i] - b[i]), residue) << "fed " << fed << " output " << i;
                 }
                 for (std::size_t i = expect; i < made; ++i) {
-                    ASSERT_EQ(b[i], sample_type(0)) << "fed " << fed << " output " << i;
+                    ASSERT_LE(std::fabs(b[i]), residue) << "fed " << fed << " output " << i;
                 }
             }
         }

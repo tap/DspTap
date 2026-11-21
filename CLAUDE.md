@@ -14,8 +14,8 @@ the FFT came from). Nine primitives today: the real FFT (`fft.h`), the YIN pitch
 the log-mel/PCEN feature extractor (`log_mel.h`) and the fixed-ratio decimators to
 16 kHz (`decimate.h`) — the dense/GRU inference kernels (`nn.h`), and two 1:1 chain stages: the
 Butterworth low-pass (`butterworth.h`, the first slice of SampleRateTap's `docs/IIR_PLAN.md`, IIR-a,
-over the recursive substrate: the biquad cascade kernel `biquad.h` with its two tail policies and
-the subnormal query `subnormals.h`) and the overlap-save FFT FIR (`fft_fir.h`) — plus the FIR substrate carried from
+over the recursive substrate, the biquad cascade kernel `biquad.h`; flush-to-zero is the client's
+to set, and no DspTap code reads or sets it) and the overlap-save FFT FIR (`fft_fir.h`) — plus the FIR substrate carried from
 SampleRateTap for the family's two rate converters (its `async` and `bridge` engines): Kaiser prototype design
 (`kaiser.h`), the sample-format traits (`sample_traits.h`: double/float/Q15/Q31), the FIR dot kernels
 (`fir_kernels.h`), row-sum-preserving quantization (`quantize.h`), and the measurement
