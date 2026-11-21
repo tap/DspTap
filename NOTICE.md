@@ -162,6 +162,87 @@ text:
 - This is a maintainer judgement call, not legal advice. This file is the
   canonical statement; `README.md` and `docs/fft-design.md` point here.
 
+## The recursive designs (IIR-a): the clean-room record
+
+Recorded as #39 and #42 were, because a published designer for the same
+structures exists that DspTap does not use: f. harris's MATLAB scripts for
+two-path recursive all-pass filters, `tony_des2.m` with its helper
+`tonycxx.m`, headed "Script file written by fred harris of SDSU. Copyright
+2002", from the companion code of *Multirate Signal Processing for
+Communication Systems* and reposted on DSPRelated in 2020 (thread 10416).
+They carry a copyright and no license, so nothing of theirs is in this tree.
+
+- **Who has read the scripts.** SampleRateTap's `docs/IIR_PLAN.md` was
+  drafted from their header and the DSPRelated thread only (its section 7).
+  SampleRateTap's design spike IIR-0 (SampleRateTap#104,
+  `rational/tools/spikes/iir/`) did not open them; its README says so. IIR-a's
+  implementer (this PR: `cx_math.h`, `iir_design.h`, `iir_tables.h`,
+  `iir_kernels.h`, `subnormals.h`, `chain.h`'s nominal latency, `tools/iir/`
+  and their tests) has not read them, nor the thread, and did not fetch
+  either. The maintainer may run them outside the tree as an independent
+  check of `iir_tables.h` and the constexpr tables; only the comparison
+  would be recorded.
+- **What the implementer worked from.** The plan; IIR-0's programs, README
+  and outputs (written by SampleRateTap's contributors from the literature
+  under the same rule, MIT, the same copyright holder: `tools/iir/iir_design.py`
+  is adapted from its `python/iir_design.py`, and the constexpr designer
+  re-derives its `constexpr/cx_designs.h`); DspTap's own code; general
+  knowledge of the published formulas below. The papers themselves were not
+  in hand, so the equation-level references are to the formulas as those
+  sources publish them, not to page numbers; the maintainer may want to check
+  them against the papers. One vendor document was consulted, for a fact
+  rather than code: the Hexagon V68 Programmer's Reference Manual (Qualcomm,
+  80-N2040-46 Rev. B, public), for the USR register's fields (`subnormals.h`).
+- **Every formula in the constexpr designer, traced.**
+  - The two-path structure H(z) = ½ [A0(z²) + z⁻¹ A1(z²)], the commutator,
+    the half-sum, and the alternating assignment of the sorted allpass
+    coefficients to the paths: Valenzuela and Constantinides 1983; the
+    allpass decomposition of a power-symmetric IIR filter: Vaidyanathan 1993.
+  - The elliptic (bireciprocal) half-band: the selectivity k = tan²(π
+    f_pass) (the bireciprocal case ω_s = π − ω_p), k′ = √(1 − k²), q₀ =
+    (1 − √k′) / (2 (1 + √k′)), the nome q = q₀ + 2q₀⁵ + 15q₀⁹ + 150q₀¹³, the
+    critical frequencies' theta-function series w_c = 2 q^¼ Σ (−1)ᵐ q^m(m+1)
+    sin((2m+1) cπ/n) / (1 + 2 Σ (−1)ᵐ q^m² cos(2mcπ/n)), v_c = √((1 − k w_c²)
+    (1 − w_c²/k)), and the bireciprocal allpass coefficient a_c = (1 − x_c) /
+    (1 + x_c), x_c = v_c / (1 + w_c²): Gazsi 1985's explicit formulas (and
+    Valenzuela and Constantinides 1983 for the two-path realization).
+  - The order: the degree equation q₁ = q^N with the bireciprocal ripple tie
+    (10^(A/10) − 1)(10^(Ap/10) − 1) = 1, giving the attenuation 10 log₁₀(1 +
+    q^(−N/2) / 4): Gazsi 1985's order formula n ≥ ln(16 D) / ln(1/q) in the
+    bireciprocal case.
+  - Three rewrites, algebra on those formulas, each removing a cancellation:
+    1 − √k′ = k² / ((1 + √k′)(1 + k′)) (IIR-0's amendment); a = (1 − x²) /
+    (1 + x)² with 1 − x² = w² (1 + k)² / (k (1 + w²)²) (IIR-a); and 1 − w²/k
+    = (t − w)(t + w) / k with t = tan(π f_pass) (IIR-a).
+  - The Chebyshev II (the guard band filter): the analogue prototype, its
+    poles the scaled reciprocals of the Chebyshev I poles (−sinh μ sin θ_k +
+    j cosh μ cos θ_k, μ = asinh(1/ε) / n), its zeros at ±j Ω_s / cos θ_k, Ω_s =
+    Ω_p cosh(acosh(D) / n), and the bilinear transform with prewarping:
+    Antoniou 2006, which the plan's section 7 names for them. These formulas
+    are not from the three sources the maintainer listed for the half-band
+    (Valenzuela and Constantinides, Gazsi, Vaidyanathan); the record states
+    the source they are from. The section order by increasing pole radius and
+    the L-inf gain distribution: Jackson 1970. The fixed-point rounding rules
+    and the limit-cycle argument: Jackson 1969.
+  - The constexpr math (`detail/cx_math.h`): textbook series and reductions
+    (Taylor series, the atanh series of the logarithm, Newton's iteration),
+    Cody and Waite's split-constant argument reduction, Dekker's exact
+    product (1971).
+- **The iterative designs (committed, `tools/iir/gen_iir_tables.py`).** The
+  near-linear half-band's structure is Renfors and Saramäki's (1987); its
+  method is IIR-0's derivation from that structure, an iterated linear
+  program in the denominator coefficients (the weight 1/|D| frozen from the
+  previous iterate) and then an SLSQP polish of the true minimax, both
+  through scipy. Krukowski and Kale (2003), which the plan cites for
+  near-linear two-path designs, was not consulted, by IIR-0 or by IIR-a: the
+  method is not attributed to it. The four-path stage's structure is harris's
+  M-path recursive polyphase filter (2004) and Renfors and Saramäki's (1987);
+  its design, IIR-0's SLSQP minimax from random starts. The linear guard band
+  form: Parks–McClellan through `scipy.signal.remez`, and for a custom
+  setting the Kaiser window (`kaiser.h`, Kaiser 1974).
+- This is a maintainer judgement call, not legal advice; the maintainer's
+  judgement, as at #42, is what settles it.
+
 ## CMSIS-DSP and CMSIS-Core (subset)
 
 - Path: `third_party/cmsis-dsp/`.

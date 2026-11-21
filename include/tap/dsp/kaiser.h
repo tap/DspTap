@@ -20,6 +20,14 @@
 /// Runtime design takes well under 10 ms, runs once in a constructor, and is
 /// off the audio path, so all design math here is plain runtime double
 /// precision.
+///
+/// The note's scope (since 0.3.0): it holds for the FIR designers, here and
+/// in nyquist.h. The recursive designers of iir_design.h are constexpr, over
+/// detail/cx_math.h's transcendentals, because a recursive design is a
+/// handful of coefficients (at most 16 per half-band, five per Chebyshev II
+/// section), a few thousand constant-evaluation steps (5,844 Clang steps for
+/// the largest tabulated), not a table of thousands of taps; their iterative
+/// designs are committed tables instead (iir_tables.h).
 // ANCHOR_END: kai_design_note
 #pragma once
 

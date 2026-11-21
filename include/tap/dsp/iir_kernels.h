@@ -99,7 +99,7 @@
 //   - Subnormals: without the host's flush-to-zero, or on a target with no
 //     bit for the type (subnormals.h's table), a state decays to a residue of
 //     a few multiples of the smallest subnormal and stays there (measured: 2
-//     at 70 dB 3/8, 7 at 120 dB 5/12 for the half-bands; 4 to 16 for the
+//     at 70 dB 3/8, 5 to 7 at 120 dB 5/12 for the half-bands; 4 to 20 for the
 //     Chebyshev II cascades), and on x86 the silence after signal runs about
 //     ten times slower. Under flush-to-zero the allpass sections (both
 //     half-band variants, the four-path stage) reach an exactly zero state.
