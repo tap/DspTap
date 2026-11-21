@@ -45,8 +45,10 @@
 //     B - 1 frames only copy. So the worst single call costs a block's
 //     work, and a host's per-call budget is that, not the average.
 //   - Layout: the FFT wants each channel contiguous, so a block
-//     de-interleaves its input and re-interleaves its output. The
-//     interleaved and planar costs are bench/README.md's measurement.
+//     de-interleaves its input and re-interleaves its output. On x86-64 that
+//     still costs less than one stage per channel (planar 1.04 to 1.06
+//     times the instructions at 2 to 12 channels); the per-core counts are
+//     bench/README.md's "Layout".
 //   - Formats: double and float (the FFT's floating profiles; H in the
 //     stage's format, computed in double and rounded). Q15 / Q31 are not
 //     offered: the fixed-point FFT returns an exponent per transform, which

@@ -460,10 +460,15 @@ interleaved API?" has a number per core. It is informational by decision
   over contiguous channel buffers (copies of one designed stage). One
   channel builds `_i` only. 16,384 frames per channel in calls of 128,
   float, `layout_main.cpp`.
-- **What a count includes:** the whole run, as for the ratchet: one design
-  per scenario (the same in both layouts of a pair) and a per-channel
-  checksum fold over every output sample (also the same). So p / i is the
-  streaming difference diluted by those constants.
+- **What a count includes:** only the streaming. Each 128-frame step (one
+  `process()` interleaved, C calls planar) runs between
+  `bench/call_marker.h`'s markers, and the plugin (`tools/qemu_insn_plugin`,
+  the bracket feature ported from SampleRateTap's) sums the brackets
+  (`TAP_DSP_CALL_MAX ... total=`): the designs, the fixture and the checksum
+  stay outside. A whole-run count was dominated on the M-class keys by the
+  Butterworth's soft-double design (about 15 M instructions on the M33),
+  which hid the streaming difference. The worst single step is reported
+  beside the sum (an FFT block lands in one step).
 - **Agreement:** both layouts of a pair print the same checksum, because
   each channel runs the same arithmetic; the job prints `bit-identical` per
   pair, and on the host ctest pins it (`tap_dsp_layout_<pair>_pair_agrees`,
@@ -475,21 +480,22 @@ interleaved API?" has a number per core. It is informational by decision
   binaries' prefix keeps them out of the ratchet's glob, and the step is
   `continue-on-error`.
 
-Host figures, x86-64 (GCC 13.3 `-O3`, valgrind 3.22 callgrind, instructions
-from `main`; 2026-11-21, before the first CI run):
+Host figures, x86-64 (GCC 13.3 `-O3`, valgrind 3.22 callgrind collecting the
+bracketed step, `--toggle-collect='*layout_step*'`; 2026-11-21):
 
 | scenario | 1 ch | 2 ch i | 2 ch p | p / i | 6 ch i | 6 ch p | p / i | 12 ch i | 12 ch p | p / i |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `bw` | 1,785,639 | 2,964,274 | 3,007,234 | 1.014 | 6,801,094 | 7,943,331 | 1.168 | 11,175,950 | 15,415,391 | 1.379 |
-| `fir` | 3,653,904 | 6,835,624 | 7,222,489 | 1.057 | 19,901,607 | 21,354,440 | 1.073 | 39,318,452 | 42,499,417 | 1.081 |
-| `chain` | 4,902,297 | 8,624,441 | 9,273,558 | 1.075 | 24,282,052 | 26,340,948 | 1.085 | 45,333,294 | 52,108,545 | 1.149 |
+| `bw` | 707,366 | 1,362,006 | 1,347,926 | 0.990 | 3,970,816 | 4,040,188 | 1.017 | 5,395,584 | 8,080,892 | 1.498 |
+| `fir` | 2,921,344 | 5,619,712 | 5,823,616 | 1.036 | 16,545,792 | 17,559,680 | 1.061 | 32,885,632 | 35,002,496 | 1.064 |
+| `chain` | 3,646,374 | 7,031,863 | 7,314,134 | 1.040 | 20,691,072 | 21,934,332 | 1.060 | 38,510,720 | 43,309,436 | 1.125 |
 
-Interleaved is the cheaper layout for all three on the host, the FFT FIR
-included: its per-block de-interleave costs less than a stage per channel
-(the per-call overhead and the per-channel block bookkeeping), so planar
-loses 6 to 8 % there and up to 38 % on the Butterworth at 12 channels,
-where one interleaved stage runs all channels through each section's
-coefficients in turn. The per-core counts are in each key's step summary.
+On the host, interleaved is the cheaper layout from 6 channels for all
+three, the FFT FIR included (its per-block de-interleave costs less than a
+stage per channel), and by half for the Butterworth at 12 channels, where
+GCC vectorizes the interleaved channel loop; at 2 channels the Butterworth
+is even. The per-core figures differ (a mono biquad keeps its state and
+coefficients in registers across frames, which matters on the M-class
+cores) and are in each key's step summary and `layout-<key>.json`.
 
 ## Provenance
 

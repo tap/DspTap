@@ -444,8 +444,9 @@ tap::dsp::exact_ratio d = fir.latency_output_frames(); // B + (L - 1) / 2 for li
 - **Work:** all of it lands on the frame that completes a block (2·Ch
   transforms of 2B), so the worst single call is a block's work.
 - **Layout:** the FFT wants each channel contiguous, so a block
-  de-interleaves and re-interleaves. Instruction counts say interleaved is
-  still the cheaper layout (`bench/README.md`, "Layout").
+  de-interleaves and re-interleaves. On x86-64 that still costs less than a
+  stage per channel (planar 1.04 to 1.06 times the instructions); the
+  per-core counts are `bench/README.md`'s "Layout".
 - Lives in the FFT's ABI-tag namespace (it holds a `basic_real_fft` by value).
 
 Pinned by `tests/test_fft_fir.cpp`: the direct convolution and the B-frame

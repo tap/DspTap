@@ -16,12 +16,14 @@
 //                          channel buffer (copies of one designed stage, so
 //                          both layouts pay one design)
 //
-// 16,384 frames per channel in calls of 128 frames, float. The QEMU plugin
-// counts the whole run, so the count includes one design per scenario (the
-// Kaiser taps, the FFT tables, the Butterworth's flush window), the same in
-// both layouts of a pair, and the per-channel checksum fold over every
-// output sample, also the same: the planar / interleaved ratio is the
-// streaming difference diluted by those constants (the job prints it).
+// 16,384 frames per channel in calls of 128 frames, float. Each 128-frame
+// step (one process() call interleaved, Ch calls planar) is bracketed by
+// bench/call_marker.h's markers, and the figure the job reports is the
+// plugin's sum over the brackets (TAP_DSP_CALL_MAX total=), so the designs,
+// the fixture and the checksum fold stay outside it, and with them the
+// soft-double construction that dominated a whole-run count on the M-class
+// keys. The largest bracket (the worst single step: an FFT block lands in
+// one) is printed beside it.
 //
 // The checksum folds each channel's output in frame order into its own
 // FNV-1a-64 and then the channel hashes in order, so a pair's two layouts
@@ -38,6 +40,7 @@
 #include <vector>
 
 #include "bench_common.h"
+#include "call_marker.h"
 #include "tap/dsp/butterworth.h"
 #include "tap/dsp/chain.h"
 #include "tap/dsp/fft_fir.h"
@@ -107,6 +110,16 @@ namespace {
         return h;
     }
 
+    /// One bracketed step: the markers around f(). noinline, so callgrind can
+    /// collect it on the host (--toggle-collect='*layout_step*') as the
+    /// plugin collects the bracket on QEMU.
+    template <typename F>
+    [[gnu::noinline]] void layout_step(F&& f) {
+        tap_dsp_call_begin();
+        f();
+        tap_dsp_call_end();
+    }
+
     struct outcome {
         std::uint64_t checksum;
         bool          ok;
@@ -128,7 +141,8 @@ namespace {
             }
         }
         for (std::size_t f = 0; f < k_frames; f += k_call) {
-            const std::size_t made = stage.process(in.data() + f * k_ch, k_call, out.data());
+            std::size_t made = 0;
+            layout_step([&] { made = stage.process(in.data() + f * k_ch, k_call, out.data()); });
             for (std::size_t i = 0; i < made; ++i) {
                 for (std::size_t c = 0; c < k_ch; ++c) {
                     const float v = out[i * k_ch + c];
@@ -142,9 +156,12 @@ namespace {
         const auto                             proto = make_stage<1>();
         std::vector<decltype(make_stage<1>())> stages(k_ch, proto);
         std::array<std::vector<float>, k_ch>   in;
-        std::vector<float>                     out(k_call);
+        std::array<std::vector<float>, k_ch>   out;
         for (auto& v : in) {
             v.resize(k_frames);
+        }
+        for (auto& v : out) {
+            v.resize(k_call);
         }
         for (std::size_t i = 0; i < k_frames; ++i) {
             for (std::size_t c = 0; c < k_ch; ++c) {
@@ -152,10 +169,15 @@ namespace {
             }
         }
         for (std::size_t f = 0; f < k_frames; f += k_call) {
+            std::size_t made = 0;
+            layout_step([&] {
+                for (std::size_t c = 0; c < k_ch; ++c) {
+                    made = stages[c].process(in[c].data() + f, k_call, out[c].data());
+                }
+            });
             for (std::size_t c = 0; c < k_ch; ++c) {
-                const std::size_t made = stages[c].process(in[c].data() + f, k_call, out.data());
                 for (std::size_t i = 0; i < made; ++i) {
-                    const float v = out[i];
+                    const float v = out[c][i];
                     h[c]          = fold1(h[c], v);
                     nonzero       = nonzero || v != 0.0f;
                     finite        = finite && std::isfinite(v);

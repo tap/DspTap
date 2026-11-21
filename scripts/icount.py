@@ -80,6 +80,7 @@ MACHINES = {
 PREFIX = "tap_dsp_icount_"
 DONE_MARKER = "TAP_DSP_ICOUNT_DONE ok=1"
 COUNT_RE = re.compile(r"TAP_DSP_INSN_COUNT (\d+)")
+CALL_RE = re.compile(r"TAP_DSP_CALL_MAX (\d+) call=(\d+) calls=(\d+) total=(\d+)")
 DONE_RE = re.compile(r"TAP_DSP_ICOUNT_DONE ok=1 (.*)")
 
 
@@ -121,6 +122,9 @@ def measure(target: str, plugin: str, binary: str) -> tuple[int, dict[str, str]]
         raise MeasurementError(f"{binary}: no TAP_DSP_INSN_COUNT (plugin not loaded?)")
     done = DONE_RE.search(out)
     fields = dict(kv.split("=", 1) for kv in done.group(1).split() if "=" in kv) if done else {}
+    calls = CALL_RE.search(out)
+    if calls:  # a bracketed workload (bench/call_marker.h): its sum and its worst bracket
+        fields["call_max"], fields["call_total"] = calls.group(1), calls.group(4)
     return int(m.group(1)), fields
 
 
@@ -147,17 +151,25 @@ def describe(fields: dict[str, str]) -> str:
 
 
 def report(args, prefix: str, binaries: list[str]) -> int:
-    """--report-only: counts, then the planar / interleaved ratio per pair."""
-    measured, fields = {}, {}
+    """--report-only: counts, then the planar / interleaved ratio per pair.
+
+    A bracketed workload (bench/call_marker.h) reports the sum over its
+    brackets, the streaming work alone, and its worst bracket beside it; a
+    workload without markers reports its whole-run count."""
+    measured, worst, fields = {}, {}, {}
     for binary in binaries:
         scenario = os.path.basename(binary).removeprefix(prefix)
         try:
-            measured[scenario], fields[scenario] = measure(args.target, args.plugin, binary)
+            whole, fields[scenario] = measure(args.target, args.plugin, binary)
         except MeasurementError as e:
             raise SystemExit(str(e))
-        print(f"{scenario}: {measured[scenario]} insns {describe(fields[scenario])}")
+        f = fields[scenario]
+        measured[scenario] = int(f.get("call_total", whole))
+        worst[scenario] = int(f.get("call_max", 0))
+        print(f"{scenario}: {measured[scenario]} insns streaming, worst step {worst[scenario]}, "
+              f"whole run {whole} {describe(f)}")
     print()
-    print(f"{'pair':<22} {'interleaved':>13} {'planar':>13} {'p / i':>7}  output")
+    print(f"{'pair':<22} {'interleaved':>13} {'planar':>13} {'p / i':>7} {'worst p / i':>12}  output")
     def pair_order(name: str):
         m = re.match(r"(.*)_ch(\d+)_", name)
         return (m.group(1), int(m.group(2))) if m else (name, 0)
@@ -170,7 +182,8 @@ def report(args, prefix: str, binaries: list[str]) -> int:
             continue
         i, p = measured[partner], measured[scenario]
         same = fields[partner].get("checksum") == fields[scenario].get("checksum")
-        print(f"{scenario[:-2]:<22} {i:>13} {p:>13} {p / i:>7.3f}  "
+        wr = worst[scenario] / worst[partner] if worst[partner] else float("nan")
+        print(f"{scenario[:-2]:<22} {i:>13} {p:>13} {p / i:>7.3f} {wr:>12.3f}  "
               f"{'bit-identical' if same else 'DIFFERENT'}")
     if args.record:
         pathlib.Path(args.record).write_text(
