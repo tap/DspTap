@@ -76,6 +76,8 @@
 #include "tap/dsp/fft.h"
 #include "tap/dsp/fft/spectrum.h"
 #include "tap/dsp/fir_kernels.h"
+#include "tap/dsp/iir_design.h"
+#include "tap/dsp/iir_kernels.h"
 #include "tap/dsp/kaiser.h"
 #include "tap/dsp/log_mel.h"
 #include "tap/dsp/math.h"
@@ -85,6 +87,7 @@
 #include "tap/dsp/quantize.h"
 #include "tap/dsp/sample_traits.h"
 #include "tap/dsp/subband.h"
+#include "tap/dsp/subnormals.h"
 #include "tap/dsp/yin.h"
 
 namespace {
