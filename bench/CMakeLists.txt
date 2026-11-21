@@ -36,6 +36,7 @@ if(_tap_dsp_bench_host_class)
 endif()
 
 add_subdirectory(icount)
+add_subdirectory(layout)
 
 # Size probes: name:precision:n, the same profiles as the icount scenarios at
 # N = 512 (the ceilings are stated per profile, not per N); precision codes as

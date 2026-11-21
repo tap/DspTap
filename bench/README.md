@@ -446,6 +446,51 @@ m4-softfp identical to the record. Lesson, recorded in
 engine in the function it transforms in measures its own register
 allocation as much as the transform; this harness no longer does.
 
+## Layout: interleaved against planar (informational, never a gate)
+
+`bench/layout/` counts the 1:1 chain stages in both channel layouts, on every
+key the ratchet runs, so the question "does a planar host lose by calling an
+interleaved API?" has a number per core. It is informational by decision
+(the maintainer's, 2026-11-21): no baselines, no tolerance, no failure.
+
+- **Binaries:** `tap_dsp_layout_<kind>_f32_ch<C>_<i|p>`, kind `bw` (order-4
+  Butterworth, fc = 0.1), `fir` (the FFT FIR, 127 taps, B = 128, N = 256) or
+  `chain` (the two chained); C = 1, 2, 6, 12 (mono, stereo, 5.1, 7.1.4); `i`
+  = one stage of C channels over interleaved frames, `p` = C mono stages
+  over contiguous channel buffers (copies of one designed stage). One
+  channel builds `_i` only. 16,384 frames per channel in calls of 128,
+  float, `layout_main.cpp`.
+- **What a count includes:** the whole run, as for the ratchet: one design
+  per scenario (the same in both layouts of a pair) and a per-channel
+  checksum fold over every output sample (also the same). So p / i is the
+  streaming difference diluted by those constants.
+- **Agreement:** both layouts of a pair print the same checksum, because
+  each channel runs the same arithmetic; the job prints `bit-identical` per
+  pair, and on the host ctest pins it (`tap_dsp_layout_<pair>_pair_agrees`,
+  beside a smoke test per binary).
+- **The job:** the `Layout counts (informational, never a gate)` step of
+  `bench.yml`, after the ratchet's count, whatever its verdict:
+  `icount.py --prefix tap_dsp_layout_ --report-only` prints every count and
+  the p / i table to the step summary and uploads `layout-<key>.json`. The
+  binaries' prefix keeps them out of the ratchet's glob, and the step is
+  `continue-on-error`.
+
+Host figures, x86-64 (GCC 13.3 `-O3`, valgrind 3.22 callgrind, instructions
+from `main`; 2026-11-21, before the first CI run):
+
+| scenario | 1 ch | 2 ch i | 2 ch p | p / i | 6 ch i | 6 ch p | p / i | 12 ch i | 12 ch p | p / i |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `bw` | 1,785,639 | 2,964,274 | 3,007,234 | 1.014 | 6,801,094 | 7,943,331 | 1.168 | 11,175,950 | 15,415,391 | 1.379 |
+| `fir` | 3,653,904 | 6,835,624 | 7,222,489 | 1.057 | 19,901,607 | 21,354,440 | 1.073 | 39,318,452 | 42,499,417 | 1.081 |
+| `chain` | 4,902,297 | 8,624,441 | 9,273,558 | 1.075 | 24,282,052 | 26,340,948 | 1.085 | 45,333,294 | 52,108,545 | 1.149 |
+
+Interleaved is the cheaper layout for all three on the host, the FFT FIR
+included: its per-block de-interleave costs less than a stage per channel
+(the per-call overhead and the per-channel block bookkeeping), so planar
+loses 6 to 8 % there and up to 38 % on the Butterworth at 12 channels,
+where one interleaved stage runs all channels through each section's
+coefficients in turn. The per-core counts are in each key's step summary.
+
 ## Provenance
 
 `icount/icount_main.cpp`, `scripts/icount.py` and

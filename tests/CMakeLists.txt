@@ -136,6 +136,7 @@ endfunction()
 tap_dsp_add_gtest_executable(tap_dsp_tests
     SOURCES
         test_analysis.cpp
+        test_butterworth.cpp
         test_chain.cpp
         test_decimate.cpp
         test_expects.cpp
@@ -143,6 +144,7 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_fft_arith.cpp
         test_fft_backend.cpp
         test_fft_engine.cpp
+        test_fft_fir.cpp
         test_fft_fixed.cpp
         test_fft_routing.cpp
         test_fft_srdif.cpp
@@ -157,6 +159,7 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_quantize.cpp
         test_sample_traits.cpp
         test_spectrum.cpp
+        test_subnormals.cpp
         test_version.cpp
         test_windows_macros.cpp
         test_yin.cpp

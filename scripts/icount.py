@@ -12,6 +12,16 @@ bench/baselines.json.
             --plugin LIB [--update] [--record FILE]
             [--baselines bench/baselines.json] [--tolerance 0.03]
   icount.py --merge FILE [FILE ...] [--baselines bench/baselines.json]
+  icount.py --target T --build-dir DIR --plugin LIB --prefix tap_dsp_layout_
+            --report-only [--record FILE]
+
+--report-only counts the binaries under --prefix and gates nothing: it
+prints each count, and for every <name>_p scenario with a <name>_i partner
+(bench/layout/: planar against interleaved) the ratio p / i and whether the
+two DONE checksums agree (they must: the same output, bit for bit). It
+exits nonzero only when a binary yields no count. The layout workloads are
+informational by decision (bench/README.md, "Layout"); a count among them
+becomes a gate only by moving it under the ratchet's own prefix.
 
 The gate is two-sided: exit nonzero if any scenario regresses beyond
 tolerance, improves beyond tolerance (the baseline must be re-recorded so
@@ -136,6 +146,39 @@ def describe(fields: dict[str, str]) -> str:
     return f"[engine={fields.get('engine', '?')} backend={fields.get('backend', '?')}]"
 
 
+def report(args, prefix: str, binaries: list[str]) -> int:
+    """--report-only: counts, then the planar / interleaved ratio per pair."""
+    measured, fields = {}, {}
+    for binary in binaries:
+        scenario = os.path.basename(binary).removeprefix(prefix)
+        try:
+            measured[scenario], fields[scenario] = measure(args.target, args.plugin, binary)
+        except MeasurementError as e:
+            raise SystemExit(str(e))
+        print(f"{scenario}: {measured[scenario]} insns {describe(fields[scenario])}")
+    print()
+    print(f"{'pair':<22} {'interleaved':>13} {'planar':>13} {'p / i':>7}  output")
+    def pair_order(name: str):
+        m = re.match(r"(.*)_ch(\d+)_", name)
+        return (m.group(1), int(m.group(2))) if m else (name, 0)
+
+    for scenario in sorted(measured, key=pair_order):
+        if not scenario.endswith("_p"):
+            continue
+        partner = scenario[:-2] + "_i"
+        if partner not in measured:
+            continue
+        i, p = measured[partner], measured[scenario]
+        same = fields[partner].get("checksum") == fields[scenario].get("checksum")
+        print(f"{scenario[:-2]:<22} {i:>13} {p:>13} {p / i:>7.3f}  "
+              f"{'bit-identical' if same else 'DIFFERENT'}")
+    if args.record:
+        pathlib.Path(args.record).write_text(
+            json.dumps({args.target: measured}, indent=2, sort_keys=True) + "\n")
+        print(f"recorded {args.record}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--target", choices=sorted(MACHINES))
@@ -147,6 +190,10 @@ def main() -> int:
     ap.add_argument("--record", metavar="FILE",
                     help="always write {target: measured} here, whatever the verdict")
     ap.add_argument("--merge", nargs="+", metavar="FILE")
+    ap.add_argument("--prefix", default=PREFIX,
+                    help="binary name prefix to count (default: the ratchet's)")
+    ap.add_argument("--report-only", action="store_true",
+                    help="print counts and layout ratios; gate nothing")
     args = ap.parse_args()
 
     path = pathlib.Path(args.baselines)
@@ -155,11 +202,14 @@ def main() -> int:
     if not (args.target and args.build_dir and args.plugin):
         ap.error("--target, --build-dir and --plugin are required (or --merge)")
 
-    binaries = sorted(glob.glob(os.path.join(args.build_dir, "**", PREFIX + "*"),
+    prefix = args.prefix
+    binaries = sorted(glob.glob(os.path.join(args.build_dir, "**", prefix + "*"),
                                 recursive=True))
     binaries = [b for b in binaries if os.access(b, os.X_OK) and os.path.isfile(b)]
     if not binaries:
-        raise SystemExit(f"no {PREFIX}* binaries under {args.build_dir}")
+        raise SystemExit(f"no {prefix}* binaries under {args.build_dir}")
+    if args.report_only:
+        return report(args, prefix, binaries)
 
     baselines = json.loads(path.read_text()) if path.exists() else {}
     base = baselines.get(args.target, {})

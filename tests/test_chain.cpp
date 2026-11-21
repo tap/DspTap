@@ -25,8 +25,13 @@
 
 #include <gtest/gtest.h>
 
+#include "support/flush_to_zero.h"
+#include "support/signals.h"
+#include "tap/dsp/butterworth.h"
 #include "tap/dsp/chain.h"
 #include "tap/dsp/decimate.h"
+#include "tap/dsp/fft_fir.h"
+#include "tap/dsp/kaiser.h"
 
 namespace {
 
@@ -418,6 +423,119 @@ namespace {
         for (std::size_t k = 0; k < expect; ++k) {
             EXPECT_EQ(out[2 * k], static_cast<float>(4 * k)) << "frame " << k;
             EXPECT_EQ(out[2 * k + 1], -static_cast<float>(4 * k)) << "frame " << k;
+        }
+    }
+
+    // ---- 1:1 and recursive stages (SampleRateTap's IIR plan, I5 and I7) ----
+
+    using tap::dsp::basic_butterworth_lowpass;
+    using tap::dsp::basic_fft_fir;
+
+    std::vector<double> fir_taps(std::size_t n) {
+        std::vector<double> h(n);
+        tap::dsp::design_prototype(h, 1, 0.4, tap::dsp::kaiser_beta(70.0));
+        return h;
+    }
+
+    template <typename S>
+    class one_to_one_test : public ::testing::Test {};
+    using floating_types = ::testing::Types<float, double>;
+    TYPED_TEST_SUITE(one_to_one_test, floating_types, );
+
+    // A chain of two 1:1 stages (a recursive one and a block one) is the two
+    // run in sequence, for any chunking, over interleaved stereo.
+    TYPED_TEST(one_to_one_test, OneToOneStagesChainAsTheStagesInSequence) {
+        using sample_type = TypeParam;
+        tap_test::scoped_flush_to_zero ftz;
+        using bw  = basic_butterworth_lowpass<sample_type, 4, 2>;
+        using fir = basic_fft_fir<sample_type, 2>;
+        static_assert(chain<bw, fir>::k_up == 1 && chain<bw, fir>::k_down == 1);
+        const auto               h = fir_taps(63);
+        constexpr std::size_t    n = 1000;
+        const auto               x = tap::dsp::test::random_signal<sample_type>(2 * n, 21u, 0.7);
+        chain<bw, fir>           c(bw(0.15), fir(h));
+        std::vector<sample_type> y(2 * n);
+        std::size_t              o = 0, chunk = 1;
+        while (o < n) {
+            const std::size_t m = std::min(chunk, n - o);
+            ASSERT_EQ(c.process(x.data() + 2 * o, m, y.data() + 2 * o), m);
+            o += m;
+            chunk = chunk * 3 % 101 + 1;
+        }
+        bw                       b(0.15);
+        fir                      f(h);
+        std::vector<sample_type> t(2 * n), r(2 * n);
+        b.process(x.data(), n, t.data());
+        f.process(t.data(), n, r.data());
+        EXPECT_EQ(y, r);
+        EXPECT_EQ(c.outputs_for(77), 77u);
+        EXPECT_EQ(c.frames_needed(77), 77u);
+    }
+
+    TEST(Chain, NominalLatencyComposesRecursiveAndExactStages) {
+        using bw  = basic_butterworth_lowpass<double, 4>;
+        using dec = basic_decimator<double, 2>;
+        chain<bw, dec> c(bw(0.2), dec{});
+        const bw       alone(0.2);
+        const double   dec_delay = static_cast<double>(c.stage<1>().latency_input_samples()) / 2.0;
+        // The Butterworth runs at twice the chain's output rate: its frames count half.
+        EXPECT_DOUBLE_EQ(c.nominal_latency_output_frames(), alone.nominal_latency_output_frames() / 2.0 + dec_delay);
+        EXPECT_DOUBLE_EQ(c.passband_group_delay_deviation_output_frames(),
+                         alone.passband_group_delay_deviation_output_frames() / 2.0);
+        for (const double f : {0.0, 0.05, 0.15, 0.3}) {
+            EXPECT_DOUBLE_EQ(c.group_delay_output_frames(f), alone.group_delay_output_frames(f / 2.0) / 2.0 + dec_delay)
+                << f;
+        }
+    }
+
+    TEST(Chain, AnAllExactChainKeepsItsExactLatencyAndAgreesNominally) {
+        using fir = basic_fft_fir<double>;
+        using dec = basic_decimator<double, 2>;
+        chain<fir, dec>   c(fir(fir_taps(63)), dec{});
+        const exact_ratio exact = c.latency_output_frames();
+        // fir: 64 + 31 frames at the input rate, halved; dec: 40 input samples, halved.
+        EXPECT_EQ(exact, (exact_ratio{64 + 31 + static_cast<std::uint64_t>(c.stage<1>().latency_input_samples()), 2}));
+        EXPECT_DOUBLE_EQ(c.nominal_latency_output_frames(), exact.value());
+        EXPECT_DOUBLE_EQ(c.passband_group_delay_deviation_output_frames(), 0.0);
+        EXPECT_DOUBLE_EQ(c.group_delay_output_frames(0.2), exact.value());
+    }
+
+    // Flush over a chain holding a recursive stage, a block stage and a
+    // decimator: zero padding bit for bit, from several phases, and silence
+    // after (the IIR plan's I6, unchanged).
+    TYPED_TEST(one_to_one_test, FlushEqualsZeroPaddingBitForBitWithRecursiveAndBlockStages) {
+        using sample_type = TypeParam;
+        using bw          = basic_butterworth_lowpass<sample_type, 4>;
+        using fir         = basic_fft_fir<sample_type>;
+        using dec         = basic_decimator<sample_type, 2>;
+        using c3          = chain<bw, fir, dec>;
+        const auto h      = fir_taps(31);
+        const auto x      = tap::dsp::test::random_signal<sample_type>(400, 8u, 0.9);
+        for (const bool ftz : {true, false}) {
+            tap_test::scoped_flush_to_zero mode(ftz);
+            for (std::size_t fed = 389; fed <= 400; fed += 3) {
+                c3                       flushed(bw(0.12), fir(h), dec{});
+                std::vector<sample_type> scratch(flushed.outputs_for(fed));
+                flushed.process(x.data(), fed, scratch.data());
+                c3                       padded = flushed;
+                const std::size_t        expect = flushed.flush_output_frames();
+                std::vector<sample_type> a(expect + 4, sample_type(1));
+                ASSERT_EQ(flushed.flush(a.data()), expect);
+                const std::size_t zeros =
+                    2
+                    * (padded.template stage<0>().window_frames() + padded.template stage<1>().window_frames()
+                       + padded.template stage<2>().window_frames());
+                std::vector<sample_type> z(zeros, sample_type(0));
+                std::vector<sample_type> b(padded.outputs_for(zeros));
+                const std::size_t        made = padded.process(z.data(), zeros, b.data());
+                ASSERT_GT(made, expect);
+                for (std::size_t i = 0; i < expect; ++i) {
+                    ASSERT_EQ(a[i], b[i]) << "fed " << fed << " output " << i;
+                }
+                for (std::size_t i = expect; i < made; ++i) {
+                    ASSERT_EQ(b[i], sample_type(0)) << "fed " << fed << " output " << i;
+                }
+            }
         }
     }
 

@@ -8,7 +8,7 @@ Shared DSP primitives for the **Tap** family of audio libraries. Header-only,
 plain portable C++ (C++20, standard library only), no Max/Min or framework
 dependency — consumed as a git submodule by the individual libraries.
 
-Today it holds seven primitives, plus the [FIR substrate](#the-fir-substrate) —
+Today it holds nine primitives, plus the [FIR substrate](#the-fir-substrate) —
 the shared design-math / sample-format / kernel layer under the SampleRateTap
 family's two engines, `async` and `bridge` — and the [scalar helpers](#tapdspmathh--periodic-hann-and-decibel-helpers)
 (`tap/dsp/math.h`) the consuming libraries call instead of re-typing them:
@@ -363,6 +363,123 @@ float-tracks-double as a measured number at the suppressor's geometry. The
 end-to-end oracle stays in MuTap: its Python parity CI job and its
 suppressor's cross-precision pin must be unchanged by the promotion.
 
+## `tap::dsp::butterworth` — Butterworth low-pass, the first recursive stage
+
+`include/tap/dsp/butterworth.h` designs an even-order Butterworth low-pass
+(order 2 … 16, the bilinear transform with pre-warping, Oppenheim & Schafer
+sec. 7.2) and runs it as a 1:1 `chain` stage over `Ch` interleaved channels:
+`basic_butterworth_lowpass<Sample, Order, Ch, Tail>`, float or double, with
+`butterworth4<Ch>` / `butterworth4_32<Ch>` for order 4. It is the first slice
+of SampleRateTap's IIR plan (`docs/IIR_PLAN.md`, IIR-a): it lands the biquad
+kernel and the subnormal query (the [recursive substrate](#the-recursive-substrate))
+and the chain's nominal latency, under the plan's contracts for a recursive
+stage.
+
+```cpp
+tap::dsp::basic_butterworth_lowpass<float, 4, 2> lp(0.1); // stereo, -3 dB at 0.1 fs
+lp.process(in, frames, out);                             // interleaved, n in, n out
+double d = lp.nominal_latency_output_frames();           // group delay at DC
+```
+
+- **Magnitude:** unity at DC, −3.0103 dB at the cutoff, a double zero at
+  Nyquist per section; cutoff in (0, 1/2) cycles per sample, rejected
+  otherwise (`validate()`, then `raise<std::invalid_argument>`).
+- **Latency (I5):** no exact latency, since a recursive stage has no single
+  delay. It reports `group_delay_output_frames(f)`, the nominal latency (the
+  DC group delay) and the passband deviation (the largest stray up to the
+  cutoff); `chain` composes them with its exact stages.
+- **The tail (I6, `Tail`):** under the host's flush-to-zero a float biquad
+  does not in general decay to zero. FTZ flushes products one at a time, and
+  a section with |a1| > 1 then holds a limit cycle just above the smallest
+  normal value (order 4 at fc = 0.1, float and double, in transposed DF II,
+  DF I and DF II alike). So:
+  - `iir_tail::exact_zero` (the default) zeroes a section's state when both
+    its words fall below T (2^-100 in float, 2^-967 in double), and
+    `window_frames()` is the exact count of zero frames after which the state
+    is zero, with or without the host's FTZ, so `chain::flush()` keeps its
+    contract. The cost is about 26 % more time at order 4, mono, float, on
+    x86-64.
+  - `iir_tail::free_running` is the plain recursion. It has no
+    `window_frames()` (a chain holding it cannot flush), and its `process()`
+    states the plan's I9 precondition, `TAP_EXPECTS(subnormals_flushed<S>())`.
+- **Formats:** float keeps its states and products in float (I14). Measured
+  against double, order 4, white noise at 0.9: 1.9e-7 at fc = 0.25, 4.3e-7 at
+  0.07, 6.0e-6 at 0.01 (x86-64). Q15 / Q31 wait for the plan's I8.
+
+Pinned by `tests/test_butterworth.cpp`: the magnitude at DC, the cutoff and
+Nyquist, at orders 4 and 8 over six cutoffs; the sections ordered by pole
+radius; float and double against a double reference recursion; chunking and
+channel independence bit for bit; the group delay against the phase's
+numerical derivative, and the passband deviation; the exact_zero tail
+reaching exact zero within `window_frames()` from full scale and from
+10^-6 of the format's largest value, with and without FTZ; the window values;
+the free_running limit cycle under FTZ (the honest limit that made
+exact_zero necessary); the free_running precondition (Debug); the
+floating-point control bits untouched; the rejections. Every QEMU leg runs
+it (`tap_dsp_tests`).
+
+## `tap::dsp::fft_fir` — FIR filtering by fast convolution (overlap-save)
+
+`include/tap/dsp/fft_fir.h` filters through the real FFT, overlap-save
+(Oppenheim & Schafer sec. 8.7.3), as a 1:1 `chain` stage over `Ch`
+interleaved channels: `basic_fft_fir<Sample, Ch>`, float or double, taps
+given in double, block `B` a power of two ≥ taps − 1 (default the smallest
+≥ max(taps − 1, 16)), FFT size 2B.
+
+```cpp
+tap::dsp::basic_fft_fir<float, 6> fir(taps);      // 5.1, B = default_block(taps.size())
+fir.process(in, frames, out);                     // the direct convolution, B frames late
+tap::dsp::exact_ratio d = fir.latency_output_frames(); // B + (L - 1) / 2 for linear-phase taps
+```
+
+- **Output:** the direct convolution delayed by exactly `B` frames;
+  `outputs_for(n) = n`, bit-identical for any chunking. Measured against the
+  direct form: 1.2e-7 of full scale in float, 6e-16 in double (255 taps,
+  white noise at 0.9).
+- **Latency:** `latency_output_frames()` = B + (L − 1)/2, exact, for
+  symmetric or antisymmetric taps (`linear_phase()`, a precondition);
+  `block_delay_frames()` = B always.
+- **Flush:** `window_frames()` = 3B, after which the output is exactly
+  silence.
+- **Work:** all of it lands on the frame that completes a block (2·Ch
+  transforms of 2B), so the worst single call is a block's work.
+- **Layout:** the FFT wants each channel contiguous, so a block
+  de-interleaves and re-interleaves. Instruction counts say interleaved is
+  still the cheaper layout (`bench/README.md`, "Layout").
+- Lives in the FFT's ABI-tag namespace (it holds a `basic_real_fft` by value).
+
+Pinned by `tests/test_fft_fir.cpp`: the direct convolution and the B-frame
+delay over tap counts 1 … 255, blocks 16 … 1024 and 1 to 6 channels; chunking
+and in-place processing bit for bit; channel independence; the exact
+latency for symmetric, even-length and antisymmetric taps, and none for
+skewed taps; silence after the window from every phase of a block; the
+construction rules. Every QEMU leg runs it, CMSIS-DSP behind it on the M55.
+
+## The recursive substrate
+
+### `tap/dsp/biquad.h` — the biquad cascade kernel
+
+`basic_biquad_cascade<Sample, Sections, Ch, Tail>`: transposed direct form
+II over float and double, interleaved channels, the two tail policies above,
+`group_delay_samples()` from the double design, and `flush_window_frames<S>()`,
+the exact_zero window: the smallest n with ln(max_finite) + ln‖Aⁿ‖ < ln(T)
+over the cascade's state-transition matrix (binary lifting over A^(2^j),
+so a cutoff of a few hertz in double costs O(log n) products), plus one
+frame per section. Checked against the decay from full-scale drives at
+cutoffs 0.0005 … 0.45, orders 4 and 8, float and double, with and without
+FTZ: the window held with 2 to 20 % to spare everywhere.
+
+### `tap/dsp/subnormals.h` — does this thread flush subnormals?
+
+Flushing subnormals is the host's job (SampleRateTap's IIR plan, I9).
+`has_subnormal_flush_control<S>()` says whether a control bit governs `S` on
+this target (x86 MXCSR, AArch64 FPCR, the Cortex-M FPSCR for float, and for
+double only where the FPU has it), and `subnormals_flushed<S>()` reads it
+without writing anything, false wherever no bit exists. The header carries
+the plan's table of what a host sets on each target. Pinned by
+`tests/test_subnormals.cpp` (the trait per target, the bit read both ways,
+the control word untouched).
+
 ## The FIR substrate
 
 Five headers carried from **SampleRateTap** (where they design and run the
@@ -451,6 +568,15 @@ time to size its scratch). `basic_decimator` satisfies the concept (`sample`,
 the helper is proven on an existing primitive before any new engine depends
 on it.
 
+A recursive stage (`butterworth.h`) has no exact latency, so the chain also
+composes a **nominal** one (SampleRateTap's IIR plan, I5):
+`nominal_latency_output_frames()`, `passband_group_delay_deviation_output_frames()`
+(the sum of the stages' deviations, a bound) and `group_delay_output_frames(f)`,
+doubles at the chain's output rate, each exact stage counting as a constant
+delay. The exact `latency_output_frames()` still compiles only for an
+all-exact chain. 1:1 stages (`butterworth.h`, `fft_fir.h`) chain like any
+other.
+
 Pinned by `tests/test_chain.cpp`: a chain of the by-2 and by-3 decimators
 equals the two run in sequence bit for bit in every sample format, for
 chunks of 1 to the whole stream; `outputs_for` exact from every phase;
@@ -461,7 +587,12 @@ says; flush equal to zero padding bit for bit from every phase in every
 format, `flush_output_frames` exact, the chain silent afterwards; reset
 bit-exact; the concept rejecting a stage with no channel count, a run-time
 one or zero; a two-channel chain keeping its frames interleaved through its
-scratch across chunks, and a chain of a stage without a count not a type.
+scratch across chunks, and a chain of a stage without a count not a type;
+a Butterworth and an FFT FIR in a stereo chain as the two run in sequence
+for any chunking; the nominal latency, deviation and group delay composed
+across a Butterworth and a decimator, and an all-exact chain's nominal
+latency equal to its exact one; flush equal to zero padding bit for bit over
+a chain of a Butterworth, an FFT FIR and a decimator, with and without FTZ.
 `tests/compile_fail/chain_channels.cpp` pins that a chain of stages running
 different counts fails on the chain's `static_assert`, as the build's only
 error.
