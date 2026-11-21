@@ -35,7 +35,9 @@
 //   - A 1:1 sync_stage (chain.h): k_up = k_down = 1, channels() = Ch, any
 //     Ch >= 1, frames interleaved; process() writes exactly n frames
 //     (outputs_for(n) = n), noexcept, allocation-free, bit-identical for any
-//     chunking (the state is per channel and per sample).
+//     chunking (the state is per channel and per sample); across channel
+//     counts and chain.h's flush and process paths, given fft.h's
+//     fp-contraction policy (contraction off; fft_fir.h says why).
 //   - Latency (the plan's I5): a recursive stage has no single delay, so it
 //     never provides latency_output_frames(). It reports
 //     group_delay_output_frames(f) (biquad.h's formula, double, at f cycles

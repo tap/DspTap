@@ -21,7 +21,11 @@
 //     >= 1, frames interleaved; process() writes exactly n frames
 //     (outputs_for(n) = n), noexcept, allocation-free, bit-identical for any
 //     chunking (the blocks fall on the stream's own frame count, not the
-//     call's).
+//     call's). Bit-identical as well across channel counts (a channel of a
+//     Ch-channel stage against a mono one) and across chain.h's flush and
+//     process paths, given fft.h's fp-contraction policy (contraction off):
+//     g++ fuses by default where the target has FMA, and may fuse two
+//     inlined copies of one loop differently.
 //   - Output: y_out[t] = sum_k h[k] x[t - B - k], with x[t] = 0 for t < 0:
 //     the direct convolution delayed by exactly block_delay_frames() = B
 //     frames (the first B outputs are silence). Accuracy against the direct

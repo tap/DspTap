@@ -64,9 +64,13 @@ namespace {
     constexpr std::size_t k_ch     = TAP_DSP_LY_CH;
     constexpr std::size_t k_frames = 16384;
     constexpr std::size_t k_call   = 128;
-    constexpr std::size_t k_taps   = 127;
-    constexpr std::size_t k_block  = 128;
-    constexpr double      k_fc     = 0.1;
+#if TAP_DSP_LY_KIND != 1
+    constexpr double k_fc = 0.1; ///< the Butterworth's cutoff
+#endif
+#if TAP_DSP_LY_KIND != 0
+    constexpr std::size_t k_taps  = 127; ///< the FFT FIR's taps
+    constexpr std::size_t k_block = 128; ///< and its block (N = 256)
+#endif
 
     template <std::size_t Ch>
     using bw = tap::dsp::basic_butterworth_lowpass<float, 4, Ch>;

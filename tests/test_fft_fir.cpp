@@ -42,7 +42,8 @@ namespace {
         const std::size_t     b  = f.block_delay_frames();
         constexpr std::size_t n  = 1500;
         const auto            xd = tap::dsp::test::random_signal<double>(n * Ch, 9u, 0.9);
-        std::vector<S>        x(xd.begin(), xd.end()), y(n * Ch);
+        std::vector<S>        x(xd.size()), y(n * Ch);
+        std::transform(xd.begin(), xd.end(), x.begin(), [](double v) { return static_cast<S>(v); });
         f.process(x.data(), n, y.data());
         double worst = 0.0;
         for (std::size_t t = 0; t < n; ++t) {

@@ -229,6 +229,18 @@ set(_tap_dsp_nocontract_cxx
     "$<$<CXX_COMPILER_ID:IntelLLVM>:-fp-model=precise>"
     "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang,IntelLLVM>:-ffp-contract=off>")
 
+# The batteries that pin bits across call paths and instantiations: a chain's
+# flush() against zero padding (flush and process inline the same stage into
+# different callers), and a stage of Ch channels against Ch mono ones (two
+# instantiations of the same loop). Under g++'s default -ffp-contract=fast on
+# an FMA target each context may fuse differently; on CI's ubuntu-26.04
+# image GCC 15 failed exactly these two pins (the first run, 2026-11-21), so
+# these sources build without contraction, the condition fft.h's
+# fp-contraction policy states for every bit-exact claim. Chunking needs no
+# such condition: every chunk runs the same compiled code.
+set_source_files_properties(test_butterworth.cpp test_chain.cpp test_fft_fir.cpp
+    PROPERTIES COMPILE_OPTIONS "${_tap_dsp_nocontract_cxx}")
+
 # The floating engine's output fingerprints (test_fft_srdif_fingerprint.cpp,
 # pins in support/srdif_fingerprints.h): FNV-1a-64 of the srdif engine's
 # forward and inverse output bits at every power of two 4 … 65536 (capped by

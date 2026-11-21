@@ -83,7 +83,8 @@ namespace {
         scoped_flush_to_zero                      ftz;
         basic_butterworth_lowpass<sample_type, 4> f(0.07);
         const auto                                x = tap::dsp::test::random_signal<double>(4000, 11u, 0.9);
-        std::vector<sample_type>                  xs(x.begin(), x.end()), y(x.size());
+        std::vector<sample_type>                  xs(x.size()), y(x.size());
+        std::transform(x.begin(), x.end(), xs.begin(), [](double v) { return static_cast<sample_type>(v); });
         f.process(xs.data(), xs.size(), y.data());
         // The reference: the same sections, TDF II in double.
         const auto sec = tap::dsp::design_butterworth_lowpass<4>(0.07);
@@ -219,21 +220,26 @@ namespace {
         EXPECT_EQ((basic_butterworth_lowpass<float, 8>(0.25).window_frames()), 814u);
     }
 
-    // The honest limit that made exact_zero necessary: under FTZ the plain
-    // recursion holds a limit cycle just above the smallest normal value.
-    TEST(Butterworth, FreeRunningHoldsALimitCycleUnderFlushToZero) {
-        if constexpr (tap::dsp::has_subnormal_flush_control<float>()) {
-            scoped_flush_to_zero                                           ftz;
-            basic_butterworth_lowpass<float, 4, 1, iir_tail::free_running> f(0.1);
-            auto                                                           x = square<float>(4000, 7);
-            f.process(x.data(), x.size(), x.data());
-            std::vector<float> z(200000, 0.0f);
-            f.process(z.data(), z.size(), z.data());
-            EXPECT_FALSE(f.is_silent());
+    // The honest limit that made exact_zero necessary: the plain recursion
+    // never reaches silence on its own. Under the host's FTZ (where a bit
+    // governs float) it holds a limit cycle just above the smallest normal
+    // value; without one (the soft-float M4, or no host FTZ) the state
+    // sticks at a few multiples of the smallest subnormal. Either way the
+    // residue is tiny: below 16 times the smallest normal value.
+    TEST(Butterworth, FreeRunningNeverReachesSilenceOnItsOwn) {
+        const bool           ftz = tap::dsp::has_subnormal_flush_control<float>();
+        scoped_flush_to_zero mode(ftz);
+        basic_butterworth_lowpass<float, 4, 1, iir_tail::free_running> f(0.1);
+        auto                                                           x = square<float>(4000, 7);
+        f.process(x.data(), x.size(), x.data());
+        std::vector<float> z(200000, 0.0f);
+        f.process(z.data(), z.size(), z.data());
+        EXPECT_FALSE(f.is_silent());
+        float tail = 0.0f;
+        for (std::size_t i = z.size() - 1000; i < z.size(); ++i) {
+            tail = std::max(tail, std::fabs(z[i]));
         }
-        else {
-            GTEST_SKIP() << "no flush-to-zero bit governs float on this target";
-        }
+        EXPECT_LT(tail, 16.0f * std::numeric_limits<float>::min());
     }
 
     // A free_running stage has no window, so a chain holding it cannot flush.
