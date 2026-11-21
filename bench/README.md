@@ -485,52 +485,54 @@ bracketed step, `--toggle-collect='*layout_step*'`; 2026-11-21):
 
 | scenario | 1 ch | 2 ch i | 2 ch p | p / i | 6 ch i | 6 ch p | p / i | 12 ch i | 12 ch p | p / i |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `bw` | 707,366 | 1,362,006 | 1,347,926 | 0.990 | 3,970,816 | 4,040,188 | 1.017 | 5,395,584 | 8,080,892 | 1.498 |
+| `bw` | 609,152 | 1,100,672 | 1,217,664 | 1.106 | 3,214,336 | 3,648,256 | 1.135 | 2,969,984 | 7,293,952 | 2.456 |
 | `fir` | 2,921,344 | 5,619,712 | 5,823,616 | 1.036 | 16,545,792 | 17,559,680 | 1.061 | 32,885,632 | 35,002,496 | 1.064 |
-| `chain` | 3,646,374 | 7,031,863 | 7,314,134 | 1.040 | 20,691,072 | 21,934,332 | 1.060 | 38,510,720 | 43,309,436 | 1.125 |
+| `chain` | 3,506,816 | 6,738,944 | 7,052,928 | 1.047 | 19,902,336 | 21,149,312 | 1.063 | 36,070,144 | 41,722,368 | 1.157 |
 
-On the host, interleaved is the cheaper layout from 6 channels for all
-three, the FFT FIR included (its per-block de-interleave costs less than a
-stage per channel), and by half for the Butterworth at 12 channels, where
-GCC vectorizes the interleaved channel loop; at 2 channels the Butterworth
-is even. The per-core figures differ (a mono biquad keeps its state and
+On the host, interleaved is the cheaper layout for all three, the FFT FIR
+included (its per-block de-interleave costs less than a stage per channel),
+and 2.5 times cheaper for the Butterworth at 12 channels, where GCC
+vectorizes the interleaved channel loop. (The `bw` and `chain` rows are the
+plain kernel's, measured again after the in-kernel tail zeroing was removed
+on 2026-11-21; the `fir` row did not change.) The per-core figures differ (a mono biquad keeps its state and
 coefficients in registers across frames, which matters on the M-class
 cores) and are in each key's step summary and `layout-<key>.json`.
 
 Per core, planar / interleaved streaming instructions (the bracket sums;
-`bench.yml` run 152, workflow_dispatch on the IIR-a branch at 7a4a4cf,
-2026-11-21; the counts themselves are in each key's `layout-<key>.json`; the
-`hexagon` key counts packets, not instructions, as its ratchet does):
+`bench.yml` run 153, workflow_dispatch on the IIR-a branch at 4ae096f,
+2026-11-21, the plain biquad kernel; the counts themselves are in each key's
+`layout-<key>.json`; the `hexagon` key counts packets, not instructions, as
+its ratchet does):
 
 | key | `bw` 2 | `bw` 6 | `bw` 12 | `fir` 2 | `fir` 6 | `fir` 12 | `chain` 2 | `chain` 6 | `chain` 12 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `m4-softfp` | 0.999 | 0.996 | 0.997 | 1.002 | 1.006 | 1.004 | 1.003 | 0.999 | 1.003 |
-| `m4f` | 0.979 | 0.950 | 0.965 | 1.052 | 1.078 | 1.065 | 1.055 | 1.066 | 1.073 |
-| `m33` | 1.002 | 0.972 | 0.987 | 1.051 | 1.074 | 1.056 | 1.060 | 1.059 | 1.068 |
-| `m55` | 1.002 | 0.958 | 0.979 | 1.059 | 1.097 | 1.056 | 1.068 | 1.077 | 1.074 |
-| `m55-ooura` | 1.002 | 0.958 | 0.979 | 1.040 | 1.064 | 1.042 | 1.052 | 1.057 | 1.062 |
-| `hexagon` | 1.000 | 1.028 | 0.808 | 1.137 | 1.158 | 1.162 | 1.084 | 1.107 | 1.052 |
+| `m4-softfp` | 1.000 | 1.002 | 0.998 | 1.002 | 1.006 | 1.004 | 1.003 | 1.003 | 1.002 |
+| `m4f` | 1.002 | 1.043 | 0.956 | 1.052 | 1.078 | 1.065 | 1.064 | 1.090 | 1.072 |
+| `m33` | 1.002 | 1.043 | 0.956 | 1.051 | 1.074 | 1.056 | 1.062 | 1.086 | 1.065 |
+| `m55` | 1.047 | 1.079 | 2.202 | 1.059 | 1.097 | 1.056 | 1.081 | 1.119 | 1.290 |
+| `m55-ooura` | 1.047 | 1.079 | 2.202 | 1.040 | 1.064 | 1.042 | 1.062 | 1.097 | 1.214 |
+| `hexagon` | 1.000 | 1.003 | 0.588 | 1.137 | 1.158 | 1.162 | 1.106 | 1.125 | 1.022 |
 
 What the cores say:
 
 - **The FFT FIR and the chain: interleaved everywhere,** by 4 to 10 % on the
   M-class cores with an FPU and 14 to 16 % for the FFT FIR on Hexagon. The
   per-block de-interleave is cheaper than running a stage per channel.
-- **The Butterworth alone: planar, slightly, on the embedded cores:** 2 to
-  5 % fewer instructions on the M4F, M33 and M55 at 6 and 12 channels, and
-  19 % fewer on Hexagon at 12. A mono biquad keeps its two states and five
-  coefficients in registers across frames; the interleaved loop reloads them
-  for every channel of every frame. x86-64 is the other way (planar 1.50x at
-  12 channels), where GCC vectorizes the interleaved channel loop.
+- **The Butterworth alone depends on the core and the count.** On the M55
+  (Helium) interleaved wins by 5 to 8 % at 2 and 6 channels and by 2.2 times
+  at 12, where the compiler vectorizes the channel loop; on the M4F and M33
+  it is within 5 % either way (mono stages 4 % cheaper at 12 channels, where
+  a mono biquad keeps its state in registers across frames); on Hexagon mono
+  stages are 41 % cheaper at 12 channels. The run before (152) measured the
+  kernel with its in-kernel tail zeroing, whose per-sample compare and select
+  kept the M55 from vectorizing: 0.96 to 1.00 there then.
 - **The soft-float M4: no difference** (within 1 %): the software float
   arithmetic is nearly all of the count.
 
-So the layout that wins depends on the stage and the core: polyphase and
-block stages favour interleaved on every core; a short recursive stage
-favours per-channel state on the embedded ones, and a frame-major biquad
-kernel that keeps state in registers (a fixed-Ch tile, as SampleRateTap's
-async does for its dot products) is the obvious experiment if that 2 to 5 %
-matters.
+So the layout that wins depends on the stage and the core: block and
+polyphase stages favour interleaved on every core; a short recursive stage
+favours interleaved where the compiler vectorizes the channel loop (x86-64,
+the M55) and per-channel state on Hexagon at high counts.
 
 ## Provenance
 

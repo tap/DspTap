@@ -403,10 +403,11 @@ double d = lp.nominal_latency_output_frames();           // group delay at DC
   keeps the bit-for-bit equality), and the tail after it is that residue,
   not exact silence.
 - **Layout:** one stage of `Ch` channels runs each frame through every
-  channel's sections in turn. On x86-64 that is 1.5x cheaper than 12 mono
-  stages (GCC vectorizes the channel loop); on the M4F, M33, M55 and Hexagon
-  the mono stages are 2 to 19 % cheaper, because a mono biquad keeps its
-  state in registers across frames (`bench/README.md`, "Layout").
+  channel's sections in turn. At 12 channels that is 2.5 times cheaper than
+  12 mono stages on x86-64 and 2.2 times on the M55, where the compiler
+  vectorizes the channel loop; within 5 % on the M4F and M33; and 41 % dearer
+  on Hexagon, where a mono biquad keeps its state in registers
+  (`bench/README.md`, "Layout").
 - **Formats:** float keeps its states and products in float (I14). Measured
   against double, order 4, white noise at 0.9: 1.9e-7 at fc = 0.25, 4.3e-7 at
   0.07, 6.0e-6 at 0.01 (x86-64). Q15 / Q31 wait for the plan's I8.
