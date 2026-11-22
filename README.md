@@ -1059,7 +1059,11 @@ stages declare their channel count at compile time and the chain's
 run-time-count constructor is gone (SampleRateTap's A13). 0.3.0 adds the
 sub-band round trip (`subband.h`) and the recursive substrate
 (`iir_design.h`, `iir_kernels.h`, `subnormals.h`, `chain.h`'s nominal
-latency), and changes nothing an 0.2.0 consumer calls.
+latency), and changes nothing an 0.2.0 consumer calls. 0.4.0 adds the linear
+guard band filter's Q15 rows (`k_guard_band_fir_q15`) and the symmetric
+quantizer they are measured through (`quantize_symmetric_row_preserving_sum`),
+and changes nothing an 0.3.0 consumer calls: every committed row before it is
+unchanged, bit for bit.
 
 ## Build
 
