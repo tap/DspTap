@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 Timothy Place and the DspTap contributors.
 //
-// Pins butterworth.h and the biquad kernel under it (biquad.h): the design's
+// Pins butterworth.h over iir_kernels.h's biquad cascade: the design's
 // magnitude at DC, the cutoff and Nyquist; the stage against a double-
 // precision direct recursion; chunking and channel independence bit for bit;
 // the group delay, its nominal and its passband deviation (the IIR plan's
-// I5); the tail after window_frames() bounded with the client's FTZ on and
-// off (I6), and the limit cycle FTZ leaves some designs in, pinned as the
-// honest limit; that the stage never touches the floating-point environment
-// (the client owns it); and the rejections.
+// I5); the tail after window_frames() bounded under the host's FTZ (I6), and
+// the limit cycle FTZ leaves some designs in, pinned as the honest limit;
+// that the stage never writes the floating-point environment (the host owns
+// it); and the rejections. Every test runs as a host would, FTZ set
+// (iir_support.h's fixture); the same bounds without it are
+// test_butterworth_subnormals.cpp's, in the tap_dsp_iir_subnormals
+// executable (TAP_DSP_ALLOW_SUBNORMALS).
 
 #include <algorithm>
 #include <array>
@@ -20,24 +23,26 @@
 
 #include <gtest/gtest.h>
 
-#include "support/flush_to_zero.h"
+#include "support/iir_support.h"
 #include "support/signals.h"
 #include "tap/dsp/butterworth.h"
 #include "tap/dsp/chain.h"
+#include "tap/dsp/subnormals.h"
 
 namespace {
 
     using tap::dsp::basic_butterworth_lowpass;
-    using tap::dsp::biquad_coefficients;
-    using tap_test::scoped_flush_to_zero;
+    using tap::dsp::iir_section;
+    using tap::dsp::test::flush_to_zero_fixture;
 
+    class butterworth : public flush_to_zero_fixture {};
     template <typename S>
-    class butterworth_test : public ::testing::Test {};
+    class butterworth_test : public flush_to_zero_fixture {};
     using floating_types = ::testing::Types<float, double>;
     TYPED_TEST_SUITE(butterworth_test, floating_types, );
 
     template <std::size_t K>
-    std::complex<double> response(const std::array<biquad_coefficients, K>& sec, double f) {
+    std::complex<double> response(const std::array<iir_section, K>& sec, double f) {
         const auto           z1 = std::polar(1.0, -2.0 * std::numbers::pi * f);
         const auto           z2 = z1 * z1;
         std::complex<double> h  = 1.0;
@@ -56,7 +61,7 @@ namespace {
         return x;
     }
 
-    TEST(Butterworth, MagnitudeIsUnityAtDcHalfPowerAtCutoffZeroAtNyquist) {
+    TEST_F(butterworth, MagnitudeIsUnityAtDcHalfPowerAtCutoffZeroAtNyquist) {
         for (const double fc : {0.01, 0.05, 0.1, 0.25, 0.4, 0.49}) {
             const auto s4 = tap::dsp::design_butterworth_lowpass<4>(fc);
             EXPECT_NEAR(std::abs(response(s4, 0.0)), 1.0, 1e-12) << fc;
@@ -69,7 +74,7 @@ namespace {
         }
     }
 
-    TEST(Butterworth, SectionsRunInIncreasingPoleRadius) {
+    TEST_F(butterworth, SectionsRunInIncreasingPoleRadius) {
         const auto s = tap::dsp::design_butterworth_lowpass<8>(0.1);
         for (std::size_t i = 1; i < s.size(); ++i) {
             EXPECT_LT(s[i - 1].a2, s[i].a2); // |p|^2 = a2
@@ -78,7 +83,6 @@ namespace {
 
     TYPED_TEST(butterworth_test, TracksTheDoubleRecursion) {
         using sample_type = TypeParam;
-        scoped_flush_to_zero                      ftz;
         basic_butterworth_lowpass<sample_type, 4> f(0.07);
         const auto                                x = tap::dsp::test::random_signal<double>(4000, 11u, 0.9);
         std::vector<sample_type>                  xs(x.size()), y(x.size());
@@ -104,8 +108,7 @@ namespace {
     }
 
     TYPED_TEST(butterworth_test, ChunkingIsBitIdentical) {
-        using sample_type = TypeParam;
-        scoped_flush_to_zero                      ftz;
+        using sample_type                           = TypeParam;
         const auto                                x = tap::dsp::test::random_signal<sample_type>(3000, 5u, 0.8);
         basic_butterworth_lowpass<sample_type, 4> whole(0.11), pieces(0.11);
         std::vector<sample_type>                  a(x.size()), b(x.size());
@@ -121,8 +124,7 @@ namespace {
     }
 
     TYPED_TEST(butterworth_test, ChannelsAreIndependentAndInterleaved) {
-        using sample_type = TypeParam;
-        scoped_flush_to_zero                          ftz;
+        using sample_type                                = TypeParam;
         constexpr std::size_t                         ch = 3, n = 1500;
         basic_butterworth_lowpass<sample_type, 4, ch> multi(0.2);
         std::vector<sample_type>                      in(ch * n), out(ch * n);
@@ -144,7 +146,7 @@ namespace {
         }
     }
 
-    TEST(Butterworth, GroupDelayIsThePhaseDerivative) {
+    TEST_F(butterworth, GroupDelayIsThePhaseDerivative) {
         const basic_butterworth_lowpass<double, 4> f(0.1);
         const auto                                 sec = f.sections();
         for (const double fr : {0.0, 0.02, 0.05, 0.09, 0.2}) {
@@ -158,7 +160,7 @@ namespace {
         EXPECT_DOUBLE_EQ(f.nominal_latency_output_frames(), f.group_delay_output_frames(0.0));
     }
 
-    TEST(Butterworth, PassbandDeviationIsTheLargestStrayUpToTheCutoff) {
+    TEST_F(butterworth, PassbandDeviationIsTheLargestStrayUpToTheCutoff) {
         const basic_butterworth_lowpass<double, 4> f(0.1);
         double                                     worst = 0.0;
         for (int i = 0; i <= 4000; ++i) {
@@ -166,19 +168,17 @@ namespace {
             worst = std::max(worst, std::fabs(f.group_delay_output_frames(fr) - f.nominal_latency_output_frames()));
         }
         // The stage's 1,024-point grid finds the same peak to 1e-4 frames.
-        EXPECT_NEAR(f.passband_group_delay_deviation_output_frames(), worst, 1e-4);
-        EXPECT_GT(f.passband_group_delay_deviation_output_frames(), 0.0);
+        EXPECT_NEAR(f.latency_deviation_output_frames(), worst, 1e-4);
+        EXPECT_GT(f.latency_deviation_output_frames(), 0.0);
     }
 
-    // After window_frames() zeros the tail is the client's arithmetic's
-    // (biquad.h): exact silence, a subnormal residue without FTZ, or under
-    // FTZ a limit cycle just above the smallest normal value for some
-    // designs. Whatever it is, it is below 256 times the smallest normal
-    // value, from a full-scale square drive and from one near the format's
-    // largest value, with the client's FTZ on and off.
+    // After window_frames() zeros the tail is the host's arithmetic's
+    // (iir_kernels.h's honest limit): exact silence, or under FTZ a limit
+    // cycle just above the smallest normal value for some designs. Whatever
+    // it is, it is below 256 times the smallest normal value, from a
+    // full-scale square drive and from one near the format's largest value.
     template <typename S, std::size_t N>
-    void tail_is_bounded(double fc, bool ftz_on) {
-        scoped_flush_to_zero            mode(ftz_on);
+    void tail_is_bounded(double fc) {
         basic_butterworth_lowpass<S, N> f(fc);
         const S                         bound = S(256) * std::numeric_limits<S>::min();
         for (const S amp : {S(1), static_cast<S>(std::numeric_limits<S>::max() / S(1e6))}) {
@@ -188,7 +188,7 @@ namespace {
             std::vector<S> z(2 * f.window_frames(), S(0));
             f.process(z.data(), z.size(), z.data());
             for (std::size_t i = f.window_frames(); i < z.size(); ++i) {
-                ASSERT_LE(std::fabs(z[i]), bound) << "fc " << fc << " ftz " << ftz_on << " frame " << i;
+                ASSERT_LE(std::fabs(z[i]), bound) << "fc " << fc << " frame " << i;
             }
         }
     }
@@ -202,16 +202,14 @@ namespace {
             if (!is_float && (fc == 0.005 || fc == 0.02 || fc == 0.45)) {
                 continue;
             }
-            for (const bool ftz : {true, false}) {
-                tail_is_bounded<sample_type, 4>(fc, ftz);
-                if (is_float) {
-                    tail_is_bounded<sample_type, 8>(fc, ftz);
-                }
+            tail_is_bounded<sample_type, 4>(fc);
+            if (is_float) {
+                tail_is_bounded<sample_type, 8>(fc);
             }
         }
     }
 
-    TEST(Butterworth, WindowIsADesignTimeConstant) {
+    TEST_F(butterworth, WindowIsADesignTimeConstant) {
         // Values recorded with this design (x86-64; a change is a change to
         // the design or the window formula).
         EXPECT_EQ((basic_butterworth_lowpass<float, 4>(0.1).window_frames()), 780u);
@@ -219,15 +217,14 @@ namespace {
         EXPECT_EQ((basic_butterworth_lowpass<float, 8>(0.25).window_frames()), 906u);
     }
 
-    // The honest limit, pinned both ways on every leg (none skips). Where a
-    // flush bit governs float, the client's FTZ leaves an order-8 design at
-    // fc = 0.45 in a limit cycle above the smallest normal value (12.8 times
-    // it, measured on x86-64) that never ends; without FTZ (and on the
-    // soft-float M4, which has no bit) the residue stays below the smallest
-    // normal value.
-    TEST(Butterworth, UnderFlushToZeroSomeDesignsNeverFallSilent) {
-        constexpr bool                      bit = tap_test::has_flush_bit<float>();
-        scoped_flush_to_zero                mode(bit);
+    // The honest limit, pinned on every leg (none skips). Where a flush bit
+    // governs float, the host's FTZ leaves an order-8 design at fc = 0.45 in
+    // a limit cycle above the smallest normal value (12.8 times it, measured
+    // on x86-64) that never ends; where none does (the soft-float M4) the
+    // residue stays below the smallest normal value, as it does without FTZ
+    // anywhere (test_butterworth_subnormals.cpp).
+    TEST_F(butterworth, UnderFlushToZeroSomeDesignsNeverFallSilent) {
+        constexpr bool                      bit = tap::dsp::k_subnormal_control<float>;
         basic_butterworth_lowpass<float, 8> f(0.45);
         auto                                x = square<float>(4000, 5);
         f.process(x.data(), x.size(), x.data());
@@ -253,20 +250,20 @@ namespace {
     static_assert(tap::dsp::sync_stage<basic_butterworth_lowpass<float, 4, 2>>);
     static_assert(tap::dsp::sync_stage<basic_butterworth_lowpass<double, 8, 12>>);
 
-    // The library leaves the floating-point environment to its client.
-    TEST(Butterworth, NeverTouchesTheFloatingPointEnvironment) {
-        for (const bool on : {true, false}) {
-            scoped_flush_to_zero                mode(on);
-            const auto                          before = tap_test::fp_control_bits();
-            basic_butterworth_lowpass<float, 4> a(0.1);
-            auto                                x = square<float>(512, 3);
-            a.process(x.data(), x.size(), x.data());
-            a.reset();
-            EXPECT_EQ(tap_test::fp_control_bits(), before);
-        }
+    // The library leaves the floating-point environment to its host: it
+    // reads the control register (a debug-build precondition) and never
+    // writes it. Without FTZ: test_butterworth_subnormals.cpp.
+    TEST_F(butterworth, NeverWritesTheFloatingPointEnvironment) {
+        using tap::dsp::test::k_control_mask;
+        const auto                          before = tap::dsp::floating_point_control() & k_control_mask;
+        basic_butterworth_lowpass<float, 4> a(0.1);
+        auto                                x = square<float>(512, 3);
+        a.process(x.data(), x.size(), x.data());
+        a.reset();
+        EXPECT_EQ(tap::dsp::floating_point_control() & k_control_mask, before);
     }
 
-    TEST(Butterworth, ValidateNamesTheCutoffRule) {
+    TEST_F(butterworth, ValidateNamesTheCutoffRule) {
         using bw = basic_butterworth_lowpass<double, 4>;
         EXPECT_EQ(bw::validate(0.1), nullptr);
         EXPECT_NE(bw::validate(0.0), nullptr);

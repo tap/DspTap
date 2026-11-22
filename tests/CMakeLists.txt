@@ -131,13 +131,23 @@ endfunction()
 # candidate at the 8th band) are excluded for the same reason as the Kaiser
 # ones: each is a sweep of double DFTs per candidate length,
 # target-independent design numbers that cost tens of seconds of soft-float
-# emulation.
+# emulation. So are the six recursive design sweeps of test_iir_design.cpp
+# (the committed type II FIRs and the Kaiser custom search, the near-linear,
+# nonlinear and four-path stopbands on the 16384-point grid, the L-inf gains
+# recomputed on their grid): 141 of IirDesign's 144 s on the M33, double
+# responses of design-time numbers. IirDesign's structural pins (orders,
+# ulps against mpmath, the committed rows' fields, the Chebyshev II's spec),
+# every recursive kernel suite (test_iir_kernels.cpp, test_iir_fixed.cpp,
+# test_chain_iir.cpp), the constexpr bit pins and the subnormals battery run
+# on every leg.
 # ------------------------------------------------------------------------------
 tap_dsp_add_gtest_executable(tap_dsp_tests
     SOURCES
         test_analysis.cpp
         test_butterworth.cpp
         test_chain.cpp
+        test_chain_iir.cpp
+        test_cx_math.cpp
         test_decimate.cpp
         test_expects.cpp
         test_fft.cpp
@@ -149,6 +159,9 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_fft_routing.cpp
         test_fft_srdif.cpp
         test_fir_kernels.cpp
+        test_iir_design.cpp
+        test_iir_fixed.cpp
+        test_iir_kernels.cpp
         test_kaiser.cpp
         test_log_mel.cpp
         test_math.cpp
@@ -164,7 +177,7 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_windows_macros.cpp
         test_yin.cpp
     MAIN_FILTER
-        "*-psola_test/1.*:pvoc_test/1.*:yin_test/1.*:log_mel_test/1.*:nn_test/1.*:Kaiser.FastPrototypeMeetsSpec:Kaiser.BalancedPrototypeMeetsSpec:Kaiser.TransparentPrototypeMeetsSpec:Kaiser.EconomyPrototypeMeetsSpec:Kaiser.RationalPhaseCountMeetsSpec:Kaiser.CompensatedSpecsHoldAt16k:Nyquist.SearchFindsTheMinimal*:Nyquist.SearchGrid*:MultitoneAnalysis.*")
+        "*-psola_test/1.*:pvoc_test/1.*:yin_test/1.*:log_mel_test/1.*:nn_test/1.*:Kaiser.FastPrototypeMeetsSpec:Kaiser.BalancedPrototypeMeetsSpec:Kaiser.TransparentPrototypeMeetsSpec:Kaiser.EconomyPrototypeMeetsSpec:Kaiser.RationalPhaseCountMeetsSpec:Kaiser.CompensatedSpecsHoldAt16k:Nyquist.SearchFindsTheMinimal*:Nyquist.SearchGrid*:MultitoneAnalysis.*:IirDesign.GuardBandFirTablesMeetTheirSpec:IirDesign.GuardBandLinearCustomDesignMeetsItsSpec:IirDesign.NearLinearTablesMeetTheirSpecOnTheGrid:IirDesign.HalfbandMeetsItsSpecOnTheGrid:IirDesign.Cheby2CommittedGainsAreTheLinfGains:IirDesign.FourpathTablesMeetTheFoldingBandSpec")
 target_link_libraries(tap_dsp_tests PRIVATE
     tap::dsp
     tap_dsp_warnings)
@@ -260,6 +273,20 @@ target_link_libraries(tap_dsp_srdif_fingerprint PRIVATE
     tap::dsp
     tap_dsp_warnings)
 
+# The constexpr recursive designs' bits (test_iir_constexpr.cpp, pins in
+# support/iir_constexpr_pins.h; SampleRateTap's IIR_PLAN I4, IIR-0's bit
+# test moved in): every compiler CI runs evaluates the same tables at compile
+# time and must print one row of fingerprints. Its own target for the same
+# reason as the srdif fingerprints: -ffp-contract=off, so its run-time
+# evaluation of the same functions (a custom design) is pinned to the
+# compile-time bits too. Small: it runs everywhere, the QEMU legs included.
+tap_dsp_add_gtest_executable(tap_dsp_iir_constexpr
+    SOURCES test_iir_constexpr.cpp)
+target_compile_options(tap_dsp_iir_constexpr PRIVATE ${_tap_dsp_nocontract_cxx})
+target_link_libraries(tap_dsp_iir_constexpr PRIVATE
+    tap::dsp
+    tap_dsp_warnings)
+
 # ==============================================================================
 # END Stage 2a additions
 # ==============================================================================
@@ -284,6 +311,19 @@ target_link_libraries(tap_dsp_analysis_typed PRIVATE
 # ==============================================================================
 # END Stage 3c addition
 # ==============================================================================
+
+# The recursive kernels' honest limit without the host's flush-to-zero
+# (test_iir_subnormals.cpp, IIR_PLAN I9) in an executable of its own: it is
+# built with TAP_DSP_ALLOW_SUBNORMALS, which compiles the kernels' debug-build
+# precondition out, and the macro must be the same in every translation unit
+# of an image (subnormals.h), so it cannot join tap_dsp_tests. It runs on
+# every leg, the QEMU ones too.
+tap_dsp_add_gtest_executable(tap_dsp_iir_subnormals
+    SOURCES test_iir_subnormals.cpp test_butterworth_subnormals.cpp)
+target_compile_definitions(tap_dsp_iir_subnormals PRIVATE TAP_DSP_ALLOW_SUBNORMALS)
+target_link_libraries(tap_dsp_iir_subnormals PRIVATE
+    tap::dsp
+    tap_dsp_warnings)
 
 # The heap meter (tap/dsp/analysis/heap_meter.h) in an executable of its own:
 # its test TU defines TAP_DSP_HEAP_METER_REPLACE_GLOBAL_NEW, which replaces the
@@ -440,6 +480,22 @@ if(NOT TAP_DSP_BARE_METAL AND NOT CMAKE_CROSSCOMPILING
             "-DEXPECT=every stage must run the same channel count"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/expect_compile_failure.cmake)
     set_tests_properties(chain_compile_fail.MixedChannelCountsAreRejected
+        PROPERTIES RESOURCE_LOCK tap_dsp_compile_fail LABELS compile_fail)
+    # chain.h's exact-latency rule (SampleRateTap's IIR_PLAN I5): a chain with a
+    # recursive stage, which reports only a nominal latency, has no exact
+    # latency_output_frames(); the chain's static_assert says so.
+    add_library(tap_dsp_compile_fail_chain_iir_exact_latency OBJECT EXCLUDE_FROM_ALL
+        compile_fail/chain_iir_exact_latency.cpp)
+    set_target_properties(tap_dsp_compile_fail_chain_iir_exact_latency PROPERTIES EXPORT_COMPILE_COMMANDS OFF)
+    target_link_libraries(tap_dsp_compile_fail_chain_iir_exact_latency PRIVATE tap::dsp tap_dsp_warnings)
+    add_test(NAME chain_compile_fail.RecursiveStageHasNoExactLatency
+        COMMAND ${CMAKE_COMMAND}
+            -DBUILD_DIR=${PROJECT_BINARY_DIR}
+            -DTARGET=tap_dsp_compile_fail_chain_iir_exact_latency
+            -DCONFIG=$<CONFIG>
+            "-DEXPECT=a chain's latency needs every stage to report latency_output_frames"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/expect_compile_failure.cmake)
+    set_tests_properties(chain_compile_fail.RecursiveStageHasNoExactLatency
         PROPERTIES RESOURCE_LOCK tap_dsp_compile_fail LABELS compile_fail)
     # subband.h's whole-delay rule (SampleRateTap's X4_X8_PLAN.md, X10): stages
     # whose delays are compile-time constants and whose D tau_down + tau_up is

@@ -26,7 +26,7 @@
 
 #include <gtest/gtest.h>
 
-#include "support/flush_to_zero.h"
+#include "support/iir_support.h"
 #include "support/signals.h"
 #include "tap/dsp/butterworth.h"
 #include "tap/dsp/chain.h"
@@ -439,7 +439,7 @@ namespace {
     }
 
     template <typename S>
-    class one_to_one_test : public ::testing::Test {};
+    class one_to_one_test : public tap::dsp::test::flush_to_zero_fixture {};
     using floating_types = ::testing::Types<float, double>;
     TYPED_TEST_SUITE(one_to_one_test, floating_types, );
 
@@ -447,9 +447,8 @@ namespace {
     // run in sequence, for any chunking, over interleaved stereo.
     TYPED_TEST(one_to_one_test, OneToOneStagesChainAsTheStagesInSequence) {
         using sample_type = TypeParam;
-        tap_test::scoped_flush_to_zero ftz;
-        using bw  = basic_butterworth_lowpass<sample_type, 4, 2>;
-        using fir = basic_fft_fir<sample_type, 2>;
+        using bw          = basic_butterworth_lowpass<sample_type, 4, 2>;
+        using fir         = basic_fft_fir<sample_type, 2>;
         static_assert(chain<bw, fir>::k_up == 1 && chain<bw, fir>::k_down == 1);
         const auto               h = fir_taps(63);
         constexpr std::size_t    n = 1000;
@@ -481,8 +480,7 @@ namespace {
         const double   dec_delay = static_cast<double>(c.stage<1>().latency_input_samples()) / 2.0;
         // The Butterworth runs at twice the chain's output rate: its frames count half.
         EXPECT_DOUBLE_EQ(c.nominal_latency_output_frames(), alone.nominal_latency_output_frames() / 2.0 + dec_delay);
-        EXPECT_DOUBLE_EQ(c.passband_group_delay_deviation_output_frames(),
-                         alone.passband_group_delay_deviation_output_frames() / 2.0);
+        EXPECT_DOUBLE_EQ(c.latency_deviation_output_frames(), alone.latency_deviation_output_frames() / 2.0);
         for (const double f : {0.0, 0.05, 0.15, 0.3}) {
             EXPECT_DOUBLE_EQ(c.group_delay_output_frames(f), alone.group_delay_output_frames(f / 2.0) / 2.0 + dec_delay)
                 << f;
@@ -497,14 +495,16 @@ namespace {
         // fir: 64 + 31 frames at the input rate, halved; dec: 40 input samples, halved.
         EXPECT_EQ(exact, (exact_ratio{64 + 31 + static_cast<std::uint64_t>(c.stage<1>().latency_input_samples()), 2}));
         EXPECT_DOUBLE_EQ(c.nominal_latency_output_frames(), exact.value());
-        EXPECT_DOUBLE_EQ(c.passband_group_delay_deviation_output_frames(), 0.0);
+        EXPECT_DOUBLE_EQ(c.latency_deviation_output_frames(), 0.0);
         EXPECT_DOUBLE_EQ(c.group_delay_output_frames(0.2), exact.value());
     }
 
     // Flush over a chain holding a recursive stage, a block stage and a
     // decimator: zero padding up to the recursive stage's residue, from
-    // several phases, with the client's FTZ on and off; after it, that
-    // residue rather than exact silence (butterworth.h). An all-FIR chain
+    // several phases, under the host's FTZ (the fixture); after it, that
+    // residue rather than exact silence (butterworth.h). Without FTZ the
+    // stage's residue is subnormal (test_butterworth_subnormals.cpp), inside
+    // the same bound. An all-FIR chain
     // keeps the bit-for-bit equality (FlushEqualsZeroPaddingBitForBit).
     TYPED_TEST(one_to_one_test, FlushEqualsZeroPaddingUpToTheRecursiveResidue) {
         using sample_type = TypeParam;
@@ -514,37 +514,34 @@ namespace {
         using c3          = chain<bw, fir, dec>;
         const auto h      = fir_taps(31);
         const auto x      = tap::dsp::test::random_signal<sample_type>(400, 8u, 0.9);
-        for (const bool ftz : {true, false}) {
-            tap_test::scoped_flush_to_zero mode(ftz);
-            for (std::size_t fed = 389; fed <= 400; fed += 3) {
-                c3                       flushed(bw(0.12), fir(h), dec{});
-                std::vector<sample_type> scratch(flushed.outputs_for(fed));
-                flushed.process(x.data(), fed, scratch.data());
-                c3                       padded = flushed;
-                const std::size_t        expect = flushed.flush_output_frames();
-                std::vector<sample_type> a(expect + 4, sample_type(1));
-                ASSERT_EQ(flushed.flush(a.data()), expect);
-                const std::size_t zeros =
-                    2
-                    * (padded.template stage<0>().window_frames() + padded.template stage<1>().window_frames()
-                       + padded.template stage<2>().window_frames());
-                std::vector<sample_type> z(zeros, sample_type(0));
-                std::vector<sample_type> b(padded.outputs_for(zeros));
-                const std::size_t        made = padded.process(z.data(), zeros, b.data());
-                ASSERT_GT(made, expect);
-                // The recursive stage's residue (butterworth.h: below 256
-                // times the smallest normal value), through the FIR stages'
-                // gain (the sum of |h| of each, below 2): flush and padding
-                // agree up to it (padding keeps feeding the residue on,
-                // flush feeds the next stage pure zeros), and the padded
-                // stream after the flush is at most it.
-                const sample_type residue = sample_type(1024) * std::numeric_limits<sample_type>::min();
-                for (std::size_t i = 0; i < expect; ++i) {
-                    ASSERT_LE(std::fabs(a[i] - b[i]), residue) << "fed " << fed << " output " << i;
-                }
-                for (std::size_t i = expect; i < made; ++i) {
-                    ASSERT_LE(std::fabs(b[i]), residue) << "fed " << fed << " output " << i;
-                }
+        for (std::size_t fed = 389; fed <= 400; fed += 3) {
+            c3                       flushed(bw(0.12), fir(h), dec{});
+            std::vector<sample_type> scratch(flushed.outputs_for(fed));
+            flushed.process(x.data(), fed, scratch.data());
+            c3                       padded = flushed;
+            const std::size_t        expect = flushed.flush_output_frames();
+            std::vector<sample_type> a(expect + 4, sample_type(1));
+            ASSERT_EQ(flushed.flush(a.data()), expect);
+            const std::size_t zeros =
+                2
+                * (padded.template stage<0>().window_frames() + padded.template stage<1>().window_frames()
+                   + padded.template stage<2>().window_frames());
+            std::vector<sample_type> z(zeros, sample_type(0));
+            std::vector<sample_type> b(padded.outputs_for(zeros));
+            const std::size_t        made = padded.process(z.data(), zeros, b.data());
+            ASSERT_GT(made, expect);
+            // The recursive stage's residue (butterworth.h: below 256
+            // times the smallest normal value), through the FIR stages'
+            // gain (the sum of |h| of each, below 2): flush and padding
+            // agree up to it (padding keeps feeding the residue on,
+            // flush feeds the next stage pure zeros), and the padded
+            // stream after the flush is at most it.
+            const sample_type residue = sample_type(1024) * std::numeric_limits<sample_type>::min();
+            for (std::size_t i = 0; i < expect; ++i) {
+                ASSERT_LE(std::fabs(a[i] - b[i]), residue) << "fed " << fed << " output " << i;
+            }
+            for (std::size_t i = expect; i < made; ++i) {
+                ASSERT_LE(std::fabs(b[i]), residue) << "fed " << fed << " output " << i;
             }
         }
     }

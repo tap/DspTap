@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Timothy Place and the DspTap contributors.
+"""Generates tests/reference/iir_mpmath_reference.h: the mpmath leg of the
+constexpr math (include/tap/dsp/detail/cx_math.h) and of the constexpr
+designers (include/tap/dsp/iir_design.h), at 60 digits.
+
+    python3 tools/iir/gen_cx_reference.py   # from the repository root, in the
+                                            # venv tools/iir/requirements.txt pins
+
+Versions the committed header was generated with: Python 3.11.18, mpmath
+1.4.1 (numpy and scipy are not used here). Each reference value is written as
+a double-double (hi + lo, the nearest double and the next 53 bits), so the
+tests measure an error in ulps of the double under test without the
+reference's own rounding, and every input is a hexadecimal floating literal,
+the exact double the C++ evaluates.
+
+What it holds:
+- per function of cx_math.h, a set of inputs over the ranges the designers
+  use (and a little beyond) with the exact value of the function there;
+- the nonlinear half-band's coefficients at the four spec points and the
+  divisors 1, 2, 4, 8 (iir_design.SPEC_POINTS), from the published formulas
+  (Gazsi 1985, the bireciprocal case) at 60 digits, on the same double
+  f_pass the C++ takes: p / (2 d) with p = double(pass_num) / double(pass_den);
+- the Chebyshev II's sections at unity DC gain per section and its stop edge,
+  at the four spec points and the odd orders 3 to 11, from the same steps as
+  design_cheby2_lowpass at 60 digits (iir_design.cheby2_mp).
+"""
+from __future__ import annotations
+
+import pathlib
+import sys
+
+import mpmath
+
+HERE = pathlib.Path(__file__).resolve().parent
+ROOT = HERE.parents[1]
+sys.path.insert(0, str(HERE))
+import iir_design as d  # noqa: E402
+
+OUT = ROOT / "tests" / "reference" / "iir_mpmath_reference.h"
+mpmath.mp.dps = 60
+
+
+def dd(v):
+    """The double-double (hi, lo) of an mpf."""
+    hi = float(v)
+    lo = float(v - mpmath.mpf(hi))
+    return hi, lo
+
+
+def hexf(x):
+    return float(x).hex()
+
+
+def lin(a, b, n):
+    return [a + (b - a) * i / (n - 1) for i in range(n)]
+
+
+def geo(a, b, n):
+    import math
+    la, lb = math.log(a), math.log(b)
+    return [math.exp(la + (lb - la) * i / (n - 1)) for i in range(n)]
+
+
+def designer_turns():
+    """The arguments (in turns of pi) the half-band and Chebyshev designers pass."""
+    out = set()
+    for n in range(3, 35, 2):
+        for c in range(1, n):
+            out.add(c / n)
+            for i in range(1, 4):
+                out.add((2 * i + 1) * c / n)
+                out.add(2 * i * c / n)
+    for n in range(3, 16, 2):
+        for k in range(1, n):
+            out.add((2 * k - 1) / (2.0 * n))
+    return sorted(out)
+
+
+def inputs():
+    turns = designer_turns()
+    fpass = sorted({d.spec_p(pn, pd) / (2.0 * dv) for _, pn, pd in d.SPEC_POINTS for dv in d.DIVISORS}
+                   | {d.spec_p(pn, pd) for _, pn, pd in d.SPEC_POINTS})
+    return {
+        "sqrt": geo(1e-300, 1e300, 41) + lin(0.25, 4.0, 61) + [2.0, 3.0, 0.5, 1e-310, 5e-324],
+        "sin_pi": turns[::3] + lin(-2.5, 2.5, 81) + [0.25, 0.5, 1.0 / 3.0, 1e-9],
+        "cos_pi": turns[1::3] + lin(-2.5, 2.5, 81) + [0.25, 1.0 / 3.0, 1e-9],
+        "tan_pi": fpass + lin(0.005, 0.495, 50),
+        "atan_pi": geo(1e-6, 1e6, 41) + [1.0, 0.5, 2.0] + [-0.75, -3.0],
+        "exp": lin(-40.0, 40.0, 81) + lin(-0.5, 0.5, 21) + [700.0, -700.0],
+        "expm1": lin(-2.0, 2.0, 81) + geo(1e-12, 1.0, 25) + [-1e-9, 30.0],
+        "log": geo(1e-300, 1e300, 41) + lin(0.5, 2.0, 61) + [1e-310],
+        "log1p": lin(-0.5, 2.0, 51) + geo(1e-12, 0.4, 25) + [-1e-9],
+        "sinh": lin(-5.0, 5.0, 61) + geo(1e-10, 20.0, 25),
+        "cosh": lin(-5.0, 5.0, 61) + geo(1e-10, 20.0, 25),
+        "asinh": lin(-5.0, 5.0, 61) + geo(1e-10, 1e12, 31),
+        "acosh": [1.0 + x for x in geo(1e-12, 1.0, 25)] + geo(2.0, 1e12, 31),
+        "exp10m1": lin(-1.0, 13.0, 57) + geo(1e-6, 0.1, 25) + [0.001, 7.0, 12.0],
+    }
+
+
+def exact(name, x):
+    x = mpmath.mpf(x)
+    pi = mpmath.pi
+    if name == "sqrt":
+        return mpmath.sqrt(x)
+    if name == "sin_pi":
+        return mpmath.sinpi(x)  # exact zeros at the integers
+    if name == "cos_pi":
+        return mpmath.cospi(x)
+    if name == "tan_pi":
+        return mpmath.sinpi(x) / mpmath.cospi(x)
+    if name == "atan_pi":
+        return mpmath.atan(x) / pi
+    if name == "exp":
+        return mpmath.exp(x)
+    if name == "expm1":
+        return mpmath.expm1(x)
+    if name == "log":
+        return mpmath.log(x)
+    if name == "log1p":
+        return mpmath.log1p(x)
+    if name == "sinh":
+        return mpmath.sinh(x)
+    if name == "cosh":
+        return mpmath.cosh(x)
+    if name == "asinh":
+        return mpmath.asinh(x)
+    if name == "acosh":
+        return mpmath.acosh(x)
+    if name == "exp10m1":
+        return mpmath.power(10, x) - 1
+    raise KeyError(name)
+
+
+def main():
+    lines = [
+        "// Generated by tools/iir/gen_cx_reference.py: the mpmath leg (60 digits) of",
+        "// tap/dsp/detail/cx_math.h and the constexpr designers of tap/dsp/iir_design.h.",
+        "// Do not edit; regenerate. Each reference is a double-double {hi, lo}.",
+        "// SPDX-License-Identifier: MIT",
+        "// Copyright 2026 Timothy Place and the DspTap contributors.",
+        "// NOLINTBEGIN(readability-identifier-naming)",
+        "// Generated data; clang-format would re-pack the tables, so the file opts out.",
+        "// clang-format off",
+        "#pragma once",
+        "",
+        "#include <cstddef>",
+        "",
+        "namespace tap::dsp::test::mpmath_ref {",
+        "",
+        "    struct point {",
+        "        double x;",
+        "        double hi;",
+        "        double lo;",
+        "    };",
+        "",
+    ]
+    for name, xs in inputs().items():
+        rows = []
+        for x in sorted(set(float(v) for v in xs)):
+            ref = exact(name, x)
+            if not mpmath.isfinite(ref) or abs(ref) > mpmath.mpf("1e308"):
+                continue
+            hi, lo = dd(ref)
+            if hi == 0.0 and ref != 0:
+                continue  # below the double range: nothing to measure
+            rows.append(f"        {{{hexf(x)}, {hexf(hi)}, {hexf(lo)}}},")
+        lines.append(f"    inline constexpr point k_{name}[] = {{")
+        lines += rows
+        lines.append("    };")
+        lines.append("")
+
+    lines += [
+        "    /// A nonlinear half-band at a spec point: its order and coefficients, ascending.",
+        "    struct halfband_row {",
+        "        int    stop_db;",
+        "        int    pass_num;",
+        "        int    pass_den;",
+        "        int    divisor;",
+        "        int    order;",
+        "        double hi[16];",
+        "        double lo[16];",
+        "    };",
+        "    inline constexpr halfband_row k_halfbands[] = {",
+    ]
+    for A, pn, pd in d.SPEC_POINTS:
+        p = d.spec_p(pn, pd)
+        for dv in d.DIVISORS:
+            f_pass = p / (2.0 * dv)
+            order = d.halfband_order(A + d.MARGIN_DB, f_pass)
+            coefs = d.halfband_mp(order, f_pass)
+            his = [dd(c)[0] for c in coefs] + [0.0] * (16 - len(coefs))
+            los = [dd(c)[1] for c in coefs] + [0.0] * (16 - len(coefs))
+            lines.append(f"        {{{A}, {pn}, {pd}, {dv}, {order},")
+            lines.append("         {" + ", ".join(hexf(v) for v in his) + "},")
+            lines.append("         {" + ", ".join(hexf(v) for v in los) + "}},")
+    lines += ["    };", ""]
+
+    lines += [
+        "    /// A Chebyshev II at unity DC gain per section: {b0, b1, b2, a1, a2} per",
+        "    /// section in the designer's order, then its stop edge.",
+        "    struct cheby2_row {",
+        "        int    stop_db;",
+        "        int    pass_num;",
+        "        int    pass_den;",
+        "        int    order;",
+        "        double hi[41];",
+        "        double lo[41];",
+        "    };",
+        "    inline constexpr cheby2_row k_cheby2[] = {",
+    ]
+    for A, pn, pd in d.SPEC_POINTS:
+        p = d.spec_p(pn, pd)
+        for order in d.CHEBY2_ORDERS:
+            secs, edge = d.cheby2_mp(order, p, A)
+            vals = [v for s in secs for v in s[:5]] + [edge]
+            his = [dd(v)[0] for v in vals]
+            los = [dd(v)[1] for v in vals]
+            his += [0.0] * (41 - len(his))
+            los += [0.0] * (41 - len(los))
+            lines.append(f"        {{{A}, {pn}, {pd}, {order},")
+            lines.append("         {" + ", ".join(hexf(v) for v in his) + "},")
+            lines.append("         {" + ", ".join(hexf(v) for v in los) + "}},")
+    lines += ["    };", "", "} // namespace tap::dsp::test::mpmath_ref", "", "// clang-format on",
+              "// NOLINTEND(readability-identifier-naming)", ""]
+    OUT.write_text("\n".join(lines))
+    print(f"wrote {OUT.relative_to(ROOT)}")
+
+
+if __name__ == "__main__":
+    main()

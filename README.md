@@ -8,7 +8,8 @@ Shared DSP primitives for the **Tap** family of audio libraries. Header-only,
 plain portable C++ (C++20, standard library only), no Max/Min or framework
 dependency — consumed as a git submodule by the individual libraries.
 
-Today it holds ten primitives, plus the [FIR substrate](#the-fir-substrate) —
+Today it holds eleven primitives (among them the [recursive substrate](#the-recursive-substrate--two-path-half-bands-and-the-guard-band-filter)
+under the SampleRateTap family's IIR stages, since 0.3.0), plus the [FIR substrate](#the-fir-substrate) —
 the shared design-math / sample-format / kernel layer under the SampleRateTap
 family's two engines, `async` and `bridge` — and the [scalar helpers](#tapdspmathh--periodic-hann-and-decibel-helpers)
 (`tap/dsp/math.h`) the consuming libraries call instead of re-typing them:
@@ -369,31 +370,40 @@ suppressor's cross-precision pin must be unchanged by the promotion.
 (order 2 … 16, the bilinear transform with pre-warping, Oppenheim & Schafer
 sec. 7.2) and runs it as a 1:1 `chain` stage over `Ch` interleaved channels:
 `basic_butterworth_lowpass<Sample, Order, Ch>`, float or double, with
-`butterworth4<Ch>` / `butterworth4_32<Ch>` for order 4. It is the first slice
-of SampleRateTap's IIR plan (`docs/IIR_PLAN.md`, IIR-a): it lands the biquad
-kernel (the [recursive substrate](#the-recursive-substrate)) and the chain's
-nominal latency, under the plan's contracts for a recursive stage.
+`butterworth4<Ch>` / `butterworth4_32<Ch>` for order 4. It runs
+`iir_kernels.h`'s biquad cascade (the [recursive
+substrate](#the-recursive-substrate--two-path-half-bands-and-the-guard-band-filter))
+per channel, under SampleRateTap's IIR plan's contracts for a recursive stage
+in a chain (`docs/IIR_PLAN.md`, I5 latency, I6 flush, I9 subnormals).
 
 ```cpp
 tap::dsp::basic_butterworth_lowpass<float, 4, 2> lp(0.1); // stereo, -3 dB at 0.1 fs
 lp.process(in, frames, out);                             // interleaved, n in, n out
-double d = lp.nominal_latency_output_frames();           // group delay at DC
+double d = lp.nominal_latency_output_frames();           // group delay at DC: delay a dry path by this
+double e = lp.latency_deviation_output_frames();         // how far the passband strays from d
 ```
 
 - **Magnitude:** unity at DC, −3.0103 dB at the cutoff, a double zero at
   Nyquist per section; cutoff in (0, 1/2) cycles per sample, rejected
   otherwise (`validate()`, then `raise<std::invalid_argument>`).
 - **Latency (I5):** no exact latency, since a recursive stage has no single
-  delay. It reports `group_delay_output_frames(f)`, the nominal latency (the
-  DC group delay) and the passband deviation (the largest stray up to the
-  cutoff); `chain` composes them with its exact stages.
-- **Subnormals are the client's.** Nothing here reads, writes or checks the
-  floating-point control register, and nothing flushes a small state: the
-  software that runs the stage sets flush-to-zero (and DAZ on x86) on its
-  audio threads, or does not.
+  delay. It reports three numbers in frames: `group_delay_output_frames(f)`;
+  `nominal_latency_output_frames()`, the DC group delay, the delay to give a
+  parallel path (a dry signal, a sibling channel) to line it up; and
+  `latency_deviation_output_frames()`, the **passband group-delay
+  deviation**, the largest |group delay − nominal| up to the cutoff: the
+  alignment error left after compensating the nominal alone, so a passband
+  component can still arrive that many frames off the delayed path (order 4:
+  2.51 frames on a nominal of 4.02 at fc = 0.1; a Butterworth's group delay
+  peaks at the band edge). `chain` composes all three with its exact stages.
+- **Subnormals are the host's** (I9, `subnormals.h`): the software that runs
+  the stage sets flush-to-zero (and DAZ on x86) on its audio threads. The
+  kernel never writes the control register; it reads it as a debug-build
+  precondition where a bit governs the type (`TAP_DSP_ALLOW_SUBNORMALS`
+  compiles the check out for a host that accepts the residue below).
 - **Flush (I6):** `window_frames()` is the plan's count of zero frames after
   which the exact recursion's state is below the smallest normal value.
-  What the arithmetic leaves after it depends on the client: usually exact
+  What the arithmetic leaves after it depends on the host: usually exact
   silence; without FTZ a subnormal residue; under FTZ, for some designs, a
   limit cycle just above the smallest normal value, because FTZ flushes each
   product on its own (measured up to 124 times `FLT_MIN` at order 8,
@@ -409,7 +419,8 @@ double d = lp.nominal_latency_output_frames();           // group delay at DC
   (`bench/README.md`, "Layout").
 - **Formats:** float keeps its states and products in float (I14). Measured
   against double, order 4, white noise at 0.9: 1.9e-7 at fc = 0.25, 4.3e-7 at
-  0.07, 6.0e-6 at 0.01 (x86-64). Q15 / Q31 wait for the plan's I8.
+  0.07, 6.0e-6 at 0.01 (x86-64). The kernel has Q15 / Q31 (direct form I);
+  this stage does not offer them yet (a low cutoff needs section scaling).
 
 Pinned by `tests/test_butterworth.cpp`: the magnitude at DC, the cutoff and
 Nyquist, at orders 4 and 8 over six cutoffs; the sections ordered by pole
@@ -417,10 +428,12 @@ radius; float and double against a double reference recursion; chunking and
 channel independence bit for bit; the group delay against the phase's
 numerical derivative, and the passband deviation; the tail after
 `window_frames()` below 256 times the smallest normal value, from full scale
-and from 10^-6 of the format's largest value, with the client's FTZ on and
-off; the window values; the limit cycle FTZ leaves an order-8 design in (the
-honest limit); the floating-point control bits untouched; the rejections. Every QEMU leg runs
-it (`tap_dsp_tests`).
+and from 10^-6 of the format's largest value, under the host's FTZ; the
+window values; the limit cycle FTZ leaves an order-8 design in (the honest
+limit); the control register never written; the rejections. Without FTZ,
+`tests/test_butterworth_subnormals.cpp` pins the tail below the smallest
+normal value (the `tap_dsp_iir_subnormals` executable, built with
+`TAP_DSP_ALLOW_SUBNORMALS`). Every QEMU leg runs both.
 
 ## `tap::dsp::fft_fir` — FIR filtering by fast convolution (overlap-save)
 
@@ -460,19 +473,6 @@ and in-place processing bit for bit; channel independence; the exact
 latency for symmetric, even-length and antisymmetric taps, and none for
 skewed taps; silence after the window from every phase of a block; the
 construction rules. Every QEMU leg runs it, CMSIS-DSP behind it on the M55.
-
-## The recursive substrate
-
-### `tap/dsp/biquad.h` — the biquad cascade kernel
-
-`basic_biquad_cascade<Sample, Sections, Ch>`: transposed direct form II over
-float and double, interleaved channels, the plain recursion (no flushing, no
-clamping: subnormals are the client's), `group_delay_samples()` from the
-double design, and `flush_window_frames<S>()`, the plan's I6 window: the
-smallest n with ln(max_finite) + ln‖Aⁿ‖ < ln(min_normal) over the cascade's
-state-transition matrix (binary lifting over A^(2^j), so a cutoff of a few
-hertz in double costs O(log n) products), plus one frame per section. The
-header states the residue each FTZ setting leaves after it.
 
 ## `tap::dsp::subband` — the sub-band round trip
 
@@ -581,6 +581,155 @@ only error. The battery runs whole on every QEMU leg (M4 soft-float, M4F,
 M33 and M55, and the M33 and M55 without exceptions or RTTI): nothing is
 excluded.
 
+## The recursive substrate — two-path half-bands and the guard band filter
+
+The design math and kernels of the SampleRateTap family's recursive (IIR)
+polyphase stages (its `docs/IIR_PLAN.md`: I1, I4, I5, I8, I9, I12, I13,
+I14), landed here first: `rational` holds only the stage types. Four
+headers over `detail/cx_math.h`, plus `chain.h`'s latency members (below):
+
+- `tap/dsp/iir_design.h` — the designs. H(z) = ½ [A0(z²) + z⁻¹ A1(z²)], a
+  half-band of a by-2 stage's higher rate (Valenzuela & Constantinides 1983;
+  Vaidyanathan 1993), in two variants: **nonlinear**, both paths cascades of
+  first-order allpass sections (the elliptic, power-complementary half-band,
+  Gazsi 1985's explicit formulas), and **near-linear**, A0 a pure delay
+  z⁻²ᴷ and A1 an allpass approximating it (Renfors & Saramäki 1987's
+  structure); the **four-path** stage ¼ Σ z⁻ᵏ Aₖ(z⁴) (harris 2004); and the
+  guard band filter's **odd-order Chebyshev II** (Antoniou 2006) and its
+  **linear form**, an even-length symmetric (type II) FIR.
+- `tap/dsp/iir_tables.h` — the committed designs the compiler cannot
+  compute (iterative optimizations), generated by `tools/iir/gen_iir_tables.py`
+  in a venv pinned by `tools/iir/requirements.txt` (Python 3.11, numpy
+  2.4.6, scipy 1.17.1, mpmath 1.4.1).
+- `tap/dsp/iir_kernels.h` — the kernels per `sample_traits` format, and
+  `tap/dsp/subnormals.h`, the flush-to-zero precondition.
+
+**Spec points.** A design point is (A dB, passband edge p as a fraction of
+the chain's lowest rate) at a design divisor d (the stage's lower rate over
+the lowest; IIR_PLAN I13): a stage at d has f_pass = p / (2d) of its higher
+rate and its stopband mirrored about its own low Nyquist, and every design
+meets −(A + 1 dB) there. The four tabulated points are the family's
+profiles' numbers, keyed by the numbers, never by the names
+(`k_nonlinear_halfband<70, 3, 8, 2>`, `k_near_linear_halfband<…>`,
+`k_fourpath<…>`, `k_guard_band_cheby2<A, num, den, order>`,
+`k_guard_band_fir<…>`):
+
+| A, p | (rational's name) | nonlinear order, d = 1 / 2 / 4 / 8 | near-linear N (= K), d = 1 / 2 / 4 / 8 | four-path, d = 2 |
+|---|---|---|---|---|
+| 70 dB, 1/3 | `super_economy` | 9 / 5 / 5 / 3 | 5 / 2 / 2 / 1 | 6 sections, −89.6 dB |
+| 70 dB, 3/8 | `economy` | 9 / 5 / 5 / 3 | 7 / 3 / 2 / 1 | 6 sections, −84.2 dB |
+| 70 dB, 19/48 | `balanced` | 9 / 5 / 5 / 3 | 8 / 3 / 2 / 1 | 6 sections, −81.7 dB |
+| 120 dB, 5/12 | `transparent` | 17 / 9 / 7 / 5 | 19 / 5 / 3 / 2 | — (I12) |
+
+**Compile-time design (I4).** The nonlinear half-band and the Chebyshev II
+are `constexpr` over `tap/dsp/detail/cx_math.h` (sqrt, sin and cos of πt,
+atan, exp, expm1, log, log1p, sinh, cosh, asinh, acosh, 10ˣ − 1 in plain
+C++20 double, no libm: each within 0.5 to 2.5 ulps of an mpmath leg, pinned
+by `tests/test_cx_math.cpp`). Its order comes from the closed form,
+10 log₁₀(1 + q⁻ᴺᐟ²/4) ≥ A + 1 with q the nome, and reproduces IIR-0's grid
+search at every tabulated point. Three steps are rewritten by algebra to
+remove a cancellation (the nome step, IIR-0's amendment; a = (1 − x²)/(1 + x)²;
+1 − w²/k as a difference of squares), and every tabulated coefficient is
+within **13.2 ulps** of mpmath at 60 digits (IIR-0 promised 15; the prototype
+lost up to 94,049). The largest evaluation takes 11,090 of Clang 18's
+constant-evaluation steps (the order-17 half-band; the order-11 Chebyshev II
+4,749; the exact product in integers roughly doubled both), against MSVC's
+documented default of 100,000. The bits are pinned
+per design (`tests/test_iir_constexpr.cpp`, IIR-0's bit test moved in), one
+row for every compiler CI runs, srdif's rule. A custom spec calls the same
+functions at run time. The Chebyshev II's L-inf gain distribution (Jackson
+1970) left constexpr as IIR-0 recommended (415k steps at order 11), its
+factors committed per spec point and order — and every one is exactly 1.0:
+with the sections ordered by increasing pole radius, each at unity DC gain,
+every partial cascade of every committed design peaks at DC
+(`IirDesign.Cheby2LinfGainsAreUnityAtEveryCommittedPoint`). The linear form's
+custom setting designs at run time through `kaiser.h`
+(`design_guard_band_linear`, 52 taps where remez needs 40 at 70 dB, 3/8,
+order 5's edge). Committed: 16 near-linear half-bands (I13's divisors 1, 2,
+4, 8), 3 four-path stages, 20 Chebyshev II gain rows (orders 3 to 11) and
+19 type II FIRs (remez does not converge at 120 dB order 3, as in IIR-0).
+
+**Where the kernels stop** (`fir_kernels.h`'s line): a kernel computes the
+outputs of one commutator step for one channel from the inputs its paths
+take — `halfband_decimate(table, state, x[2k], x[2k−1])`,
+`halfband_interpolate`, `near_linear_decimate` / `_interpolate` (the caller
+passes the delay path's x[2(k−K)]), `fourpath_decimate` / `_interpolate`,
+`biquad_cascade` (1:1) — and updates the recursive state the caller stores
+per channel. The commutator schedule, the odd-sample latch, the delay path's
+history, the stream phase, channel interleaving and flush are the stage
+machine's (`rational`'s, IIR-b), as a FIR stage keeps its history and calls
+`dot_row`. Coefficient tables in each format (`nonlinear_halfband_table<S>`
+and its siblings) are `constexpr`, so a named design's Q15 / Q31 tables round
+from the same compile-time doubles.
+
+| format | states | coefficients | per section | output | measured (`tests/test_iir_kernels.cpp`, `test_iir_fixed.cpp`) |
+|---|---|---|---|---|---|
+| `double` | double | double | — | identity | the golden model: −309 dB from the direct form at worst |
+| `float` | float (I14) | float | — | identity | −137.9 dB from double at worst (120 dB, near-linear, white noise; IIR-0 −137.1), −142.6 dB at 70 dB; the guard band cascade −125.4 dB at 120 dB order 11 |
+| Q15 | int32 Q2.29 (two guard bits) | Q0.31 (allpass), Q2.30 (second order) | one rounding: floor truncation (one-multiplier allpass), magnitude truncation (every second-order section) | Q2.29 → Q15 once, round half up, saturating | largest state 2.06 of full scale under full-scale square waves and clipped sines; outputs within 0.5 LSB of double; floor −98.1 dB for a −1 dBFS sine, equal to the output's own rounding |
+| Q31 | int64 Q2.60 | as Q15 | the same, products exact to 96 bits | Q2.60 → Q31 once, round half up, saturating | largest state 2.06; outputs within 0.5 LSB of double on the same coefficients |
+
+Biquads run in direct form I in fixed point and transposed direct form II in
+floating point; the difference nodes (x − y1, which reach 5.22 in L1 at 120
+dB) are formed in 64 bits and never stored; sums run in unsigned arithmetic,
+so a state pushed past the headroom wraps rather than invoking undefined
+behaviour; saturation happens at the output only. Silence after full-scale
+drive reaches an exactly zero fixed-point state within 248 (Q15) and 502
+(Q31) low-rate frames for the half-bands (bounds 330 and 659, computed from
+each section's longest floor-truncated decay), 181 / 351 for the near-linear
+ones and 241 / 535 for the guard band cascades. The Q15 and Q31 outputs are
+bit-pinned (FNV-1a-64, one row everywhere).
+
+**Flush to zero is the host's job (I9).** No kernel writes or restores the
+floating-point control register; each structure kernel reads it as a
+debug-build precondition, `TAP_DSP_EXPECTS_SUBNORMALS_FLUSHED(S)`
+(`TAP_EXPECTS(subnormals_flushed<S>())` where a bit governs S, nothing
+elsewhere, compiled out by `TAP_DSP_ALLOW_SUBNORMALS`, which like
+`TAP_EXPECTS` must be one setting per image). `subnormals_flushed<S>()` and
+`k_subnormal_control<S>` are public, for a host and its tests:
+
+| target | what the host sets | governs |
+|---|---|---|
+| x86-64 | MXCSR FTZ (bit 15) and DAZ (bit 6): `_mm_setcsr(_mm_getcsr() \| 0x8040)` on each audio thread | float and double |
+| AArch64 (Apple silicon, Arm Linux, Windows on Arm) | FPCR.FZ (bit 24): `msr fpcr` (GCC, Clang), `_WriteStatusReg` (MSVC), on each audio thread | float and double |
+| Cortex-M with an FPU (M4F, M33, M55), AArch32 | FPSCR.FZ (bit 24), and FPDSCR (0xE000EF3C) for exception handlers: `__builtin_arm_set_fpscr` or CMSIS's `__set_FPSCR`, at reset | float on the M4F and M33; float and double on the M55 |
+| Cortex-M without an FPU (M4), double on the M4F and M33 | nothing: software float | — |
+| Hexagon | nothing: USR has no flush-to-zero field (the vendor's V68 Programmer's Reference Manual, 80-N2040-46 Rev. B, Table 2-6; its floating point "defined to support the IEEE floating-point standard", 4.3.4), and QEMU models none | — |
+
+Honest limits, pinned: a host that does not set the bits (or a target with
+none) leaves the states at a residue of a few times the smallest subnormal
+(2 at 70 dB 3/8, 5 to 7 at 120 dB for the half-bands; 4 to 20 for the Chebyshev
+II cascades; `tests/test_iir_subnormals.cpp`), and on x86 silence after
+signal runs about ten times slower; under the bits the allpass sections reach
+an exactly zero state within `floating_flush_frames()` (I6's count: the
+largest pole radius from the format's largest value to its smallest normal,
+plus one frame per section), but the **floating Chebyshev II cascade of
+order 7 or more can hold a zero-input limit cycle at a few times the
+smallest normal** (up to 13.1 times measured, in either direct form: once
+|a2 y| underflows its product flushes and the section briefly runs with
+|a1| > 1), so a floating guard band filter at those orders never drains to an
+exactly zero state — IIR-c's to account for. A non-finite input poisons a
+recursive state until the caller zeroes it (I9, decided). And a consumer
+built with `-ffast-math` (or `/fp:fast`, or icx's default `-fp-model=fast`)
+gets none of these contracts: reassociation and contraction move the float
+outputs past the tolerances, `-ffinite-math-only` deletes `std::isnan` and
+`std::isfinite`, and an executable linked with it starts with FTZ and DAZ on
+(GCC's `crtfastmath.o`; before GCC 13 a shared library built with it did the
+same to its host) — the one effect that does what I9 asks of a host.
+
+Pinned by `tests/test_iir_design.cpp` (the orders, ulps, stopbands on the
+16384-point grid, power complementarity, group delays against IIR-0's, the
+committed rows' promises, the type II FIRs' symmetry and exact zero at
+Nyquist), `tests/test_iir_constexpr.cpp` (the bits, its own target at
+`-ffp-contract=off`, where the run-time evaluation equals the compile-time
+one too), `tests/test_iir_kernels.cpp` and `test_iir_fixed.cpp` (above),
+`tests/test_iir_subnormals.cpp` (its own executable under
+`TAP_DSP_ALLOW_SUBNORMALS`) and `tests/test_chain_iir.cpp` (below). Every
+case runs on every QEMU leg except six design sweeps of `test_iir_design.cpp`
+(141 s of soft-float emulation on the M33, design-time numbers; the
+`MAIN_FILTER` names them). The FIR substrate's pins and the srdif
+fingerprints do not move.
+
 ## The FIR substrate
 
 Five headers carried from **SampleRateTap** (where they design and run the
@@ -606,7 +755,11 @@ zeros-at-k·fs variant with passband droop pre-compensated (closed-form, no
 FFT), which turns branch-DC uniformity into exact transmission zeros at every
 multiple of the sample rate. Runtime design in double, deliberately not
 constexpr (the header's design note does the arithmetic); run it in a
-constructor, off the audio path. Also exports `solve_dense`, the small dense
+constructor, off the audio path. The note's scope, since 0.3.0: the FIR
+designers (here and `nyquist.h`) are runtime double; the recursive designers
+of `iir_design.h` are constexpr, because a design there is a handful of
+coefficients (at most 16 per half-band, 5 per Chebyshev II section), a few
+thousand constant-evaluation steps, not a table of thousands of taps. Also exports `solve_dense`, the small dense
 solver the compensated design and the analysis instruments share (noexcept and
 allocation-free: it pivots by exchanging rows in the caller's buffers).
 
@@ -671,8 +824,10 @@ on it.
 
 A recursive stage (`butterworth.h`) has no exact latency, so the chain also
 composes a **nominal** one (SampleRateTap's IIR plan, I5):
-`nominal_latency_output_frames()`, `passband_group_delay_deviation_output_frames()`
-(the sum of the stages' deviations, a bound) and `group_delay_output_frames(f)`,
+`nominal_latency_output_frames()`, `latency_deviation_output_frames()` (the
+passband group-delay deviation: how far an in-band frequency's delay can
+stray from the nominal, the alignment error left after compensating the
+nominal alone; the sum of the stages', a bound) and `group_delay_output_frames(f)`,
 doubles at the chain's output rate, each exact stage counting as a constant
 delay. The exact `latency_output_frames()` still compiles only for an
 all-exact chain. 1:1 stages (`butterworth.h`, `fft_fir.h`) chain like any
@@ -694,9 +849,33 @@ for any chunking; the nominal latency, deviation and group delay composed
 across a Butterworth and a decimator, and an all-exact chain's nominal
 latency equal to its exact one; flush equal to zero padding up to the
 recursive residue over a chain of a Butterworth, an FFT FIR and a decimator,
-with the client's FTZ on and off.
+under the host's FTZ.
 `tests/compile_fail/chain_channels.cpp` pins that a chain of stages running
 different counts fails on the chain's `static_assert`, as the build's only
+error.
+
+**The nominal latency (since 0.3.0; SampleRateTap's `IIR_PLAN` I5).** A
+recursive stage has no exact latency, so a chain holding one reports, in
+doubles at its output rate, `nominal_latency_output_frames()` (each stage's
+nominal — an IIR stage's DC group delay, a near-linear stage's delay path,
+an exact stage's exact latency — converted and summed),
+`latency_deviation_output_frames()` (the stages' passband deviations summed,
+a bound) and `group_delay_output_frames(f)` (f in cycles per output frame;
+each stage's delay at the same frequency in its own frames, an exact stage's
+constant). A stage reports the three itself (`reports_nominal_latency`) or an
+exact latency; a chain reports them too, so chains nest. The exact
+`latency_output_frames()` still compiles only for all-exact chains, the
+`sync_stage` concept is unchanged, and `subband.h` reads a near-linear
+stage's `delay_path_output_frames()` as before. Pinned by
+`tests/test_chain_iir.cpp` on test-local stages over the recursive kernels:
+the members against each stage's and against the delay measured from the
+chain's impulse response (within 0.01 frames), an all-exact chain's nominal
+its exact latency (80/3) with deviation 0, a delay-path chain's nominal its
+exact 17/2, and a 1:1 stage in a chain (the guard band filter's shape) in
+every format: the ratio, `outputs_for` from every phase, `frames_needed`,
+chunking bit for bit, and flush equal to zero padding.
+`tests/compile_fail/chain_iir_exact_latency.cpp` pins that a chain with a
+recursive stage has no exact latency, the rule's `static_assert` the only
 error.
 
 ### `tap/dsp/sample_traits.h` — sample formats: double, float, Q15, Q31
@@ -937,7 +1116,10 @@ static_assert(TAP_DSP_VERSION >= TAP_DSP_VERSION_ENCODE(0, 1, 0),
 Before 1.0 a minor version may break a consumer, so a floor states what was
 tested, not what will keep working. 0.2.0 is such a break: `chain.h`'s
 stages declare their channel count at compile time and the chain's
-run-time-count constructor is gone (SampleRateTap's A13).
+run-time-count constructor is gone (SampleRateTap's A13). 0.3.0 adds the
+sub-band round trip (`subband.h`) and the recursive substrate
+(`iir_design.h`, `iir_kernels.h`, `subnormals.h`, `chain.h`'s nominal
+latency), and changes nothing an 0.2.0 consumer calls.
 
 ## Build
 

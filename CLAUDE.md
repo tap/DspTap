@@ -9,14 +9,16 @@ portable C++20 (standard library only, no frameworks; `tap::dsp` is a pure INTER
 the one compiled library, `tap_dsp_fft`, exists only under `TAP_DSP_FFT_CMSIS` to carry the
 vendored CMSIS-DSP objects), consumed as a git submodule by the
 individual libraries (TapTools pins it as `submodules/dsptap`; the AmbiTap/MuTap lineage is where
-the FFT came from). Ten primitives today: the real FFT (`fft.h`), the YIN pitch detector
+the FFT came from). Eleven primitives today: the real FFT (`fft.h`), the YIN pitch detector
 (`yin.h`), two pitch shifters (`psola.h`, `pvoc.h`), the sub-band round-trip scaffold
 (`subband.h`), the wake-word front end —
 the log-mel/PCEN feature extractor (`log_mel.h`) and the fixed-ratio decimators to
-16 kHz (`decimate.h`) — the dense/GRU inference kernels (`nn.h`), and two 1:1 chain stages: the
-Butterworth low-pass (`butterworth.h`, the first slice of SampleRateTap's `docs/IIR_PLAN.md`, IIR-a,
-over the recursive substrate, the biquad cascade kernel `biquad.h`; flush-to-zero is the client's
-to set, and no DspTap code reads or sets it) and the overlap-save FFT FIR (`fft_fir.h`) — plus the FIR substrate carried from
+16 kHz (`decimate.h`) — the dense/GRU inference kernels (`nn.h`), the recursive substrate under
+the family's IIR stages (`iir_design.h`, `iir_tables.h`, `iir_kernels.h`, `subnormals.h`: the
+two-path allpass half-bands and the guard band filter, constexpr designs over `detail/cx_math.h`
+and kernels per format, with `chain.h`'s nominal latency), and two 1:1 chain stages: the
+Butterworth low-pass (`butterworth.h`, a runtime-designed recursive stage over `iir_kernels.h`'s
+biquad cascade) and the overlap-save FFT FIR (`fft_fir.h`) — plus the FIR substrate carried from
 SampleRateTap for the family's two rate converters (its `async` and `bridge` engines): Kaiser prototype design
 (`kaiser.h`), the sample-format traits (`sample_traits.h`: double/float/Q15/Q31), the FIR dot kernels
 (`fir_kernels.h`), row-sum-preserving quantization (`quantize.h`), and the measurement

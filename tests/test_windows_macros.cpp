@@ -72,7 +72,6 @@
 
 #include "tap/dsp/analysis/multitone_analysis.h"
 #include "tap/dsp/analysis/sine_analysis.h"
-#include "tap/dsp/biquad.h"
 #include "tap/dsp/butterworth.h"
 #include "tap/dsp/chain.h"
 #include "tap/dsp/decimate.h"
@@ -80,6 +79,8 @@
 #include "tap/dsp/fft/spectrum.h"
 #include "tap/dsp/fft_fir.h"
 #include "tap/dsp/fir_kernels.h"
+#include "tap/dsp/iir_design.h"
+#include "tap/dsp/iir_kernels.h"
 #include "tap/dsp/kaiser.h"
 #include "tap/dsp/log_mel.h"
 #include "tap/dsp/math.h"
@@ -89,6 +90,7 @@
 #include "tap/dsp/quantize.h"
 #include "tap/dsp/sample_traits.h"
 #include "tap/dsp/subband.h"
+#include "tap/dsp/subnormals.h"
 #include "tap/dsp/yin.h"
 
 namespace {
