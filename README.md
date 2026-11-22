@@ -858,6 +858,18 @@ at the format's rail is never wrapped: each step goes to the largest-remainder
 tap that can still move in that direction, so the sum is preserved whenever
 one exists. Design-time code.
 
+`quantize_symmetric_row_preserving_sum` (since 0.4.0) is its form for an
+even-length symmetric (type II) row: the first half through
+`quantize_row_preserving_sum`, then mirrored, in any of the four formats. The
+quantized row is symmetric bit for bit, so its zero at Nyquist is exact in
+the quantized taps (in integers for Q15 and Q31), and it sums to exactly
+twice the half's preserved sum, within one coefficient LSB of the design's
+(the half's promise, half an LSB, doubled). Quantizing the whole row instead
+can split a mirrored pair where the sum fix-up ties, and lose both.
+`tests/test_quantize.cpp` pins the contract on every committed guard band row
+and a Kaiser design, and its bit-identity with the half-then-mirror procedure
+SampleRateTap's guard band filter ran inline.
+
 ### `tap/dsp/analysis/` — measurement instruments
 
 The quality-measurement harness the converter suites share: `sine_analysis.h`
