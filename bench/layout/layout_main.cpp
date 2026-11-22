@@ -36,7 +36,9 @@
 // The checksum folds each channel's output in frame order into its own
 // FNV-1a-64 and then the channel hashes in order, so a pair's two layouts
 // print the SAME checksum exactly when their outputs are bit-identical
-// (they are: each channel runs the same arithmetic). `ok` checks the output
+// (they are wherever the compiler contracts both instantiations alike; GCC's
+// default contraction on the M55 does not, for the FFT FIR: bench/README.md,
+// "Layout"). `ok` checks the output
 // is finite and not all zero. Nothing in the streaming loop is double: the
 // M4 soft-float leg would otherwise count libgcc.
 #include <array>

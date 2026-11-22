@@ -412,11 +412,10 @@ double e = lp.latency_deviation_output_frames();         // how far the passband
   keeps the bit-for-bit equality), and the tail after it is that residue,
   not exact silence.
 - **Layout:** one stage of `Ch` channels runs each frame through every
-  channel's sections in turn. At 12 channels that is 2.5 times cheaper than
-  12 mono stages on x86-64 and 2.2 times on the M55, where the compiler
-  vectorizes the channel loop; within 5 % on the M4F and M33; and 41 % dearer
-  on Hexagon, where a mono biquad keeps its state in registers
-  (`bench/README.md`, "Layout").
+  channel's sections in turn, one channel and one sample at a time through
+  `iir_kernels.h`'s cascade, so no core vectorizes across channels: mono
+  stages are 6 to 9 % cheaper on x86-64 and up to 14 % on the M4F and M33,
+  within 3 % on the M55 at 6 and 12 channels (`bench/README.md`, "Layout").
 - **Formats:** float keeps its states and products in float (I14). Measured
   against double, order 4, white noise at 0.9: 1.9e-7 at fc = 0.25, 4.3e-7 at
   0.07, 6.0e-6 at 0.01 (x86-64). The kernel has Q15 / Q31 (direct form I);

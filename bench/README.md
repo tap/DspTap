@@ -482,52 +482,65 @@ interleaved API?" has a number per core. It is informational by decision
   `continue-on-error`.
 
 Host figures, x86-64 (GCC 13.3 `-O3`, valgrind 3.22 callgrind collecting the
-bracketed step, `--toggle-collect='*layout_step*'`; 2026-11-21):
+bracketed step, `--toggle-collect='*layout_step*'`; `fir` and `gain`
+2026-11-21, `bw` and `chain` 2026-11-22 on iir_kernels.h's cascade):
 
 | scenario | 1 ch | 2 ch i | 2 ch p | p / i | 6 ch i | 6 ch p | p / i | 12 ch i | 12 ch p | p / i |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `bw` | 609,152 | 1,100,672 | 1,217,664 | 1.106 | 3,214,336 | 3,648,256 | 1.135 | 2,969,984 | 7,293,952 | 2.456 |
+| `bw` | 807,168 | 1,806,848 | 1,646,336 | 0.911 | 5,231,744 | 4,834,944 | 0.924 | 10,343,040 | 9,665,664 | 0.935 |
 | `fir` | 2,921,344 | 5,619,712 | 5,823,616 | 1.036 | 16,545,792 | 17,559,680 | 1.061 | 32,885,632 | 35,002,496 | 1.064 |
-| `chain` | 3,506,816 | 6,738,944 | 7,052,928 | 1.047 | 19,902,336 | 21,149,312 | 1.063 | 36,070,144 | 41,722,368 | 1.157 |
+| `chain` | 3,746,304 | 7,550,720 | 7,543,168 | 0.999 | 22,145,408 | 22,492,544 | 1.016 | 43,948,544 | 44,348,928 | 1.009 |
 | `gain` | 29,568 | 67,072 | 58,880 | 0.878 | 363,520 | 171,136 | 0.471 | 658,432 | 339,328 | 0.515 |
 
-On the host, interleaved is the cheaper layout for all three, the FFT FIR
-included (its per-block de-interleave costs less than a stage per channel),
-and 2.5 times cheaper for the Butterworth at 12 channels, where GCC
-vectorizes the interleaved channel loop. (The `bw` and `chain` rows are the
-plain kernel's, measured again after the in-kernel tail zeroing was removed
-on 2026-11-21; the `fir` row did not change.) The per-core figures differ (a mono biquad keeps its state and
+On the host the FFT FIR is cheaper interleaved (its per-block de-interleave
+costs less than a stage per channel); the Butterworth is now 6 to 9 %
+cheaper as mono stages, and the chain is even. The Butterworth runs
+iir_kernels.h's `biquad_cascade` since the v0.3.0 merge: one channel, one
+sample at a time through a run-time section count, which GCC neither
+unrolls nor vectorizes across channels. The branch's own kernel before it
+(a compile-time section count, the channel loop inside the stage) measured
+609,152 mono and 2,969,984 at 12 channels interleaved (p / i 2.456, the
+channel loop vectorized): main's kernel costs 1.3 times that mono and 3.5
+times at 12 channels interleaved, the same output bits. The per-core figures differ (a mono biquad keeps its state and
 coefficients in registers across frames, which matters on the M-class
 cores) and are in each key's step summary and `layout-<key>.json`.
 
 Per core, planar / interleaved streaming instructions (the bracket sums;
-`bench.yml` run 153, workflow_dispatch on the IIR-a branch at 4ae096f,
-2026-11-21, the plain biquad kernel; the counts themselves are in each key's
-`layout-<key>.json`; the `hexagon` key counts packets, not instructions, as
-its ratchet does):
+`bench.yml` run 161, workflow_dispatch at 3d0e5ec, 2026-11-22, the
+Butterworth on iir_kernels.h's cascade; the counts themselves are in each
+key's `layout-<key>.json`; the `hexagon` key counts packets, not
+instructions, as its ratchet does):
 
 | key | `bw` 2 | `bw` 6 | `bw` 12 | `fir` 2 | `fir` 6 | `fir` 12 | `chain` 2 | `chain` 6 | `chain` 12 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `m4-softfp` | 1.000 | 1.002 | 0.998 | 1.002 | 1.006 | 1.004 | 1.003 | 1.003 | 1.002 |
-| `m4f` | 1.002 | 1.043 | 0.956 | 1.052 | 1.078 | 1.065 | 1.064 | 1.090 | 1.072 |
-| `m33` | 1.002 | 1.043 | 0.956 | 1.051 | 1.074 | 1.056 | 1.062 | 1.086 | 1.065 |
-| `m55` | 1.047 | 1.079 | 2.202 | 1.059 | 1.097 | 1.056 | 1.081 | 1.119 | 1.290 |
-| `m55-ooura` | 1.047 | 1.079 | 2.202 | 1.040 | 1.064 | 1.042 | 1.062 | 1.097 | 1.214 |
-| `hexagon` | 1.000 | 1.003 | 0.588 | 1.137 | 1.158 | 1.162 | 1.106 | 1.125 | 1.022 |
+| `m4-softfp` | 0.985 | 1.010 | 0.996 | 1.002 | 1.006 | 1.004 | 0.998 | 1.001 | 1.007 |
+| `m4f` | 0.860 | 0.932 | 0.947 | 1.052 | 1.078 | 1.065 | 1.010 | 1.021 | 1.005 |
+| `m33` | 0.860 | 0.932 | 0.947 | 1.051 | 1.074 | 1.056 | 1.010 | 1.021 | 1.000 |
+| `m55` | 0.897 | 0.971 | 0.987 | 1.059 | 1.097 | 1.056 | 0.975 | 1.015 | 1.043 |
+| `m55-ooura` | 0.897 | 0.971 | 0.987 | 1.040 | 1.064 | 1.042 | 0.999 | 1.015 | 1.044 |
+| `hexagon` | 1.022 | 1.074 | 0.950 | 1.137 | 1.158 | 1.162 | 1.100 | 1.129 | 1.101 |
 
 What the cores say:
 
-- **The FFT FIR and the chain: interleaved everywhere,** by 4 to 10 % on the
-  M-class cores with an FPU and 14 to 16 % for the FFT FIR on Hexagon. The
-  per-block de-interleave is cheaper than running a stage per channel.
-- **The Butterworth alone depends on the core and the count.** On the M55
-  (Helium) interleaved wins by 5 to 8 % at 2 and 6 channels and by 2.2 times
-  at 12, where the compiler vectorizes the channel loop; on the M4F and M33
-  it is within 5 % either way (mono stages 4 % cheaper at 12 channels, where
-  a mono biquad keeps its state in registers across frames); on Hexagon mono
-  stages are 41 % cheaper at 12 channels. The run before (152) measured the
-  kernel with its in-kernel tail zeroing, whose per-sample compare and select
-  kept the M55 from vectorizing: 0.96 to 1.00 there then.
+- **The FFT FIR: interleaved everywhere,** by 4 to 10 % on the M-class
+  cores with an FPU and 14 to 16 % on Hexagon. The per-block de-interleave
+  is cheaper than running a stage per channel.
+- **The Butterworth, on iir_kernels.h's cascade: mono stages are cheaper
+  on the M-class cores** (by 14 % at 2 channels on the M4F and M33, 10 % on
+  the M55, 1 to 7 % at 6 and 12), within 2 % on the soft-float M4, and
+  interleaved 2 to 7 % cheaper on Hexagon at 2 and 6 channels, mono 5 % at
+  12. The kernel runs one channel and one sample at a time through a
+  run-time section count, so no core vectorizes across channels any more:
+  run 153 measured the branch's own compile-time kernel at 2.2 times in
+  interleaved's favour on the M55 at 12 channels (and mono 41 % cheaper on
+  Hexagon there). The chain inherits it: within 4 % on the M-class cores,
+  interleaved 10 to 13 % cheaper on Hexagon (the FFT FIR's share).
+- **Bits:** on the `m55` key the planar and interleaved `fir` (6 and 12
+  channels) and `chain` outputs differ in their last bits, and on
+  `m55-ooura` the `fir` at every count; every other pair is bit-identical.
+  The bench builds with GCC's default contraction, which fuses the two
+  instantiations differently on Helium; the battery's bit-identity across
+  channel counts is stated, and pinned, without contraction (fft_fir.h).
 - **The soft-float M4: no difference** (within 1 %): the software float
   arithmetic is nearly all of the count.
 
