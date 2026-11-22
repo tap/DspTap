@@ -634,12 +634,20 @@ II cascades; `tests/test_iir_subnormals.cpp`), and on x86 silence after
 signal runs about ten times slower; under the bits the allpass sections reach
 an exactly zero state within `floating_flush_frames()` (I6's count: the
 largest pole radius from the format's largest value to its smallest normal,
-plus one frame per section), but the **floating Chebyshev II cascade of
-order 7 or more can hold a zero-input limit cycle at a few times the
-smallest normal** (up to 13.1 times measured, in either direct form: once
-|a2 y| underflows its product flushes and the section briefly runs with
-|a1| > 1), so a floating guard band filter at those orders never drains to an
-exactly zero state — IIR-c's to account for. A non-finite input poisons a
+plus one frame per section), with one exception: the floating near-linear
+half-band at 120 dB, 5/12, divisor 1 (N19, nine second-order sections) holds a
+zero-input limit cycle at 3.7 to 4.1 times the smallest normal, in float and
+double, from 12 to 20 of 39 noise starts (SampleRateTap's IIR-b; `rational`'s
+`iir_stage.h` states it and pins its bound). The mechanism is the
+**floating Chebyshev II cascade's, which at order 7 or more can hold a
+zero-input limit cycle at a few times the smallest normal** (up to 13.1 times
+measured, in either direct form: once |a2 y| underflows its product flushes
+and the section briefly runs with |a1| > 1), so a floating guard band filter
+at those orders never drains to an exactly zero state. Both are honest limits,
+kept (SampleRateTap's `docs/IIR_PLAN.md` question 19: no deadband in the
+kernels, no design dropped); a consumer states the residue its stage leaves
+after its flush window and pins a bound on it, as `rational`'s guard band
+filter does at order 7. A non-finite input poisons a
 recursive state until the caller zeroes it (I9, decided). And a consumer
 built with `-ffast-math` (or `/fp:fast`, or icx's default `-fp-model=fast`)
 gets none of these contracts: reassociation and contraction move the float
