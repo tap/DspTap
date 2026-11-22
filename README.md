@@ -536,8 +536,49 @@ every partial cascade of every committed design peaks at DC
 custom setting designs at run time through `kaiser.h`
 (`design_guard_band_linear`, 52 taps where remez needs 40 at 70 dB, 3/8,
 order 5's edge). Committed: 16 near-linear half-bands (I13's divisors 1, 2,
-4, 8), 3 four-path stages, 20 Chebyshev II gain rows (orders 3 to 11) and
-19 type II FIRs (remez does not converge at 120 dB order 3, as in IIR-0).
+4, 8), 3 four-path stages, 20 Chebyshev II gain rows (orders 3 to 11),
+19 type II FIRs (remez does not converge at 120 dB order 3, as in IIR-0) and,
+since 0.4.0, 15 Q15 rows of the type II FIR (below).
+
+**The linear form in Q15 (0.4.0).** The double type II rows do not survive
+Q1.14: quantized as the family quantizes a symmetric row
+(`quantize_symmetric_row_preserving_sum`, the first half with its sum
+preserved, then mirrored), the 70 dB rows attain −63.5 to −74.8 dB from their
+stop edges, and 13 of the 15 miss 70 dB or 0.01 dB of ripple; SampleRateTap's
+guard band filter measured −67.1 / −66.8 / −64.6 dB at the three it runs
+(`IirDesign.GuardBandFirDoubleRowsAreFormatLimitedInQ15`). So Q15 has rows of
+its own, `k_guard_band_fir_q15<A, num, den, order>` (a
+`guard_band_fir_q15_design`: the double design to quantize, its stop edge, the
+target it was designed for, and the stopband and ripple its Q1.14 taps
+attain), at the three 70 dB points and the orders 3 to 11. Each is the
+shortest even length at which a Parks–McClellan design (McClellan, Parks &
+Rabiner 1973, through `scipy.signal.remez`), targeted at A to A + 30 dB in
+0.01 dB steps (one lever: in remez only the band weights' ratio matters),
+keeps the double row's spec from the same stop edge once quantized so, on
+16384-point grids over the passband and the stopband; at that length, the
+design whose Q1.14 taps go deepest. The generator emulates the quantizer bit
+for bit (`tools/iir/iir_design.py`), and the battery quantizes the committed
+rows with DspTap's own and checks the Q1.14 taps against the emulation's
+(`tests/reference/guard_band_q15_taps.h`) before measuring them. Q15 taps (the
+double row's), then the Q1.14 taps' stopband and ripple:
+
+| A, p | order 3 | order 5 | order 7 | order 9 | order 11 |
+|---|---|---|---|---|---|
+| 70 dB, 1/3 | 20 (20): −75.52 dB, 0.00965 dB | 32 (30): −89.23, 0.00898 | 40 (38): −70.40, 0.00984 | 54 (52): −72.82, 0.00939 | 72 (66): −73.12, 0.00982 |
+| 70 dB, 3/8 | 26 (26): −76.45, 0.00970 | 42 (40): −90.87, 0.00895 | 50 (50): −72.33, 0.00966 | 72 (64): −74.60, 0.00929 | 96 (86): −75.01, 0.00975 |
+| 70 dB, 19/48 | 32 (32): −77.01, 0.00816 | 48 (48): −71.71, 0.00983 | 60 (58): −70.66, 0.00964 | 86 (76): −75.93, 0.00973 | 114 (102): −70.88, 0.00998 |
+
+The search is over rounding outcomes as much as over designs: at the
+selected lengths 2 to 2,031 of the 3,001 targets pass (2 for 1/3 order 7 and
+for 19/48 order 5), a 0.05 dB grid of targets finds the same lengths, and a
+0.25 dB grid finds five of them 2 to 4 taps longer. There is no row at
+120 dB: rounding each tap to Q1.14 (an LSB of 2⁻¹⁴, −84.3 dB) adds an
+error response whose RMS over frequency is 2⁻¹⁴ √(N/12), −76.5 dB at 72 taps,
+and the 120 dB rows quantized so attain −97.4 / −70.9 / −82.1 / −69.2 dB at
+orders 5 / 7 / 9 / 11. As SampleRateTap's `rational` states for its FIR stages
+(its PLAN.md section 6), Q15 at 120 dB is format-limited, and the 120 dB
+promise is float's and Q31's: double, float and Q31 run `k_guard_band_fir`,
+whose spec Q1.30 keeps (`IirDesign.GuardBandFirDoubleRowsKeepTheirSpecInQ31`).
 
 **Where the kernels stop** (`fir_kernels.h`'s line): a kernel computes the
 outputs of one commutator step for one channel from the inputs its paths
@@ -610,14 +651,19 @@ same to its host) — the one effect that does what I9 asks of a host.
 Pinned by `tests/test_iir_design.cpp` (the orders, ulps, stopbands on the
 16384-point grid, power complementarity, group delays against IIR-0's, the
 committed rows' promises, the type II FIRs' symmetry and exact zero at
-Nyquist), `tests/test_iir_constexpr.cpp` (the bits, its own target at
+Nyquist; the Q15 rows' lengths, their Q1.14 taps bit for bit against the
+generator's emulation, their zero at Nyquist and their attained stopband and
+ripple, and the double rows' loss of the spec in Q1.14 and keeping of it in
+Q1.30), `tests/test_iir_constexpr.cpp` (the bits, its own target at
 `-ffp-contract=off`, where the run-time evaluation equals the compile-time
 one too), `tests/test_iir_kernels.cpp` and `test_iir_fixed.cpp` (above),
 `tests/test_iir_subnormals.cpp` (its own executable under
 `TAP_DSP_ALLOW_SUBNORMALS`) and `tests/test_chain_iir.cpp` (below). Every
-case runs on every QEMU leg except six design sweeps of `test_iir_design.cpp`
-(141 s of soft-float emulation on the M33, design-time numbers; the
-`MAIN_FILTER` names them). The FIR substrate's pins and the srdif
+case runs on every QEMU leg except nine design sweeps of `test_iir_design.cpp`
+(minutes of soft-float emulation on the M33, design-time numbers: 141 s for
+the six of 0.3.0, about 1,100 s for the three Q15 measurements of 0.4.0; the
+`MAIN_FILTER` names them). The Q15 rows' structural pins, bit-exact Q1.14
+taps included, run on every leg. The FIR substrate's pins and the srdif
 fingerprints do not move.
 
 ## The FIR substrate
@@ -868,7 +914,8 @@ twice the half's preserved sum, within one coefficient LSB of the design's
 can split a mirrored pair where the sum fix-up ties, and lose both.
 `tests/test_quantize.cpp` pins the contract on every committed guard band row
 and a Kaiser design, and its bit-identity with the half-then-mirror procedure
-SampleRateTap's guard band filter ran inline.
+SampleRateTap's guard band filter ran inline. The guard band filter's Q15
+rows (`iir_tables.h`) are designed and measured through it.
 
 ### `tap/dsp/analysis/` — measurement instruments
 

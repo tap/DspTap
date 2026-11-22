@@ -9,7 +9,7 @@
 // exactly as much as the ASRC's interpolation bank. The symmetric form
 // (quantize_symmetric_row_preserving_sum) came the same way, from the linear
 // guard band filter of SampleRateTap's rational engine, whose stopband in
-// Q15 depends on it.
+// Q15 depends on it (iir_tables.h's Q15 rows are measured through it).
 #pragma once
 
 #include <cmath>
