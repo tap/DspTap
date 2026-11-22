@@ -144,8 +144,6 @@ endfunction()
 tap_dsp_add_gtest_executable(tap_dsp_tests
     SOURCES
         test_analysis.cpp
-        test_butterworth.cpp
-        test_chain.cpp
         test_chain_iir.cpp
         test_cx_math.cpp
         test_decimate.cpp
@@ -154,7 +152,6 @@ tap_dsp_add_gtest_executable(tap_dsp_tests
         test_fft_arith.cpp
         test_fft_backend.cpp
         test_fft_engine.cpp
-        test_fft_fir.cpp
         test_fft_fixed.cpp
         test_fft_routing.cpp
         test_fft_srdif.cpp
@@ -242,17 +239,26 @@ set(_tap_dsp_nocontract_cxx
     "$<$<CXX_COMPILER_ID:IntelLLVM>:-fp-model=precise>"
     "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang,IntelLLVM>:-ffp-contract=off>")
 
-# The batteries that pin bits across call paths and instantiations: a chain's
+# The chain and its 1:1 stages (test_chain.cpp, test_butterworth.cpp,
+# test_fft_fir.cpp) pin bits across call paths and instantiations: a chain's
 # flush() against zero padding (flush and process inline the same stage into
 # different callers), and a stage of Ch channels against Ch mono ones (two
 # instantiations of the same loop). Under g++'s default -ffp-contract=fast on
-# an FMA target each context may fuse differently; on CI's ubuntu-26.04
-# image GCC 15 failed exactly these two pins (the first run, 2026-11-21), so
-# these sources build without contraction, the condition fft.h's
-# fp-contraction policy states for every bit-exact claim. Chunking needs no
-# such condition: every chunk runs the same compiled code.
-set_source_files_properties(test_butterworth.cpp test_chain.cpp test_fft_fir.cpp
-    PROPERTIES COMPILE_OPTIONS "${_tap_dsp_nocontract_cxx}")
+# an FMA target each context may fuse differently (CI's ubuntu-26.04 GCC 15
+# failed exactly these pins, 2026-11-21), so they build without contraction,
+# the condition fft.h's fp-contraction policy states for every bit-exact
+# claim. Their own target, not per-source flags in tap_dsp_tests: the inline
+# kernels they instantiate (iir_kernels.h's biquad_cascade among them) are
+# instantiated there too with contraction on, and the linker keeps one copy
+# of each, so mixed flags in one image let a contracted inline copy meet an
+# uncontracted out-of-line one (chain_one_to_one in test_chain_iir.cpp failed
+# that way on the no-exceptions leg). It runs on every leg, the QEMU ones too.
+tap_dsp_add_gtest_executable(tap_dsp_chain_stages
+    SOURCES test_butterworth.cpp test_chain.cpp test_fft_fir.cpp)
+target_compile_options(tap_dsp_chain_stages PRIVATE ${_tap_dsp_nocontract_cxx})
+target_link_libraries(tap_dsp_chain_stages PRIVATE
+    tap::dsp
+    tap_dsp_warnings)
 
 # The floating engine's output fingerprints (test_fft_srdif_fingerprint.cpp,
 # pins in support/srdif_fingerprints.h): FNV-1a-64 of the srdif engine's

@@ -433,7 +433,7 @@ window values; the limit cycle FTZ leaves an order-8 design in (the honest
 limit); the control register never written; the rejections. Without FTZ,
 `tests/test_butterworth_subnormals.cpp` pins the tail below the smallest
 normal value (the `tap_dsp_iir_subnormals` executable, built with
-`TAP_DSP_ALLOW_SUBNORMALS`). Every QEMU leg runs both.
+`TAP_DSP_ALLOW_SUBNORMALS`). Every QEMU leg runs both (`tap_dsp_chain_stages`, built without fp contraction with `test_chain.cpp` and `test_fft_fir.cpp`).
 
 ## `tap::dsp::fft_fir` — FIR filtering by fast convolution (overlap-save)
 
