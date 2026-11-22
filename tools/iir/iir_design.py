@@ -465,6 +465,153 @@ def typeii_min_length(p_rate, f_stop, A, rp_pp=RIPPLE_DB, max_len=400):
     return None
 
 
+# ---------------------------------------------------------------------------
+# The linear guard band form in Q15 (DspTap 0.4.0): the design whose Q1.14
+# taps, quantized by include/tap/dsp/quantize.h's
+# quantize_symmetric_row_preserving_sum<std::int16_t>, keep the spec. The
+# quantizer is emulated here bit for bit: every step below is one IEEE double
+# operation the C++ performs in the same order (the product by 2^14 is exact,
+# so a contracting compiler cannot move it either), and
+# tests/test_iir_design.cpp checks DspTap's own quantizer against the taps
+# this emulation produced (tests/reference/guard_band_q15_taps.h).
+# ---------------------------------------------------------------------------
+Q15_SCALE = 16384.0  # sample_traits<std::int16_t>::k_coeff_scale: Q1.14 units per 1.0
+Q15_MIN, Q15_MAX = -32768, 32767
+# The design targets the search tries at every length: A to A + 30 dB in
+# 0.01 dB steps. In remez only the ratio of the two band weights matters, so
+# a higher target and more stopband weight are one lever, and this one
+# parameter spans both.
+Q15_TARGET_STEPS = 3000
+Q15_TARGET_STEP_DB = 0.01
+# A pass must clear the spec by this much on the search's evaluation, so a
+# re-measurement in another summation order (the C++ test's) cannot flip it.
+Q15_MEASURE_GUARD_DB = 1e-6
+
+
+def round_sat_q15(v):
+    """sample_traits' detail::round_sat<std::int16_t>: half away from zero
+    (v -/+ 0.5 in double, then truncation), saturating."""
+    r = v - 0.5 if v < 0.0 else v + 0.5
+    if r <= float(Q15_MIN):
+        return Q15_MIN
+    if r >= float(Q15_MAX):
+        return Q15_MAX
+    return int(r)  # truncation toward zero, as static_cast
+
+
+def llround(x):
+    """std::llround: to nearest, half away from zero (a - floor(a) is exact)."""
+    a = abs(x)
+    f = math.floor(a)
+    if a - f >= 0.5:
+        f += 1
+    return -int(f) if x < 0.0 else int(f)
+
+
+def quantize_row_preserving_sum_q15(src):
+    """quantize_row_preserving_sum<std::int16_t>, step for step."""
+    n = len(src)
+    dst = [0] * n
+    remainder = [0.0] * n
+    exact_sum = 0.0
+    quant_sum = 0
+    for t in range(n):
+        scaled = float(src[t]) * Q15_SCALE
+        q = round_sat_q15(float(src[t]) * Q15_SCALE)
+        dst[t] = q
+        remainder[t] = scaled - float(q)
+        exact_sum += scaled
+        quant_sum += q
+    residual = llround(exact_sum) - quant_sum
+    while residual != 0:
+        sgn = 1.0 if residual > 0 else -1.0
+        rail = Q15_MAX if residual > 0 else Q15_MIN
+        best = n
+        for u in range(n):
+            if dst[u] != rail and (best == n or sgn * remainder[u] > sgn * remainder[best]):
+                best = u
+        if best == n:
+            break
+        step = 1 if residual > 0 else -1
+        dst[best] += step
+        remainder[best] -= sgn
+        residual -= step
+    return dst
+
+
+def quantize_symmetric_q15(h):
+    """quantize_symmetric_row_preserving_sum<std::int16_t>: the first half,
+    then its mirror."""
+    half = quantize_row_preserving_sum_q15(list(h[: len(h) // 2]))
+    return half + half[::-1]
+
+
+def typeii_cos_matrix(f, n):
+    """|H(f)| of an even-length symmetric row is |2 sum_{i < n/2} h[i]
+    cos(2 pi f ((n - 1) / 2 - i))|: the matrix over the frequencies f."""
+    i = np.arange(n // 2)
+    return 2.0 * np.cos(2.0 * np.pi * np.outer(f, (n - 1) / 2.0 - i))
+
+
+def band_grids(p_rate, f_stop, grid=GRID):
+    """measure_fir_bands' grids (iir_design.h): grid + 1 points over
+    [f_stop, 1/2] and over [0, p]."""
+    t = np.arange(grid + 1) / grid
+    return f_stop + (0.5 - f_stop) * t, p_rate * t
+
+
+def fir_bands(h, p_rate, f_stop, grid=GRID):
+    """(worst stopband dB over [f_stop, 1/2], passband ripple dB peak to peak
+    over [0, p]) on measure_fir_bands' grids, by the complex sum."""
+    fs, fp = band_grids(p_rate, f_stop, grid)
+    h = np.asarray(h, dtype=float)
+    i = np.arange(len(h))
+    hs = np.abs(np.exp(-2j * np.pi * np.outer(fs, i)) @ h)
+    hp = np.abs(np.exp(-2j * np.pi * np.outer(fp, i)) @ h)
+    return float(db(hs.max())), float(db(hp.max()) - db(hp.min()))
+
+
+def typeii_q15_min_length(p_rate, f_stop, A, rp_pp=RIPPLE_DB, max_len=400):
+    """The shortest even length N (from 4) at which a remez design of the
+    target grid, its taps quantized to Q1.14 by quantize_symmetric_q15, is
+    flat within rp_pp peak to peak to p and A dB down from f_stop on the
+    16384-point grids, each by Q15_MEASURE_GUARD_DB; at that length, the
+    design whose Q1.14 taps attain the deepest stopband (the lowest target on
+    a tie). Returns (N, target dB, design taps, Q1.14 taps, ripple dB and
+    stopband dB of the Q1.14 taps, designs passing at N, designs tried at N),
+    or None."""
+    dp = (10 ** (rp_pp / 20) - 1) / (10 ** (rp_pp / 20) + 1)
+    targets = [(100 * A + k) / 100 for k in range(0, Q15_TARGET_STEPS + 1)]
+    assert Q15_TARGET_STEP_DB == 0.01
+    fs, fp = band_grids(p_rate, f_stop)
+    for N in range(4, max_len, 2):
+        cs, cp = typeii_cos_matrix(fs, N), typeii_cos_matrix(fp, N)
+        tried = []
+        for target in targets:
+            ds = 10 ** (-target / 20)
+            try:
+                h = signal.remez(N, [0, p_rate, f_stop, 0.5], [1, 0], weight=[1 / dp, 1 / ds], fs=1.0, maxiter=400)
+            except Exception:  # noqa: BLE001 - remez fails to converge at some lengths
+                continue
+            tried.append((target, h, quantize_symmetric_q15(h)))
+        if not tried:
+            continue
+        halves = np.array([q[: N // 2] for _, _, q in tried], dtype=float).T / Q15_SCALE
+        sb = db(np.abs(cs @ halves).max(axis=0))
+        mag = np.abs(cp @ halves)
+        rp = db(mag.max(axis=0)) - db(mag.min(axis=0))
+        g = Q15_MEASURE_GUARD_DB
+        passing = [k for k in range(len(tried)) if sb[k] <= -A - g and rp[k] <= rp_pp - g]
+        if passing:
+            best = min(passing, key=lambda k: (sb[k], tried[k][0]))
+            target, h, q = tried[best]
+            sbq, rpq = fir_bands([x / Q15_SCALE for x in q], p_rate, f_stop)
+            if sbq > -A - g / 2 or rpq > rp_pp - g / 2:
+                raise RuntimeError(f"Q15 row N{N}: the complex sum disagrees with the search ({sbq}, {rpq})")
+            return N, target, h, q, rpq, sbq, len(passing), len(tried)
+    return None
+
+
 def ulps(x, ref):
     """|x - ref| in units of the last place of x (a double)."""
     return float(abs(mpmath.mpf(x) - ref) / math.ulp(x))

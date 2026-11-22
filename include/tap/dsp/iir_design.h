@@ -110,7 +110,13 @@
 //     converges, flat within 0.01 dB peak to peak to p and A dB down from the
 //     Chebyshev's stop edge at that order (the same generator); a custom
 //     setting designs at run time through kaiser.h
-//     (design_guard_band_linear), pinned by tolerance.
+//     (design_guard_band_linear), pinned by tolerance. Q15 has rows of its
+//     own (k_guard_band_fir_q15<A, PassNum, PassDen, Order>, since 0.4.0) at
+//     the three 70 dB spec points and orders 3 to 11: designs that keep the
+//     same spec from the same stop edge once quantized to Q1.14 by
+//     quantize_symmetric_row_preserving_sum<std::int16_t> (quantize.h), the
+//     same length as the double row or up to 12 taps longer; none at 120 dB,
+//     which Q1.14 cannot carry (iir_tables.h states both).
 //   - Responses and group delays (the *_response and *_group_delay
 //     functions): runtime double over libm, for the stages' I5 latency
 //     members and the tests.
@@ -514,6 +520,16 @@ namespace tap::dsp {
                                               "one)");
         };
 
+        template <int StopDb, int PassNum, int PassDen, int Order>
+        struct committed_guard_fir_q15 {
+            static constexpr const guard_band_fir_q15_design* k_found =
+                find_spec(std::span<const guard_band_fir_q15_design>(k_guard_band_fir_q15_tables), StopDb, PassNum,
+                          PassDen, Order);
+            static_assert(k_found != nullptr, "tap::dsp: no committed Q15 linear guard band filter at this spec point "
+                                              "(iir_tables.h lists them: the three 70 dB points, orders 3 to 11; none "
+                                              "at 120 dB)");
+        };
+
     } // namespace detail
 
     /// The guard band filter's Chebyshev II at a spec point (A dB, passband
@@ -528,6 +544,14 @@ namespace tap::dsp {
     template <int StopDb, int PassNum, int PassDen, int Order>
     inline constexpr const guard_band_fir_design& k_guard_band_fir =
         *detail::committed_guard_fir<StopDb, PassNum, PassDen, Order>::k_found;
+
+    /// The committed linear (type II) guard band filter for Q15 at the same
+    /// spec point and stop edge: its taps, quantized to Q1.14 by
+    /// quantize_symmetric_row_preserving_sum<std::int16_t>, keep the spec
+    /// k_guard_band_fir's double taps lose there (iir_tables.h).
+    template <int StopDb, int PassNum, int PassDen, int Order>
+    inline constexpr const guard_band_fir_q15_design& k_guard_band_fir_q15 =
+        *detail::committed_guard_fir_q15<StopDb, PassNum, PassDen, Order>::k_found;
 
     // ------------------------------------------------------------------------
     // Responses and group delays (runtime, libm)

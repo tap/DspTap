@@ -6,10 +6,10 @@
 // against the assembled polyphase bank; here against the utility itself,
 // over rows of a genuinely designed prototype). The symmetric form
 // (quantize_symmetric_row_preserving_sum) is pinned over every committed
-// guard band row (iir_tables.h) and a Kaiser custom design, in all four
-// formats: its symmetry, its zero at Nyquist, its sum, and its bit-identity
-// with the half-then-mirror procedure SampleRateTap's guard band filter ran
-// inline.
+// guard band row (iir_tables.h: the double rows and the Q15 rows) and a
+// Kaiser custom design, in all four formats: its symmetry, its zero at
+// Nyquist, its sum, and its bit-identity with the half-then-mirror procedure
+// SampleRateTap's guard band filter ran inline.
 
 #include <cmath>
 #include <cstdint>
@@ -200,12 +200,15 @@ namespace {
     // ------------------------------------------------------------------------
 
     /// Every even-length symmetric row the family quantizes this way: the
-    /// committed guard band FIRs and a Kaiser custom design at 70 dB, 3/8,
-    /// the order-5 Chebyshev II's edge (52 taps), as SampleRateTap's guard
-    /// band filter designs a custom setting.
+    /// committed guard band FIRs (double and Q15 rows) and a Kaiser custom
+    /// design at 70 dB, 3/8, the order-5 Chebyshev II's edge (52 taps), as
+    /// SampleRateTap's guard band filter designs a custom setting.
     std::vector<std::vector<double>> symmetric_rows() {
         std::vector<std::vector<double>> rows;
         for (const auto& r : tap::dsp::k_guard_band_fir_tables) {
+            rows.emplace_back(r.taps.begin(), r.taps.end());
+        }
+        for (const auto& r : tap::dsp::k_guard_band_fir_q15_tables) {
             rows.emplace_back(r.taps.begin(), r.taps.end());
         }
         const double p    = 3.0 / 8.0;

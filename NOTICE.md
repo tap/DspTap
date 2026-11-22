@@ -242,7 +242,12 @@ They carry a copyright and no license, so nothing of theirs is in this tree.
   M-path recursive polyphase filter (2004) and Renfors and Saramäki's (1987);
   its design, IIR-0's SLSQP minimax from random starts. The linear guard band
   form: Parks–McClellan through `scipy.signal.remez`, and for a custom
-  setting the Kaiser window (`kaiser.h`, Kaiser 1974).
+  setting the Kaiser window (`kaiser.h`, Kaiser 1974). Its Q15 rows (0.4.0)
+  are the same Parks–McClellan designs (McClellan, Parks and Rabiner 1973) at
+  higher design targets, the shortest whose taps keep the spec once
+  quantized by DspTap's own `quantize_symmetric_row_preserving_sum` (the
+  largest-remainder method of `quantize.h`, mirrored), which the generator
+  emulates; no new source.
 - This is a maintainer judgement call, not legal advice; the maintainer's
   judgement, as at #42, is what settles it.
 

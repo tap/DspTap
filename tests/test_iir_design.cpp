@@ -10,20 +10,33 @@
 // promise what their rows say. The bits themselves are
 // tests/test_iir_constexpr.cpp's.
 //
-// On the QEMU legs (tests/CMakeLists.txt, MAIN_FILTER) the six grid sweeps
+// The Q15 guard band rows (0.4.0) are pinned the same way: their lengths,
+// their symmetry, DspTap's own quantizer reproducing bit for bit the Q1.14
+// taps the generator's emulation of it made (tests/reference/
+// guard_band_q15_taps.h), their zero at Nyquist in the quantized taps, and,
+// on the 16384-point grids, the stopband and ripple the Q1.14 taps attain;
+// beside them the honest limit they answer: the double rows quantized the
+// same way, short of 70 dB, and nowhere near 120, while Q1.30 keeps them.
+//
+// On the QEMU legs (tests/CMakeLists.txt, MAIN_FILTER) the nine grid sweeps
 // are excluded by name, as the Kaiser and Nyquist searches are: dense double
-// responses of every design, target-independent numbers that cost 141 s of
-// soft-float emulation on the M33 (GuardBandFirTablesMeetTheirSpec 62 s,
-// GuardBandLinearCustomDesignMeetsItsSpec 42, NearLinearTablesMeetTheirSpec-
-// OnTheGrid 13, HalfbandMeetsItsSpecOnTheGrid 10, Cheby2CommittedGainsAre-
-// TheLinfGains 9, FourpathTablesMeetTheFoldingBandSpec 5). The structural
-// pins (orders, ulps against mpmath, symmetry, the committed rows' fields,
-// the Chebyshev II's spec) run on every leg.
+// responses of every design, target-independent numbers that cost minutes of
+// soft-float emulation on the M33. The first six took 141 s there
+// (GuardBandFirTablesMeetTheirSpec 62 s, GuardBandLinearCustomDesignMeetsIts-
+// Spec 42, NearLinearTablesMeetTheirSpecOnTheGrid 13, HalfbandMeetsItsSpecOn-
+// TheGrid 10, Cheby2CommittedGainsAreTheLinfGains 9, FourpathTablesMeetThe-
+// FoldingBandSpec 5); the three of 0.4.0 took 1,085 s on a slower host, where
+// those six took 157 s (GuardBandFirQ15RowsMeetTheirSpecInQ15 215 s,
+// GuardBandFirDoubleRowsAreFormatLimitedInQ15 388, GuardBandFirDoubleRows-
+// KeepTheirSpecInQ31 482). The structural pins (orders, ulps against
+// mpmath, symmetry, the committed rows' fields, the Chebyshev II's spec, the
+// Q15 rows' lengths and quantized bits) run on every leg.
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <complex>
+#include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <numbers>
@@ -32,8 +45,10 @@
 
 #include <gtest/gtest.h>
 
+#include "reference/guard_band_q15_taps.h"
 #include "reference/iir_mpmath_reference.h"
 #include "tap/dsp/iir_design.h"
+#include "tap/dsp/quantize.h"
 
 namespace {
 
@@ -456,6 +471,190 @@ namespace {
             alt += (i % 2 == 0 ? 1.0 : -1.0) * (h[i] - h[n - 1 - i]);
         }
         EXPECT_EQ(alt, 0.0);
+    }
+
+    // ------------------------------------------------------------------------
+    // The linear guard band form in Q15 (0.4.0)
+    // ------------------------------------------------------------------------
+
+    /// A row's Q1.14 taps by DspTap's quantizer (the symmetric form).
+    std::vector<std::int16_t> q15_taps(std::span<const double> design) {
+        std::vector<std::int16_t> q(design.size());
+        quantize_symmetric_row_preserving_sum<std::int16_t>(design, q);
+        return q;
+    }
+
+    /// The Q1.14 taps as the doubles they are (q / 2^14, exact), for
+    /// measure_fir_bands.
+    std::vector<double> q15_values(const std::vector<std::int16_t>& q) {
+        std::vector<double> h(q.size());
+        for (std::size_t i = 0; i < q.size(); ++i) {
+            h[i] = static_cast<double>(q[i]) / sample_traits<std::int16_t>::k_coeff_scale;
+        }
+        return h;
+    }
+
+    double row_p(int pass_num, int pass_den) {
+        return static_cast<double>(pass_num) / static_cast<double>(pass_den);
+    }
+
+    /// The Q15 rows' lengths, in the table's order (tools/iir/gen_iir_tables.py
+    /// printed them), beside the double row's of the same spec point and order.
+    struct q15_length {
+        int         pass_num;
+        int         pass_den;
+        int         order;
+        std::size_t taps;
+        std::size_t double_taps;
+    };
+    constexpr std::array<q15_length, 15> k_q15_lengths{{{1, 3, 3, 20, 20},
+                                                        {1, 3, 5, 32, 30},
+                                                        {1, 3, 7, 40, 38},
+                                                        {1, 3, 9, 54, 52},
+                                                        {1, 3, 11, 72, 66},
+                                                        {3, 8, 3, 26, 26},
+                                                        {3, 8, 5, 42, 40},
+                                                        {3, 8, 7, 50, 50},
+                                                        {3, 8, 9, 72, 64},
+                                                        {3, 8, 11, 96, 86},
+                                                        {19, 48, 3, 32, 32},
+                                                        {19, 48, 5, 48, 48},
+                                                        {19, 48, 7, 60, 58},
+                                                        {19, 48, 9, 86, 76},
+                                                        {19, 48, 11, 114, 102}}};
+
+    TEST(IirDesign, GuardBandFirQ15TablesHoldTheirRows) {
+        // The three 70 dB spec points at the double table's orders 3 to 11, no
+        // 120 dB row; each at the double row's stop edge, as long as it or
+        // longer, its design symmetric, and its Q1.14 taps by DspTap's own
+        // quantizer exactly those the generator's emulation of it made.
+        namespace q15_ref = tap::dsp::test::guard_band_q15_ref;
+        ASSERT_EQ(std::size(k_guard_band_fir_q15_tables), k_q15_lengths.size());
+        ASSERT_EQ(std::size(q15_ref::k_rows), k_q15_lengths.size());
+        for (std::size_t k = 0; k < k_q15_lengths.size(); ++k) {
+            const guard_band_fir_q15_design& r    = k_guard_band_fir_q15_tables[k];
+            const q15_length&                want = k_q15_lengths[k];
+            const std::size_t                n    = r.taps.size();
+            EXPECT_EQ(r.stop_db, 70);
+            EXPECT_EQ(r.pass_num, want.pass_num);
+            EXPECT_EQ(r.pass_den, want.pass_den);
+            EXPECT_EQ(r.order, want.order);
+            EXPECT_EQ(n, want.taps) << r.pass_num << "/" << r.pass_den << " order " << r.order;
+            const guard_band_fir_design* d =
+                detail::find_spec(std::span<const guard_band_fir_design>(k_guard_band_fir_tables), r.stop_db,
+                                  r.pass_num, r.pass_den, r.order);
+            ASSERT_NE(d, nullptr);
+            EXPECT_EQ(d->taps.size(), want.double_taps);
+            EXPECT_GE(n, d->taps.size()) << "never shorter than the double row";
+            EXPECT_EQ(r.stop_edge, d->stop_edge) << "the double row's stop edge";
+            EXPECT_GE(r.design_db, static_cast<double>(r.stop_db));
+            EXPECT_LE(r.design_db, static_cast<double>(r.stop_db) + 30.0);
+            EXPECT_LE(r.stopband_db, -static_cast<double>(r.stop_db));
+            EXPECT_LE(r.ripple_db, 0.01);
+            EXPECT_EQ(n % 2, 0u) << "type II: even length";
+            for (std::size_t i = 0; i < n / 2; ++i) {
+                EXPECT_EQ(r.taps[i], r.taps[n - 1 - i]) << "the design symmetric, bit for bit";
+            }
+            const std::vector<std::int16_t> q   = q15_taps(r.taps);
+            const q15_ref::row&             ref = q15_ref::k_rows[k];
+            EXPECT_EQ(ref.stop_db, r.stop_db);
+            EXPECT_EQ(ref.pass_num, r.pass_num);
+            EXPECT_EQ(ref.pass_den, r.pass_den);
+            EXPECT_EQ(ref.order, r.order);
+            ASSERT_EQ(ref.taps.size(), n);
+            std::int64_t alt = 0;
+            for (std::size_t i = 0; i < n; ++i) {
+                EXPECT_EQ(q[i], ref.taps[i]) << "tap " << i << ": the generator's emulation, bit for bit";
+                EXPECT_EQ(q[i], q[n - 1 - i]) << "the Q1.14 taps symmetric, bit for bit";
+                alt += (i % 2 == 0 ? 1 : -1) * static_cast<std::int64_t>(q[i]);
+            }
+            EXPECT_EQ(alt, 0) << "the zero at Nyquist, exactly, in the Q1.14 taps";
+        }
+        static_assert(k_guard_band_fir_q15<70, 1, 3, 5>.taps.size() == 32);
+        static_assert(k_guard_band_fir_q15<70, 3, 8, 7>.taps.size() == 50);
+        static_assert(k_guard_band_fir_q15<70, 19, 48, 7>.taps.size() == 60);
+    }
+
+    TEST(IirDesign, GuardBandFirQ15RowsMeetTheirSpecInQ15) {
+        // Quantized by DspTap's quantizer, on the 16384-point grids over the
+        // passband and the stopband from the double row's stop edge: at least
+        // 70 dB down, flat within 0.01 dB peak to peak, as recorded.
+        for (const guard_band_fir_q15_design& r : k_guard_band_fir_q15_tables) {
+            const double p = row_p(r.pass_num, r.pass_den);
+            const auto   m = measure_fir_bands(q15_values(q15_taps(r.taps)), p, r.stop_edge, k_grid);
+            std::printf("[ measured ] Q15 guard band row, %d dB %d/%d order %d: %lu taps, %.2f dB, ripple %.5f dB\n",
+                        r.stop_db, r.pass_num, r.pass_den, r.order, static_cast<unsigned long>(r.taps.size()),
+                        m.stopband_db, m.ripple_db);
+            EXPECT_LE(m.stopband_db, -static_cast<double>(r.stop_db));
+            EXPECT_NEAR(m.stopband_db, r.stopband_db, 0.001);
+            EXPECT_LE(m.ripple_db, 0.01);
+            EXPECT_NEAR(m.ripple_db, r.ripple_db, 1e-5);
+        }
+    }
+
+    TEST(IirDesign, GuardBandFirDoubleRowsAreFormatLimitedInQ15) {
+        // The honest limit the Q15 rows answer, and why none is at 120 dB:
+        // the double rows' taps, quantized to Q1.14 the same way, lose the
+        // spec. At 70 dB thirteen of the fifteen miss it, in stopband or
+        // ripple (SampleRateTap measured the three it runs, -67.1 / -66.8 /
+        // -64.6 dB); at 120 dB the four attain -69.2 to -97.4 dB, nowhere near 120.
+        int    missing_70 = 0;
+        double best_70    = 0.0;
+        double worst_70   = -1000.0;
+        for (const guard_band_fir_design& r : k_guard_band_fir_tables) {
+            const double p = row_p(r.pass_num, r.pass_den);
+            const auto   m = measure_fir_bands(q15_values(q15_taps(r.taps)), p, r.stop_edge, k_grid);
+            std::printf("[ measured ] the double guard band row in Q1.14, %d dB %d/%d order %d: %.2f dB (double "
+                        "%.2f), ripple %.4f dB\n",
+                        r.stop_db, r.pass_num, r.pass_den, r.order, m.stopband_db, r.stopband_db, m.ripple_db);
+            if (r.stop_db == 70) {
+                missing_70 += m.stopband_db > -70.0 || m.ripple_db > 0.01 ? 1 : 0;
+                best_70  = std::min(best_70, m.stopband_db);
+                worst_70 = std::max(worst_70, m.stopband_db);
+            }
+            else {
+                EXPECT_GT(m.stopband_db, -100.0) << "Q1.14 does not carry 120 dB";
+            }
+        }
+        EXPECT_EQ(missing_70, 13);
+        EXPECT_NEAR(best_70, -74.81, 0.01);
+        EXPECT_NEAR(worst_70, -63.51, 0.01);
+        const auto q15_stopband = [](const guard_band_fir_design& r) {
+            return measure_fir_bands(q15_values(q15_taps(r.taps)), row_p(r.pass_num, r.pass_den), r.stop_edge, k_grid)
+                .stopband_db;
+        };
+        EXPECT_NEAR(q15_stopband(k_guard_band_fir<70, 1, 3, 5>), -67.13, 0.01);
+        EXPECT_NEAR(q15_stopband(k_guard_band_fir<70, 3, 8, 7>), -66.79, 0.01);
+        EXPECT_NEAR(q15_stopband(k_guard_band_fir<70, 19, 48, 7>), -64.60, 0.01);
+        EXPECT_NEAR(q15_stopband(k_guard_band_fir<120, 5, 12, 5>), -97.36, 0.01);
+        EXPECT_NEAR(q15_stopband(k_guard_band_fir<120, 5, 12, 7>), -70.87, 0.01);
+        EXPECT_NEAR(q15_stopband(k_guard_band_fir<120, 5, 12, 9>), -82.13, 0.01);
+        EXPECT_NEAR(q15_stopband(k_guard_band_fir<120, 5, 12, 11>), -69.18, 0.01);
+    }
+
+    TEST(IirDesign, GuardBandFirDoubleRowsKeepTheirSpecInQ31) {
+        // Why the double rows serve Q31: quantized to Q1.30 the same way
+        // (the symmetric quantizer), every row, 120 dB included, keeps its
+        // spec on the 16384-point grids (as GuardBandFirTablesMeetTheirSpec
+        // holds the double design: within 0.05 dB), its stopband within
+        // 0.05 dB of the double design's on the same grid and its ripple
+        // within 0.0001 dB.
+        for (const guard_band_fir_design& r : k_guard_band_fir_tables) {
+            std::vector<std::int32_t> q(r.taps.size());
+            quantize_symmetric_row_preserving_sum<std::int32_t>(r.taps, q);
+            std::vector<double> h(q.size());
+            for (std::size_t i = 0; i < q.size(); ++i) {
+                h[i] = static_cast<double>(q[i]) / sample_traits<std::int32_t>::k_coeff_scale;
+            }
+            const double p  = row_p(r.pass_num, r.pass_den);
+            const auto   m  = measure_fir_bands(h, p, r.stop_edge, k_grid);
+            const auto   md = measure_fir_bands(r.taps, p, r.stop_edge, k_grid);
+            EXPECT_LE(m.stopband_db, -static_cast<double>(r.stop_db) + 0.05)
+                << r.stop_db << " dB " << r.pass_num << "/" << r.pass_den << " order " << r.order;
+            EXPECT_NEAR(m.stopband_db, md.stopband_db, 0.05);
+            EXPECT_LE(m.ripple_db, 0.01);
+            EXPECT_NEAR(m.ripple_db, md.ripple_db, 1e-4);
+        }
     }
 
     TEST(IirDesign, FloatingFlushFramesMatchTheSpike) {
