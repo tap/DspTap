@@ -15,7 +15,9 @@
 //     zeroes it;
 //   - I9's kernel-level tests, under the host's flush-to-zero set in each
 //     fixture's SetUp and restored in its TearDown: silence decays to an
-//     exactly zero state within floating_flush_frames(), the kernels never
+//     exactly zero state within floating_flush_frames() (from the one noise
+//     start used here; the near-linear N19 at 120 dB, 5/12 cycles from 12 to
+//     20 of 39 starts, iir_kernels.h's honest limit), the kernels never
 //     touch the floating-point environment (the control bits, sticky flags
 //     aside, equal before and after every call), and the precondition fires
 //     in a Debug build with FTZ off. The no-FTZ half (the bounded residue,

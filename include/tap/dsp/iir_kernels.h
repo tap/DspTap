@@ -102,7 +102,14 @@
 //     at 70 dB 3/8, 5 to 7 at 120 dB 5/12 for the half-bands; 4 to 20 for the
 //     Chebyshev II cascades), and on x86 the silence after signal runs about
 //     ten times slower. Under flush-to-zero the allpass sections (both
-//     half-band variants, the four-path stage) reach an exactly zero state.
+//     half-band variants, the four-path stage) reach an exactly zero state,
+//     with one exception: the floating near-linear half-band at 120 dB, 5/12,
+//     divisor 1 (N19, nine second-order sections) holds a zero-input limit
+//     cycle under flush-to-zero, at 3.7 to 4.1 times the smallest normal in
+//     float and double, from 12 to 20 of 39 noise starts (SampleRateTap's
+//     IIR-b; rational's iir_stage.h states it and pins its bound): a
+//     second-order allpass section's product flushes and the section lifts
+//     the state again, the mechanism of the next item.
 //   - The floating biquad cascade under flush-to-zero: once |a2 y| falls
 //     below the smallest normal its product flushes, and for that sample the
 //     section runs as a first-order recursion with |a1| > 1, which lifts it
@@ -115,7 +122,13 @@
 //     Orders 3 and 5 at 1/3 drain to zero. The fixed-point cascade
 //     (magnitude truncation) always drains. A guard band stage's flush
 //     window (IIR_PLAN I6) therefore cannot promise an exactly zero state
-//     in floating point at those orders: IIR-c's to decide.
+//     in floating point at those orders. Decided (SampleRateTap's
+//     docs/IIR_PLAN.md question 19): an honest limit, kept, with no deadband
+//     in these kernels and no design dropped. A consumer states the residue
+//     its stage leaves after its flush window and pins a bound on it, as
+//     rational's guard band filter does at order 7 (its guard_band.h);
+//     DspTap's own measurement is the one above
+//     (tests/test_iir_kernels.cpp).
 //   - Contraction: the floating kernels are written as plain expressions, so
 //     a compiler that contracts them into FMAs (GCC by default where the
 //     target has one, Clang within a statement) moves float and double
