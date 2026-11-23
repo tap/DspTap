@@ -757,7 +757,14 @@ output rate from each stage's own (`latency_output_frames()` or
 stage in order is fed its `window_frames()` of zeros (the zero input after
 which its output is silence, `taps - 1` for a decimator) through the stages
 after it, `flush_output_frames()` frames in all, bit-identical to zero
-padding the chain's input. A chain is written by the caller as a type,
+padding the chain's input. Since 0.5.0 a chain reports `window_frames()`
+itself when every stage does: a bound valid from any state, the last
+stage's window and before it each stage's own plus the inputs it needs,
+at most, to write the window after it (`ceil(k M / L) + M` for a stage on
+its ratio's schedule), the bound `subband.h`'s flush already composed. So
+a chain that holds a chain flushes: the inner chain is fed that many zeros
+and writes the flattened chain's frames and possibly a few more, every one
+of them silence. A chain is written by the caller as a type,
 never looked up from a rate pair. The count is never a run-time value: a
 stage declares it as a `static constexpr` `channels()` of at least 1, and no
 chain constructor takes one (since 0.2.0; 0.1.0's chain took the count at run
@@ -773,7 +780,11 @@ chunks of 1 to the whole stream; `outputs_for` exact from every phase;
 construction and read-only through the chain; latency 80/3 output frames (40/2 of the
 by-2's outputs through the by-3, plus 60/3), the impulse peak where it
 says; flush equal to zero padding bit for bit from every phase in every
-format, `flush_output_frames` exact, the chain silent afterwards; reset
+format, `flush_output_frames` exact, the chain silent afterwards; a
+chain's `window_frames()` composed backward, silencing it from every phase;
+a chain holding a chain (first, last and two deep) processing as the
+flattened chain and flushing as zero padding in every format, the flattened
+chain's flush its prefix and silence after it; reset
 bit-exact; the concept rejecting a stage with no channel count, a run-time
 one or zero; a two-channel chain keeping its frames interleaved through its
 scratch across chunks, and a chain of a stage without a count not a type.
@@ -1063,7 +1074,10 @@ latency), and changes nothing an 0.2.0 consumer calls. 0.4.0 adds the linear
 guard band filter's Q15 rows (`k_guard_band_fir_q15`) and the symmetric
 quantizer they are measured through (`quantize_symmetric_row_preserving_sum`),
 and changes nothing an 0.3.0 consumer calls: every committed row before it is
-unchanged, bit for bit.
+unchanged, bit for bit. 0.5.0 lets a chain report `window_frames()`, so a
+chain that holds a chain flushes, and changes nothing an 0.4.0 consumer
+calls: every chain that flushed before writes the same frames, and the
+sub-band round trip's window is the same number.
 
 ## Build
 

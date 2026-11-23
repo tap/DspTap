@@ -112,8 +112,8 @@
 //     zero input frames after which the output is silence:
 //       max(A, W_down + F_down(W_op + E + W_up) + lead() + (A - T) mod D)
 //     (the first term input_plus_change only), with W a stage's
-//     window_frames() (a chain's composed from its stages, each stage's
-//     window plus the inputs the stages before it need to write it), E the
+//     window_frames() (a chain's, chain.h's: composed from its stages, each
+//     stage's window plus the inputs the stages before it need to write it), E the
 //     extra low-rate frames, and F_down(k) = ceil(k M / L) + M per stage,
 //     composed backward, the inputs a stage on its ratio's schedule needs
 //     for k outputs from any phase. Down, Up and Op must each report
@@ -195,19 +195,6 @@ namespace tap::dsp {
     // ANCHOR_END: subband_delay_path
 
     namespace detail {
-
-        /// Whether T is a tap::dsp::chain, and its stage types when it is.
-        template <typename T>
-        struct chain_parts {
-            static constexpr bool k_is_chain = false;
-        };
-        template <sync_stage First, sync_stage... Rest>
-        struct chain_parts<chain<First, Rest...>> {
-            static constexpr bool k_is_chain = true;
-            using stages                     = std::tuple<First, Rest...>;
-        };
-        template <typename T>
-        inline constexpr bool k_is_chain = chain_parts<T>::k_is_chain;
 
         /// A stage that reports an exact delay in one of the three forms; a
         /// chain when every stage does.
@@ -399,61 +386,6 @@ namespace tap::dsp {
             }
         }
 
-        /// Input frames a stage needs, at most, to write k frames from any
-        /// phase: ceil(k M / L) + M for a stage on its ratio's schedule,
-        /// composed backward through a chain's stages.
-        template <typename T>
-        constexpr std::size_t max_frames_in(std::size_t k) noexcept {
-            if constexpr (k_is_chain<T>) {
-                using stages = typename chain_parts<T>::stages;
-                return [k]<std::size_t... I>(std::index_sequence<I...>) {
-                    std::size_t c = k;
-                    ((c = max_frames_in<std::tuple_element_t<std::tuple_size_v<stages> - 1 - I, stages>>(c)), ...);
-                    return c;
-                }(std::make_index_sequence<std::tuple_size_v<stages>>{});
-            }
-            else {
-                if (k == 0) {
-                    return 0;
-                }
-                const std::size_t l = T::k_up;
-                const std::size_t m = T::k_down;
-                return (k * m + l - 1) / l + m;
-            }
-        }
-
-        /// Whether a stage reports the zero input frames that drain it: its
-        /// window_frames(), or every stage's for a chain.
-        template <typename T>
-        struct drains {
-            static constexpr bool k_value = reports_window<T>;
-        };
-        template <sync_stage First, sync_stage... Rest>
-        struct drains<chain<First, Rest...>> {
-            static constexpr bool k_value = drains<First>::k_value && (drains<Rest>::k_value && ...);
-        };
-
-        /// Zero input frames after which a stage's output is silence, from any
-        /// state: its window_frames(); for a chain, the first stage's window
-        /// plus the inputs it needs to write the rest of the chain's window,
-        /// composed backward.
-        template <typename T>
-        std::size_t drain_frames(const T& s) noexcept {
-            if constexpr (k_is_chain<T>) {
-                using stages  = typename chain_parts<T>::stages;
-                std::size_t w = 0;
-                [&]<std::size_t... I>(std::index_sequence<I...>) {
-                    ((w = drain_frames(s.template stage<std::tuple_size_v<stages> - 1 - I>())
-                          + max_frames_in<std::tuple_element_t<std::tuple_size_v<stages> - 1 - I, stages>>(w)),
-                     ...);
-                }(std::make_index_sequence<std::tuple_size_v<stages>>{});
-                return w;
-            }
-            else {
-                return static_cast<std::size_t>(s.window_frames());
-            }
-        }
-
     } // namespace detail
 
     /// The sub-band round trip over Down (1/D), Up (D/1) and the low-rate Op;
@@ -591,10 +523,10 @@ namespace tap::dsp {
         std::size_t window_frames() const noexcept {
             static_assert(k_flushable, "the sub-band round trip's flush needs Down, Up and Op to report "
                                        "window_frames(), the zero input frames that drain each");
-            const std::size_t low =
-                static_cast<std::size_t>(m_op.window_frames()) + m_extra_frames + detail::drain_frames(m_up);
-            const std::size_t change =
-                detail::drain_frames(m_down) + detail::max_frames_in<Down>(low) + m_lead + m_remainder;
+            const std::size_t low = static_cast<std::size_t>(m_op.window_frames()) + m_extra_frames
+                                    + static_cast<std::size_t>(m_up.window_frames());
+            const std::size_t change = static_cast<std::size_t>(m_down.window_frames())
+                                       + detail::max_frames_in<Down>(low) + m_lead + m_remainder;
             return m_output == subband_output::input_plus_change ? std::max(m_latency, change) : change;
         }
 
@@ -633,7 +565,7 @@ namespace tap::dsp {
 
       private:
         static constexpr bool k_flushable =
-            detail::drains<Down>::k_value && detail::drains<Up>::k_value && detail::reports_window<Op>;
+            detail::reports_window<Down> && detail::reports_window<Up> && detail::reports_window<Op>;
 
         /// The change path's lead over its input from the stages' state: false
         /// if it falls behind for some j in 1 .. 2D, else the largest surplus.

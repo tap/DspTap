@@ -22,7 +22,7 @@
 #pragma once
 
 #define TAP_DSP_VERSION_MAJOR 0
-#define TAP_DSP_VERSION_MINOR 4
+#define TAP_DSP_VERSION_MINOR 5
 #define TAP_DSP_VERSION_PATCH 0
 
 /// (major << 16) | (minor << 8) | patch: comparable as an integer.
