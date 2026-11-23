@@ -83,7 +83,11 @@
 //     count of zero input frames after which its output is silence (its
 //     history length: taps - 1 for an M-branch decimator); each stage reports
 //     it, and a chain of stages that do not cannot flush (a static_assert
-//     names the rule). flush() equals zero-padding the chain's input, bit for
+//     names the rule). A chain reports window_frames() too, when its stages
+//     do (since 0.5.0): a bound valid from any state, each stage on its
+//     ratio's schedule, so a chain that holds a chain flushes, writing the
+//     flattened chain's frames and possibly a few more, all silence.
+//     flush() equals zero-padding the chain's input, bit for
 //     bit: its output is a prefix of the padded stream's, and every padded
 //     output beyond it is silence. The chain is left in the zero-fed state;
 //     reset() before reuse.
@@ -162,6 +166,9 @@ namespace tap::dsp {
             { s.reset() } noexcept;
         };
     // ANCHOR_END: chain_concept
+
+    template <sync_stage First, sync_stage... Rest>
+    class chain;
 
     namespace detail {
 
@@ -262,6 +269,42 @@ namespace tap::dsp {
         template <typename T>
         constexpr std::size_t max_outputs_for(std::size_t n) noexcept {
             return (n * static_cast<std::size_t>(T::k_up)) / static_cast<std::size_t>(T::k_down) + 2;
+        }
+
+        /// Whether T is a tap::dsp::chain, and its stage types when it is.
+        template <typename T>
+        struct chain_parts {
+            static constexpr bool k_is_chain = false;
+        };
+        template <sync_stage First, sync_stage... Rest>
+        struct chain_parts<chain<First, Rest...>> {
+            static constexpr bool k_is_chain = true;
+            using stages                     = std::tuple<First, Rest...>;
+        };
+        template <typename T>
+        inline constexpr bool k_is_chain = chain_parts<T>::k_is_chain;
+
+        /// Input frames a stage needs, at most, to write k frames from any
+        /// phase: ceil(k M / L) + M for a stage on its ratio's schedule,
+        /// composed backward through a chain's stages.
+        template <typename T>
+        constexpr std::size_t max_frames_in(std::size_t k) noexcept {
+            if constexpr (k_is_chain<T>) {
+                using stages = typename chain_parts<T>::stages;
+                return [k]<std::size_t... I>(std::index_sequence<I...>) {
+                    std::size_t c = k;
+                    ((c = max_frames_in<std::tuple_element_t<std::tuple_size_v<stages> - 1 - I, stages>>(c)), ...);
+                    return c;
+                }(std::make_index_sequence<std::tuple_size_v<stages>>{});
+            }
+            else {
+                if (k == 0) {
+                    return 0;
+                }
+                const std::size_t l = T::k_up;
+                const std::size_t m = T::k_down;
+                return (k * m + l - 1) / l + m;
+            }
         }
 
     } // namespace detail
@@ -390,6 +433,28 @@ namespace tap::dsp {
         // ANCHOR_END: chain_nominal_members
 
         // ANCHOR: chain_flush
+        /// Zero input frames after which the chain's output is silence, from
+        /// any state: the last stage's window, and before it each stage's own
+        /// window plus the inputs it needs, at most, to write the window of
+        /// the stages after it (detail::max_frames_in: every stage on its
+        /// ratio's schedule), composed backward. Reported when every stage
+        /// reports its own, so a chain that holds a chain flushes: its flush
+        /// feeds the inner chain this many zeros, which writes the frames the
+        /// flattened chain would and possibly a few more, every one of them
+        /// silence (zero padding still, bit for bit). The same bound
+        /// subband.h's flush composes.
+        std::size_t window_frames() const noexcept
+            requires(detail::reports_window<First> && (detail::reports_window<Rest> && ...))
+        {
+            std::size_t w = 0;
+            [&]<std::size_t... I>(std::index_sequence<I...>) {
+                ((w = static_cast<std::size_t>(std::get<k_stages - 1 - I>(m_stages).window_frames())
+                      + detail::max_frames_in<std::tuple_element_t<k_stages - 1 - I, stages_tuple>>(w)),
+                 ...);
+            }(std::make_index_sequence<k_stages>{});
+            return w;
+        }
+
         /// End of stream: drains every stage's tail in order (see the file
         /// header); writes flush_output_frames() frames and returns that.
         /// noexcept and allocation-free; reset() before reuse.

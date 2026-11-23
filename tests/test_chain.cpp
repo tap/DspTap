@@ -8,6 +8,9 @@
 // every phase; frames_needed is the smallest n that reaches k; the latency is the exact
 // rational the stages' delays compose to; flush drains every stage's tail and
 // equals zero padding bit for bit, from every phase, in every sample format;
+// a chain's own window_frames() (0.5.0) is its stages' composed backward and
+// silences it from every phase, so a chain that holds a chain flushes as
+// zero padding too, its first frames the flattened chain's flush;
 // the concept admits basic_decimator and rejects a type missing a member, or
 // declaring its channel count at run time or as zero (and a chain of such a
 // stage is not a type); and the chain takes its
@@ -376,6 +379,114 @@ namespace {
             for (const float v : tail) {
                 EXPECT_EQ(v, 0.0f);
             }
+        }
+    }
+
+    // A chain reports window_frames() since 0.5.0: the last stage's window,
+    // and before it each stage's own plus the inputs it needs, from any
+    // phase, to write the window after it (ceil(k M / L) + M for a stage on
+    // its ratio's schedule). Only when every stage reports one.
+    TEST(Chain, WindowIsTheStagesWindowsComposedBackward) {
+        using d2 = basic_decimator<float, 2>;
+        using d3 = basic_decimator<float, 3>;
+        chain<d2, d3>     c(d2{}, d3{});
+        const std::size_t w0 = c.stage<0>().window_frames();
+        const std::size_t w1 = c.stage<1>().window_frames();
+        // The by-3's window, then the by-2's own and the 2 w1 + 2 inputs it
+        // needs to write w1 frames from either phase.
+        EXPECT_EQ(c.window_frames(), w0 + 2 * w1 + 2);
+        EXPECT_EQ(chain<d2>(d2{}).window_frames(), w0) << "a one-stage chain's window is its stage's";
+        // Inside a chain, a chain counts its own window and the inputs its
+        // stages need, composed backward, to write the window after it: the
+        // by-3 3 k + 3 for k outputs, then the by-2 2 k + 2 for those.
+        EXPECT_EQ((chain<chain<d2, d3>, d2>(chain<d2, d3>(d2{}, d3{}), d2{}).window_frames()),
+                  c.window_frames() + 2 * (3 * w0 + 3) + 2);
+        static_assert(!tap::dsp::detail::reports_window<chain<stereo_keep_every_second>>,
+                      "a chain of a stage with no window reports none");
+        // From every phase, the window's zeros leave the chain silent.
+        const auto         x = test_signal<float>(64);
+        std::vector<float> y(c.outputs_for(64));
+        for (std::size_t fed = 0; fed < 12; ++fed) {
+            chain<d2, d3> probe = c;
+            probe.process(x.data(), fed, y.data());
+            std::vector<float> z(probe.window_frames(), 0.0f);
+            std::vector<float> drain(probe.outputs_for(z.size()));
+            probe.process(z.data(), z.size(), drain.data());
+            std::vector<float> after(w0 + 3 * w1, 0.0f);
+            std::vector<float> tail(probe.outputs_for(after.size()));
+            probe.process(after.data(), after.size(), tail.data());
+            for (const float v : tail) {
+                EXPECT_EQ(v, 0.0f) << "fed " << fed;
+            }
+        }
+    }
+
+    /// Feeds c the first `fed` frames of x, then checks flush() against zero
+    /// padding: flush_output_frames() frames, a prefix of the padded stream's,
+    /// which is silence beyond them. Returns what flush wrote.
+    template <typename C, typename S>
+    std::vector<S> flush_against_zero_padding(C c, const std::vector<S>& x, std::size_t fed) {
+        std::vector<S> scratch(c.outputs_for(fed));
+        c.process(x.data(), fed, scratch.data());
+        C                 padded = c;
+        const std::size_t expect = c.flush_output_frames();
+        std::vector<S>    a(expect + 8, S{1});
+        EXPECT_EQ(c.flush(a.data()), expect) << "fed " << fed;
+        a.resize(expect);
+        const std::size_t zeros = 8192; // every window here, many times over
+        std::vector<S>    z(zeros, tap::dsp::sample_traits<S>::silence());
+        std::vector<S>    b(padded.outputs_for(zeros));
+        const std::size_t made = padded.process(z.data(), zeros, b.data());
+        EXPECT_GT(made, expect) << "fed " << fed;
+        for (std::size_t i = 0; i < expect && i < made; ++i) {
+            EXPECT_EQ(a[i], b[i]) << "fed " << fed << " output " << i;
+        }
+        for (std::size_t i = expect; i < made; ++i) {
+            EXPECT_EQ(b[i], tap::dsp::sample_traits<S>::silence()) << "fed " << fed << " output " << i;
+        }
+        return a;
+    }
+
+    // A chain that holds a chain processes as the flattened chain and flushes
+    // as zero padding, bit for bit, from every phase and in every format: its
+    // flush writes the flattened chain's frames and possibly a few more, every
+    // one of them silence. The inner chain first, last, and two deep.
+    TYPED_TEST(chain_test, AChainHoldingAChainFlushesAsZeroPaddingBitForBit) {
+        using sample = TypeParam;
+        using d2     = basic_decimator<sample, 2>;
+        using d3     = basic_decimator<sample, 3>;
+        using inner  = chain<d2, d3>;
+        using flat   = chain<d2, d3, d2>;
+        using first  = chain<inner, d2>;
+        using last   = chain<d2, chain<d3, d2>>;
+        using deep   = chain<chain<inner>, d2>;
+        const auto x = test_signal<sample>(1200);
+        for (std::size_t fed = 1188; fed <= 1200; ++fed) { // every phase of the by-12 chain
+            const flat ref(d2{}, d3{}, d2{});
+            const auto want  = flush_against_zero_padding(ref, x, fed);
+            const auto check = [&](auto nested, const char* name) {
+                // Processing: the flattened chain's frames, bit for bit.
+                std::vector<sample> a(ref.outputs_for(fed));
+                std::vector<sample> b(nested.outputs_for(fed));
+                flat                r = ref;
+                ASSERT_EQ(r.process(x.data(), fed, a.data()), a.size()) << name;
+                ASSERT_EQ(nested.process(x.data(), fed, b.data()), b.size()) << name;
+                ASSERT_EQ(a, b) << name << ", fed " << fed;
+                // Flush: zero padding, and the flattened chain's flush first.
+                auto fresh = nested;
+                fresh.reset();
+                const auto got = flush_against_zero_padding(fresh, x, fed);
+                ASSERT_GE(got.size(), want.size()) << name << ", fed " << fed;
+                for (std::size_t i = 0; i < want.size(); ++i) {
+                    ASSERT_EQ(got[i], want[i]) << name << ", fed " << fed << " output " << i;
+                }
+                for (std::size_t i = want.size(); i < got.size(); ++i) {
+                    ASSERT_EQ(got[i], tap::dsp::sample_traits<sample>::silence()) << name << ", fed " << fed;
+                }
+            };
+            check(first(inner(d2{}, d3{}), d2{}), "the inner chain first");
+            check(last(d2{}, chain<d3, d2>(d3{}, d2{})), "the inner chain last");
+            check(deep(chain<inner>(inner(d2{}, d3{})), d2{}), "two deep");
         }
     }
 
