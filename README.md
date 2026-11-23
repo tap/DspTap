@@ -738,21 +738,26 @@ lp.set_cutoff(0.05);                                     // redesign in place: n
   Double's keeps the flush window in a 32-bit `size_t`: the window grows as
   1/fc toward either end, up to 232,710,082 frames at order 16.
 - **`set_cutoff(fc)`:** the constructor's design, in place: the sections,
-  the kernel's table, the flush window, the nominal latency and the
-  deviation are bit for bit what a stage constructed at fc holds (the
-  constructor runs the same function; bit for bit under `fft.h`'s
-  fp-contraction policy, as every bit-exact claim here). `noexcept` and allocation-free
-  (pinned through the heap meter); its precondition,
+  the kernel's table, the flush window and the nominal latency are bit for
+  bit what a stage constructed at fc holds, and the deviation it reports is
+  the same number (the constructor runs the same function; bit for bit under
+  `fft.h`'s fp-contraction policy, as every bit-exact claim here). `noexcept`
+  and allocation-free (pinned through the heap meter); its precondition,
   `butterworth_supports_cutoff<S>(fc)`, is a `TAP_EXPECTS`, never a throw. It
   leaves the state alone: the recursion continues under the new
   coefficients, and a caller that wants a clean start calls `reset()`. Its
-  cost is one design, most of it the deviation's 1,025-point group-delay
-  scan: 45 to 78 µs at order 4 and 92 to 188 µs at order 8, float or double,
-  at the cutoffs 0.45/2 … 0.45/16 an oversampling kernel sets (x86-64, a
-  shared 2.1 GHz Xeon VM, GCC 13.3 `-O3`, medians of 401 calls over five
-  runs), and 1.6 ms at order 16 in double at its lowest cutoff; its stack is the flush
-  window's few matrices, GCC's `-fstack-usage` frames 728, 2,648 and 10,336
-  bytes at orders 4, 8 and 16 on the Cortex-M33. It is for occasional
+  cost is one design, nearly all of it the flush window: 1.1 to 2.8 µs at
+  order 4 and 5.5 to 14 µs at order 8, float or double, at the cutoffs
+  0.45/2 … 0.45/16 an oversampling kernel sets (x86-64, a shared 2.1 GHz
+  Xeon VM, GCC 13.3 `-O3`, medians of 401 calls over three runs), and 77 µs
+  at order 16 in double at its lowest cutoff. The design is double, so a core
+  without a double FPU pays libgcc for it: 2.3 M instructions a call at order
+  8 on a Cortex-M33 or M4F (2.8 M at most; 0.1 M on a Cortex-M55,
+  `bench/README.md`). Through 0.6.0 it also ran the deviation's group-delay
+  scan, 80 to 93 % of the call (35.7 M instructions at order 8 on the M33);
+  since 0.7.0 the deviation is computed when it is read. Its stack is the
+  flush window's matrices, GCC's `-fstack-usage` frames 1,432, 5,272 and
+  20,640 bytes at orders 4, 8 and 16 on the Cortex-M33. It is for occasional
   changes — TapTools' kernels redesign their oversampling filters at
   0.45 / os from `set_oversample()` — not for per-sample or per-block
   modulation.
@@ -765,7 +770,13 @@ lp.set_cutoff(0.05);                                     // redesign in place: n
   to the cutoff on a 1,024-point grid: the alignment error left after
   compensating the nominal alone (order 4: 2.51 frames on a nominal of 4.02
   at fc = 0.1, 2.39 on 1.31 at 0.25; a Butterworth's group delay peaks at the
-  band edge). `chain` composes all three with its exact stages.
+  band edge). Since 0.7.0 the deviation is computed on every read, not stored
+  (`butterworth_latency_deviation(sections, cutoff)`, the same scan as a free
+  function for a caller that keeps the number): 1,025 group-delay evaluations
+  in double, 40 to 72 µs at orders 4 and 8 on the x86-64 above and about
+  28 M instructions at order 8 on a Cortex-M33, so it is a design-time query,
+  not one for the audio thread; it is `const` and has no cache, so threads
+  may read it at once. `chain` composes all three with its exact stages.
 - **Flush (I6):** `window_frames()` is the count of zero frames after which
   the exact recursion of the coefficients the kernel runs (the design
   rounded to the format) is below the smallest normal value from any state:
@@ -1238,7 +1249,19 @@ sub-band round trip's window is the same number. 0.6.0 adds the Butterworth
 low-pass stage (`butterworth.h`: `basic_butterworth_lowpass`, redesigned in
 place by its allocation-free `set_cutoff()`, and `design_butterworth_lowpass`)
 and changes nothing an 0.5.0 consumer calls: no header an 0.5.0 consumer
-includes changes but `version.h`.
+includes changes but `version.h`. 0.7.0 makes that stage cheaper to run and to
+redesign: `process()` runs the new block kernel
+(`iir_kernels.h`'s `biquad_cascade_block`), `set_cutoff()` and the
+constructor no longer compute the latency deviation, which
+`latency_deviation_output_frames()` now computes on each read (the same
+number; `butterworth_latency_deviation` is the scan as a free function), and
+the flush window is found with fewer matrix products (the same number at
+`fft.h`'s fp-contraction policy). Every signature an 0.6.0 consumer calls is
+unchanged. Two things such a consumer can observe: a read of the deviation
+now costs a 1,025-point scan in double (a design-time query: keep the
+number if you need it on the audio thread), and with fp contraction on, a
+stage's last bits may depend on how its input is chunked (with contraction
+off they cannot, as before).
 
 ## Build
 
