@@ -250,6 +250,22 @@ namespace {
         EXPECT_NEAR(f.latency_deviation_output_frames(), 2.51, 0.005);
     }
 
+    // The deviation is computed when it is read, from the sections and the
+    // cutoff: the member is the free function of the stage's own design, the
+    // same number on every read, and after set_cutoff() the new design's.
+    TEST_F(butterworth, TheDeviationIsTheFreeFunctionOfTheDesignOnEveryRead) {
+        basic_butterworth_lowpass<float, 8, 2> f(0.1);
+        const double                           first = f.latency_deviation_output_frames();
+        EXPECT_EQ(first, tap::dsp::butterworth_latency_deviation(f.sections(), f.cutoff()));
+        EXPECT_EQ(first, f.latency_deviation_output_frames());
+        f.set_cutoff(0.45 / 4.0);
+        const basic_butterworth_lowpass<float, 8, 2> fresh(0.45 / 4.0);
+        EXPECT_EQ(f.latency_deviation_output_frames(), fresh.latency_deviation_output_frames());
+        EXPECT_EQ(f.latency_deviation_output_frames(),
+                  tap::dsp::butterworth_latency_deviation(fresh.sections(), fresh.cutoff()));
+        EXPECT_NE(f.latency_deviation_output_frames(), first);
+    }
+
     // After window_frames() zeros the tail is the host's arithmetic's
     // (iir_kernels.h's honest limit): exact silence, or under FTZ a limit
     // cycle just above the smallest normal value for some designs. Whatever

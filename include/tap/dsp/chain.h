@@ -409,7 +409,9 @@ namespace tap::dsp {
 
         /// How far the chain's passband delay strays from the nominal, at most:
         /// the stages' deviations, converted and summed (0 for an all-exact
-        /// chain).
+        /// chain). Reads each stage's on every call, and a stage may compute
+        /// its own then (butterworth.h's does, a 1,025-point scan in double):
+        /// a design-time query, not for the audio thread.
         double latency_deviation_output_frames() const noexcept {
             double total = 0.0;
             [&]<std::size_t... I>(std::index_sequence<I...>) {

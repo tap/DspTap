@@ -71,26 +71,32 @@
 //     instructions at orders 2 to 8 on the family's embedded cores with an
 //     FPU, bench/README.md).
 //   - set_cutoff(fc): the constructor's design, in place. The sections, the
-//     kernel's table, the flush window, the nominal latency and the
-//     deviation are bit for bit what a stage constructed at fc holds (the
-//     constructor runs the same function; bit for bit at fft.h's
-//     fp-contraction policy, as above). noexcept and allocation-free; its
-//     precondition is butterworth_supports_cutoff<S>(fc), a TAP_EXPECTS (a
-//     debug-build assertion), never a throw. It leaves the state alone: the
-//     recursion continues from where it was under the new coefficients, a
-//     step the caller chooses (reset() first for a clean start). It costs
-//     one design, most of it the deviation's 1,025-point group-delay scan:
+//     kernel's table, the flush window and the nominal latency are bit for
+//     bit what a stage constructed at fc holds, and the deviation it reports
+//     is the same number (the constructor runs the same function; bit for
+//     bit at fft.h's fp-contraction policy, as above). noexcept and
+//     allocation-free; its precondition is butterworth_supports_cutoff<S>(fc),
+//     a TAP_EXPECTS (a debug-build assertion), never a throw. It leaves the
+//     state alone: the recursion continues from where it was under the new
+//     coefficients, a step the caller chooses (reset() first for a clean
+//     start). It costs one design, nearly all of it the flush window:
 //     measured on x86-64 (a shared 2.1 GHz Xeon VM, GCC 13.3 -O3, the
-//     median of 401 calls, five runs), 45 to 78 us at order 4 and 92 to
-//     188 us at order 8, float or double, at the cutoffs 0.45 / 2 ... 0.45 /
-//     16 an oversampling kernel sets; the window is 2 to 6 us of it at order
-//     4 and 27 to 68 us at order 8, and order 16 in double at its lowest
-//     cutoff takes 1.6 ms. For occasional changes (an oversampling factor
-//     from a setter), not for per-sample or per-block modulation. Its stack
-//     is the window's few matrices (below): -fstack-usage gives the window's
-//     frame as 728, 2,648 and 10,336 bytes at orders 4, 8 and 16 on the
-//     Cortex-M33 (arm-none-eabi-gcc 13.2 -Os), the design around it 0.4 to
-//     0.6 KiB more.
+//     median of 401 calls, three runs), 1.1 to 2.8 us at order 4 and 5.5 to
+//     14 us at order 8, float or double, at the cutoffs 0.45 / 2 ... 0.45 /
+//     16 an oversampling kernel sets, and 77 us at order 16 in double at its
+//     lowest cutoff. The design is double, so a core without a double FPU
+//     pays libgcc for it: 2.3 M instructions a call at order 8 on a
+//     Cortex-M33 or M4F over the cutoffs 0.45 / 2, 4, 8, 16, 2.8 M at most
+//     (bench/README.md; 0.1 M on a Cortex-M55), more than a block of audio
+//     can spare there. For occasional
+//     changes (an oversampling factor from a setter), not for per-sample or
+//     per-block modulation. Through 0.6.0 set_cutoff() and the constructor
+//     also ran the deviation's group-delay scan, 80 to 93 % of their cost;
+//     the deviation is now computed when it is read (below). Its stack is
+//     the window's matrices (below): -fstack-usage gives the window's frame
+//     as 1,432, 5,272 and 20,640 bytes at orders 4, 8 and 16 on the
+//     Cortex-M33 (arm-none-eabi-gcc 13.2 -Os), the design around it 0.3 to
+//     0.4 KiB more.
 //   - Latency (the plan's I5, chain.h's reports_nominal_latency): a
 //     recursive stage has no single delay, so it never provides
 //     latency_output_frames(). It reports three numbers, in frames (x 1 /
@@ -109,6 +115,14 @@
 //         component's period. A Butterworth's group delay rises toward fc,
 //         so the deviation is its excess at the band edge (order 4: 2.51
 //         frames on a nominal of 4.02 at fc = 0.1, 2.39 on 1.31 at 0.25).
+//         Computed on every read, from the sections and the cutoff
+//         (butterworth_latency_deviation, the same scan as a free function
+//         for a caller that keeps the number): 1,025 group-delay evaluations
+//         in double, 40 to 72 us at orders 4 and 8 on the x86-64 above and
+//         about 28 M instructions at order 8 on a Cortex-M33. A design-time
+//         query, not for the audio thread; const and without a cache, so two
+//         threads may read it at once. A chain's
+//         latency_deviation_output_frames() reads each stage's.
 //     All three are the double design's.
 //   - Flush (the plan's I6): window_frames() is a design-time constant, the
 //     zero input frames after which the exact recursion of the coefficients
@@ -193,24 +207,36 @@ namespace tap::dsp {
 
     namespace detail {
 
-        /// A square matrix kept as M * e^log_scale, M normalized to ||M||_inf = 1.
+        /// A cascade's state-transition matrix or a power of it, kept as
+        /// M * e^log_scale with M normalized to ||M||_inf = 1. Block lower
+        /// triangular in 2 x 2 blocks, one per section (a section's next state
+        /// depends on its own state and the sections' before it, never a
+        /// later one's), and so is every product of two such: row r is zero
+        /// past column row_end(r). The loops stop there. The terms they leave
+        /// out are exact zeros added to a sum that is never a negative zero,
+        /// so every element has the bits the full loops give.
         template <std::size_t D>
         struct scaled_matrix {
             std::array<double, D * D> m{};
             double                    log_scale = 0.0;
 
+            /// One past the last column of row r that can be nonzero.
+            static constexpr std::size_t row_end(std::size_t r) noexcept { return 2 * (r / 2) + 2; }
+
             void normalize() noexcept {
                 double n = 0.0;
                 for (std::size_t r = 0; r < D; ++r) {
                     double row = 0.0;
-                    for (std::size_t c = 0; c < D; ++c) {
+                    for (std::size_t c = 0; c < row_end(r); ++c) {
                         row += std::fabs(m[r * D + c]);
                     }
                     n = std::max(n, row);
                 }
                 if (n > 0.0) {
-                    for (double& v : m) {
-                        v /= n;
+                    for (std::size_t r = 0; r < D; ++r) {
+                        for (std::size_t c = 0; c < row_end(r); ++c) {
+                            m[r * D + c] /= n;
+                        }
                     }
                     log_scale += std::log(n);
                 }
@@ -222,9 +248,9 @@ namespace tap::dsp {
             friend scaled_matrix operator*(const scaled_matrix& a, const scaled_matrix& b) noexcept {
                 scaled_matrix r;
                 for (std::size_t i = 0; i < D; ++i) {
-                    for (std::size_t k = 0; k < D; ++k) {
+                    for (std::size_t k = 0; k < row_end(i); ++k) {
                         const double aik = a.m[i * D + k];
-                        for (std::size_t j = 0; j < D; ++j) {
+                        for (std::size_t j = 0; j < row_end(k); ++j) {
                             r.m[i * D + j] += aik * b.m[k * D + j];
                         }
                     }
@@ -265,10 +291,13 @@ namespace tap::dsp {
         /// sections describe: zero input frames after which its exact
         /// recursion's state is below S's smallest normal value from any
         /// state S can hold, plus one frame per section. noexcept and
-        /// allocation-free: binary lifting over A^(2^j), each power recomputed
-        /// from A by j squarings (the same products, so the same bits, as
-        /// keeping them) instead of stored, so the stack holds a few matrices
-        /// whatever the window. A cascade whose window does not fit half of
+        /// allocation-free: binary lifting over A^(2^j). The descent needs
+        /// every power below the top one, highest first; k_kept of them, evenly
+        /// spaced, are kept from the ascent and the others are squared up from
+        /// the nearest kept one below (the same products in the same order as
+        /// squaring up from A, so the same bits, as keeping all of them would
+        /// give), so the stack holds k_kept matrices and a few more whatever
+        /// the window. A cascade whose window does not fit half of
         /// size_t's range, or that does not decay (none that
         /// butterworth_supports_cutoff admits), returns size_t's largest value.
         template <typename S, std::size_t K>
@@ -280,13 +309,6 @@ namespace tap::dsp {
             const double          start       = std::log(static_cast<double>(std::numeric_limits<S>::max()));
             const double          goal        = std::log(static_cast<double>(std::numeric_limits<S>::min()));
             const auto            done        = [&](const mat& p) noexcept { return start + p.log_scale < goal; };
-            const auto            power       = [&](std::size_t j) noexcept { // A^(2^j)
-                mat p = a;
-                for (std::size_t i = 0; i < j; ++i) {
-                    p = p * p;
-                }
-                return p;
-            };
 
             // The powers A^(2^j), j < levels, up to the first that alone is done.
             std::size_t levels = 1;
@@ -296,6 +318,24 @@ namespace tap::dsp {
                 }
                 top = top * top;
             }
+            // A^(2^(i * stride)), i < k_kept: the checkpoints the descent squares up from.
+            constexpr std::size_t   k_kept = 4;
+            const std::size_t       stride = (levels + k_kept - 1) / k_kept;
+            std::array<mat, k_kept> kept;
+            kept[0] = a;
+            for (std::size_t i = 1; i < k_kept && i * stride < levels; ++i) {
+                kept[i] = kept[i - 1];
+                for (std::size_t q = 0; q < stride; ++q) {
+                    kept[i] = kept[i] * kept[i];
+                }
+            }
+            const auto power = [&](std::size_t j) noexcept { // A^(2^j), j < levels
+                mat p = kept[j / stride];
+                for (std::size_t i = j % stride; i > 0; --i) {
+                    p = p * p;
+                }
+                return p;
+            };
             // Binary lifting: the largest n from those powers not yet done.
             // The top power is done alone, so the descent starts below it.
             mat         acc;
@@ -344,6 +384,27 @@ namespace tap::dsp {
             sec[i].a2          = (1.0 - alpha * k + k2) / a0;
         }
         return sec;
+    }
+
+    /// The passband group-delay deviation of a low-pass cascade, in frames:
+    /// max over 0 <= f <= cutoff of |group delay(f) - group delay(0)|, on a
+    /// 1,024-point grid (1,025 evaluations of iir_design.h's
+    /// sections_group_delay, double). What
+    /// basic_butterworth_lowpass::latency_deviation_output_frames() returns,
+    /// as a function of the design alone, for a caller that wants the number
+    /// once and keeps it. A design-time computation, not for the audio
+    /// thread: the scan is double, 28 M instructions at order 8 on a
+    /// Cortex-M33 (soft double), 0.7 M on a Cortex-M55 (bench/README.md).
+    template <std::size_t K>
+    double butterworth_latency_deviation(const std::array<iir_section, K>& sections, double cutoff) noexcept {
+        const double  nominal = sections_group_delay(sections, 0.0);
+        double        dev     = 0.0;
+        constexpr int k_grid  = 1024;
+        for (int i = 0; i <= k_grid; ++i) {
+            const double f = cutoff * static_cast<double>(i) / k_grid;
+            dev            = std::max(dev, std::fabs(sections_group_delay(sections, f) - nominal));
+        }
+        return dev;
     }
 
     /// An order-N Butterworth low-pass as a 1:1 chain stage over Ch
@@ -425,7 +486,11 @@ namespace tap::dsp {
         /// 1,024-point grid. The alignment error left after compensating the
         /// nominal alone (chain.h's reports_nominal_latency); 0 would mean the
         /// passband is delayed alike. A Butterworth's peaks at the band edge.
-        double latency_deviation_output_frames() const noexcept { return m_deviation; }
+        /// Computed on each call (butterworth_latency_deviation: a design-time
+        /// cost, the file header's numbers), not stored.
+        double latency_deviation_output_frames() const noexcept {
+            return butterworth_latency_deviation(m_sections, m_cutoff);
+        }
 
         double                                cutoff() const noexcept { return m_cutoff; }
         const std::array<iir_section, N / 2>& sections() const noexcept { return m_sections; }
@@ -454,24 +519,16 @@ namespace tap::dsp {
                 const iir_section& c = m_sections[i];
                 run[i]               = {in_s(c.b0), in_s(c.b1), in_s(c.b2), in_s(c.a1), in_s(c.a2)};
             }
-            m_window             = detail::cascade_flush_window<S>(run);
-            m_nominal            = sections_group_delay(m_sections, 0.0);
-            double        dev    = 0.0;
-            constexpr int k_grid = 1024;
-            for (int i = 0; i <= k_grid; ++i) {
-                const double f = cutoff * static_cast<double>(i) / k_grid;
-                dev            = std::max(dev, std::fabs(sections_group_delay(m_sections, f) - m_nominal));
-            }
-            m_deviation = dev;
+            m_window  = detail::cascade_flush_window<S>(run);
+            m_nominal = sections_group_delay(m_sections, 0.0);
         }
 
         double                           m_cutoff = 0.0;
         std::array<iir_section, N / 2>   m_sections{};
         biquad_cascade_table<S>          m_table{};
         std::array<iir_state<S>, N * Ch> m_state{}; ///< per channel, z1 then z2 per section (iir_kernels.h)
-        std::size_t                      m_window    = 0;
-        double                           m_nominal   = 0.0;
-        double                           m_deviation = 0.0;
+        std::size_t                      m_window  = 0;
+        double                           m_nominal = 0.0;
     };
 
     template <std::size_t Ch = 1>
