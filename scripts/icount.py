@@ -194,8 +194,9 @@ def report(args, prefix: str, binaries: list[str]) -> int:
         worst[scenario] = int(f.get("call_max", 0))
         print(f"{scenario}: {measured[scenario]} insns bracketed, worst bracket {worst[scenario]}, "
               f"whole run {f['whole_run']} {describe(f)}")
-    print()
-    print(f"{'pair':<22} {'interleaved':>13} {'planar':>13} {'p / i':>7} {'worst p / i':>12}  output")
+    if any(s.endswith("_p") and s[:-2] + "_i" in measured for s in measured):
+        print()
+        print(f"{'pair':<22} {'interleaved':>13} {'planar':>13} {'p / i':>7} {'worst p / i':>12}  output")
     def pair_order(name: str):
         m = re.match(r"(.*)_ch(\d+)_", name)
         return (m.group(1), int(m.group(2))) if m else (name, 0)
