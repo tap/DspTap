@@ -303,13 +303,14 @@ target_link_libraries(tap_dsp_analysis_typed PRIVATE
 # ==============================================================================
 
 # The recursive kernels' honest limit without the host's flush-to-zero
-# (test_iir_subnormals.cpp, IIR_PLAN I9) in an executable of its own: it is
+# (test_iir_subnormals.cpp, IIR_PLAN I9), and the Butterworth stage's
+# (test_butterworth_subnormals.cpp), in an executable of its own: it is
 # built with TAP_DSP_ALLOW_SUBNORMALS, which compiles the kernels' debug-build
 # precondition out, and the macro must be the same in every translation unit
 # of an image (subnormals.h), so it cannot join tap_dsp_tests. It runs on
 # every leg, the QEMU ones too.
 tap_dsp_add_gtest_executable(tap_dsp_iir_subnormals
-    SOURCES test_iir_subnormals.cpp)
+    SOURCES test_iir_subnormals.cpp test_butterworth_subnormals.cpp)
 target_compile_definitions(tap_dsp_iir_subnormals PRIVATE TAP_DSP_ALLOW_SUBNORMALS)
 target_link_libraries(tap_dsp_iir_subnormals PRIVATE
     tap::dsp
@@ -322,6 +323,33 @@ target_link_libraries(tap_dsp_iir_subnormals PRIVATE
 tap_dsp_add_gtest_executable(tap_dsp_heap_meter
     SOURCES test_heap_meter.cpp)
 target_link_libraries(tap_dsp_heap_meter PRIVATE
+    tap::dsp
+    tap_dsp_warnings)
+
+# The 1:1 chain stages (test_butterworth.cpp, butterworth.h) pin bits across
+# call paths and instantiations: a chain's flush() against zero padding (flush
+# and process inline the same stage into different callers), a stage of Ch
+# channels against Ch mono ones (two instantiations of the same loop), and
+# set_cutoff() against a fresh construction. Under g++'s default
+# -ffp-contract=fast on an FMA target each context may fuse differently (CI's
+# ubuntu-26.04 GCC 15 failed exactly such pins on the branch the stage was
+# ported from, 2026-11-21), so they build without contraction, the condition
+# fft.h's fp-contraction policy states for every bit-exact claim. Their own
+# target, not per-source flags in tap_dsp_tests: the inline kernels they
+# instantiate (iir_kernels.h's biquad_cascade among them) are instantiated
+# there too with contraction on, and the linker keeps one copy of each, so
+# mixed flags in one image let a contracted inline copy meet an uncontracted
+# out-of-line one (test_chain_iir.cpp's chain_one_to_one failed that way on
+# the no-exceptions leg, on that branch). test_chain.cpp, decimators only,
+# stays in tap_dsp_tests, where its pins hold under GCC 15. test_butterworth.cpp
+# also carries the heap meter's replacement operators
+# (tap/dsp/analysis/heap_meter.h) for the stage's allocation pin, so every
+# allocation of this executable runs through them, as tap_dsp_heap_meter's do.
+# It runs on every leg, the QEMU ones too.
+tap_dsp_add_gtest_executable(tap_dsp_chain_stages
+    SOURCES test_butterworth.cpp)
+target_compile_options(tap_dsp_chain_stages PRIVATE ${_tap_dsp_nocontract_cxx})
+target_link_libraries(tap_dsp_chain_stages PRIVATE
     tap::dsp
     tap_dsp_warnings)
 

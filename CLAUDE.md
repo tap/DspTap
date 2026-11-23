@@ -9,14 +9,17 @@ portable C++20 (standard library only, no frameworks; `tap::dsp` is a pure INTER
 the one compiled library, `tap_dsp_fft`, exists only under `TAP_DSP_FFT_CMSIS` to carry the
 vendored CMSIS-DSP objects), consumed as a git submodule by the
 individual libraries (TapTools pins it as `submodules/dsptap`; the AmbiTap/MuTap lineage is where
-the FFT came from). Nine primitives today: the real FFT (`fft.h`), the YIN pitch detector
+the FFT came from). Ten primitives today: the real FFT (`fft.h`), the YIN pitch detector
 (`yin.h`), two pitch shifters (`psola.h`, `pvoc.h`), the sub-band round-trip scaffold
 (`subband.h`), the wake-word front end —
 the log-mel/PCEN feature extractor (`log_mel.h`) and the fixed-ratio decimators to
-16 kHz (`decimate.h`) — the dense/GRU inference kernels (`nn.h`), and the recursive substrate under
+16 kHz (`decimate.h`) — the dense/GRU inference kernels (`nn.h`), the recursive substrate under
 the family's IIR stages (`iir_design.h`, `iir_tables.h`, `iir_kernels.h`, `subnormals.h`: the
 two-path allpass half-bands and the guard band filter, constexpr designs over `detail/cx_math.h`
-and kernels per format, with `chain.h`'s nominal latency) — plus the FIR substrate carried from
+and kernels per format, with `chain.h`'s nominal latency), and the Butterworth low-pass stage over
+it (`butterworth.h`: a runtime-designed 1:1 chain stage on `iir_kernels.h`'s biquad cascade,
+redesigned in place by an allocation-free `set_cutoff()`; its battery is its own executable,
+`tap_dsp_chain_stages`, built without fp contraction) — plus the FIR substrate carried from
 SampleRateTap for the family's two rate converters (its `async` and `bridge` engines): Kaiser prototype design
 (`kaiser.h`), the sample-format traits (`sample_traits.h`: double/float/Q15/Q31), the FIR dot kernels
 (`fir_kernels.h`), row-sum-preserving quantization (`quantize.h`), and the measurement
