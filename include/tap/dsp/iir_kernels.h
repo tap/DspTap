@@ -139,11 +139,13 @@
 #pragma once
 
 #include <array>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <type_traits>
 
+#include "tap/dsp/detail/expects.h"
 #include "tap/dsp/iir_design.h"
 #include "tap/dsp/sample_traits.h"
 #include "tap/dsp/subnormals.h"
@@ -155,6 +157,17 @@
 #define TAP_DSP_RESTRICT __restrict
 #else
 #define TAP_DSP_RESTRICT __restrict__
+#endif
+#endif
+
+/// Keeps biquad_cascade_block's group loop out of line (its comment says why).
+#if !defined(TAP_DSP_IIR_NOINLINE)
+#if defined(__GNUC__) || defined(__clang__)
+#define TAP_DSP_IIR_NOINLINE [[gnu::noinline]]
+#elif defined(_MSC_VER)
+#define TAP_DSP_IIR_NOINLINE __declspec(noinline)
+#else
+#define TAP_DSP_IIR_NOINLINE
 #endif
 #endif
 
@@ -724,5 +737,144 @@ namespace tap::dsp {
         return tr::output(v);
     }
     // ANCHOR_END: iir_biquad_kernel
+
+    // ANCHOR: iir_biquad_block_kernel
+    namespace detail {
+
+        /// Channels biquad_cascade_block runs together through a block: the
+        /// most whose state and coefficients a core's floating registers
+        /// hold. Measured (bench/README.md, "The block kernel"): two for
+        /// float at one or two sections, one otherwise (float from three
+        /// sections, double at any count). The grouping changes no
+        /// arithmetic: each channel runs biquad_cascade's expressions on its
+        /// own state.
+        template <typename S, std::size_t K>
+        inline constexpr std::size_t k_biquad_block_group = (std::is_same_v<S, float> && K <= 2) ? 2 : 1;
+
+        /// G channels from channel c0, n interleaved frames, their states and
+        /// the coefficients in locals for the block. Out of line on purpose
+        /// (biquad_cascade_block's comment).
+        template <typename S, std::size_t K, std::size_t Ch, std::size_t G>
+        TAP_DSP_IIR_NOINLINE void biquad_cascade_group(const biquad_cascade_table<S>& t, S* state, std::size_t c0,
+                                                       const S* in, std::size_t n, S* out) noexcept {
+            S cf[K][5];
+            for (std::size_t s = 0; s < K; ++s) {
+                for (std::size_t j = 0; j < 5; ++j) {
+                    cf[s][j] = t.sections[s][j];
+                }
+            }
+            S z[G][2 * K];
+            for (std::size_t j = 0; j < G; ++j) {
+                for (std::size_t i = 0; i < 2 * K; ++i) {
+                    z[j][i] = state[(c0 + j) * 2 * K + i];
+                }
+            }
+            const S* x = in + c0;
+            S*       o = out + c0;
+            for (std::size_t f = 0; f < n; ++f, x += Ch, o += Ch) {
+                for (std::size_t j = 0; j < G; ++j) {
+                    S v = x[j];
+                    for (std::size_t s = 0; s < K; ++s) {
+                        const S y   = cf[s][0] * v + z[j][s];
+                        z[j][s]     = cf[s][1] * v + cf[s][3] * y + z[j][K + s];
+                        z[j][K + s] = cf[s][2] * v + cf[s][4] * y;
+                        v           = y;
+                    }
+                    o[j] = v;
+                }
+            }
+            for (std::size_t j = 0; j < G; ++j) {
+                for (std::size_t i = 0; i < 2 * K; ++i) {
+                    state[(c0 + j) * 2 * K + i] = z[j][i];
+                }
+            }
+        }
+
+    } // namespace detail
+
+    /// The floating biquad cascade over a block (1:1): n frames of Ch
+    /// interleaved channels through K sections, K and Ch compile-time
+    /// constants. Per channel it is biquad_cascade, sample after sample: the
+    /// same expressions in the same order on the same state, so with
+    /// fp-contraction off (fft.h's policy) the output and the state it leaves
+    /// are bit for bit the per-sample kernel's, for any split of the frames
+    /// into calls, and the two kernels may be mixed on one state. With
+    /// contraction on, a compiler may fuse the two kernels' expressions (and
+    /// the single-frame path's, below) differently, and their last bits may
+    /// then differ on a target with a fused multiply-add: the contract there
+    /// is the tolerance against the double golden model, as for every
+    /// floating kernel in this file.
+    ///
+    ///   - t: the cascade's table; precondition t.size == K (TAP_EXPECTS). In
+    ///     a build that does not check, the first K rows of t.sections run
+    ///     whatever t.size says: a row past t.size is all zeros, a section
+    ///     whose output is zero.
+    ///   - state: Ch consecutive per-channel states of 2 K words each, z1[K]
+    ///     then z2[K], the layout biquad_cascade reads for t.size == K
+    ///     (t.state_size() words per channel); zero-initialized by the
+    ///     caller.
+    ///   - in, out: n * Ch samples each; the same buffer (in place) or
+    ///     disjoint buffers. Neither overlaps state or t.
+    ///
+    /// What it is for: biquad_cascade called per sample reloads every
+    /// coefficient and state word from memory on every sample (a store to
+    /// the output may alias both), so a stage that filters a block pays for
+    /// memory traffic the recursion does not need. Here a group of channels
+    /// (detail::k_biquad_block_group) runs through the whole block with the
+    /// coefficients and its states copied into locals, and the states are
+    /// written back once. Measured against the per-sample kernel in the
+    /// Butterworth stage (bench/README.md, "The block kernel"; float, calls
+    /// of 128 frames, 1 to 12 channels, the Cortex-M4F, M33, M55 and
+    /// Hexagon): 0.26 to 0.52 of its instructions at orders 2 to 8, 0.58 to
+    /// 0.67 at order 16; a few percent on the soft-float Cortex-M4, where
+    /// the arithmetic is the cost.
+    ///
+    /// The group's loop is kept out of line (detail::biquad_cascade_group, a
+    /// performance attribute only): inlined into a caller's loop over stages
+    /// it took its shape from the caller (on the Cortex-M55 GCC vectorized
+    /// across sections there, 1.5 times the instructions of the same stage
+    /// called once, and other last bits under contraction). Out of line it
+    /// costs a call and a copy of the coefficients per group.
+    ///
+    /// Honest limit, short calls: the copies are per call and per group, 5 K
+    /// coefficients in and 2 K state words in and out per channel, so a call
+    /// of a few frames gains less (0.36 to 0.85 at 4 frames), and one frame
+    /// through four or more sections would cost more than the per-sample
+    /// kernel (measured before this rule: 1.5 times on Hexagon at K = 4, one
+    /// channel). A single frame through K >= 4 sections therefore goes to
+    /// biquad_cascade itself, at the per-sample kernel's cost within 3 %;
+    /// every other call takes the block path, where a single frame costs
+    /// 0.63 to 0.84 of the per-sample kernel's at K = 2, but 1.03 on Hexagon
+    /// for one channel.
+    ///
+    /// Floating point only: the fixed-point cascade (direct form I, its state
+    /// one word longer per row) has the same reloads and no block kernel yet.
+    template <std::floating_point S, std::size_t K, std::size_t Ch>
+    inline void biquad_cascade_block(const biquad_cascade_table<S>& t, S* state, const S* in, std::size_t n,
+                                     S* out) noexcept {
+        static_assert(K >= 1 && K <= k_max_cheby2_sections, "biquad_cascade_block: 1 ... 8 sections");
+        static_assert(Ch >= 1, "biquad_cascade_block: at least one channel");
+        TAP_DSP_EXPECTS_SUBNORMALS_FLUSHED(S);
+        TAP_EXPECTS(t.size == K);
+        if constexpr (K >= 4) {
+            if (n == 1) {
+                for (std::size_t c = 0; c < Ch; ++c) {
+                    out[c] = biquad_cascade<S>(t, state + c * 2 * K, in[c]);
+                }
+                return;
+            }
+        }
+        constexpr std::size_t k_group = detail::k_biquad_block_group<S, K>;
+        std::size_t           c0      = 0;
+        if constexpr (Ch >= k_group) {
+            for (; c0 + k_group <= Ch; c0 += k_group) {
+                detail::biquad_cascade_group<S, K, Ch, k_group>(t, state, c0, in, n, out);
+            }
+        }
+        if constexpr (Ch % k_group != 0) {
+            detail::biquad_cascade_group<S, K, Ch, Ch % k_group>(t, state, c0, in, n, out);
+        }
+    }
+    // ANCHOR_END: iir_biquad_block_kernel
 
 } // namespace tap::dsp
