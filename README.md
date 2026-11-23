@@ -588,7 +588,16 @@ take — `halfband_decimate(table, state, x[2k], x[2k−1])`,
 `halfband_interpolate`, `near_linear_decimate` / `_interpolate` (the caller
 passes the delay path's x[2(k−K)]), `fourpath_decimate` / `_interpolate`,
 `biquad_cascade` (1:1) — and updates the recursive state the caller stores
-per channel. The commutator schedule, the odd-sample latch, the delay path's
+per channel. One kernel takes a block: `biquad_cascade_block<S, K, Ch>` runs
+the floating cascade over n interleaved frames of Ch channels with a
+compile-time section count, the coefficients and each channel's state held
+in locals for the call. It is the per-sample kernel's expressions on the
+same state, so with fp contraction off its output and state are the
+per-sample kernel's bit for bit, for any chunking and with the two mixed
+(`tests/test_iir_block.cpp`); what it saves is the per-sample kernel's
+reload of every coefficient and state word on every sample (0.26 to 0.52 of
+the instructions at orders 2 to 8 in the Butterworth stage on the embedded
+cores with an FPU, `bench/README.md`). The commutator schedule, the odd-sample latch, the delay path's
 history, the stream phase, channel interleaving and flush are the stage
 machine's (`rational`'s, IIR-b), as a FIR stage keeps its history and calls
 `dot_row`. Coefficient tables in each format (`nonlinear_halfband_table<S>`
@@ -706,6 +715,17 @@ lp.set_cutoff(0.05);                                     // redesign in place: n
   eight decimals is this design within 2.5e-9 per coefficient (measured,
   `SectionsAreTheCookbookBiquadsAtTheButterworthQs`), so such a cascade can
   be replaced by the stage.
+- **Kernel:** `process()` runs `iir_kernels.h`'s `biquad_cascade_block`:
+  the cascade a block at a time, two channels together in float at orders 2
+  and 4 and one at a time otherwise (the grouping the cores' registers
+  hold, measured), and a single frame at order 8 and above through the
+  per-sample kernel (the block's copies would cost more than they save
+  there). The paths run the same expressions, so the output is bit-identical
+  for any chunking and channel count under `fft.h`'s fp-contraction policy
+  (contraction off). With contraction on, a compiler may fuse the paths
+  differently on a target with a fused multiply-add, and the last bits can
+  then depend on the chunking; through 0.6.0, on the per-sample kernel alone,
+  they could not. `in` and `out` are the same buffer or disjoint ones.
 - **Cutoff range:** [1e-5, ½ − 1e-5] cycles per sample in double and
   [1e-4, ½ − 1e-4] in float (`k_butterworth_min_cutoff<S>`,
   `butterworth_supports_cutoff<S>`); the constructor rejects anything else
@@ -800,7 +820,10 @@ alone, and asserting outside the range in a Debug build; construction,
 sequence for any chunking; the nominal latency, deviation and group delay
 composed with a decimator; flush equal to zero padding up to the recursive
 residue over a chain of the stage and a decimator; the control register never
-written; the rejections. Without FTZ,
+written; the rejections. `tests/test_iir_block.cpp` pins the block kernel
+against the per-sample one, output and state bit for bit: 1 to 8 sections,
+1, 2, 3, 6 and 12 channels, empty, single, odd and uneven calls, in place,
+the two kernels alternating on one state, a first-order row, a NaN. Without FTZ,
 `tests/test_butterworth_subnormals.cpp` pins the tail below the smallest
 normal value (in `tap_dsp_iir_subnormals`, built with
 `TAP_DSP_ALLOW_SUBNORMALS`). `test_butterworth.cpp` is its own executable,

@@ -345,9 +345,13 @@ target_link_libraries(tap_dsp_heap_meter PRIVATE
 # also carries the heap meter's replacement operators
 # (tap/dsp/analysis/heap_meter.h) for the stage's allocation pin, so every
 # allocation of this executable runs through them, as tap_dsp_heap_meter's do.
+# test_iir_block.cpp is here for the same reason: it pins iir_kernels.h's
+# biquad_cascade_block against the per-sample kernel bit for bit, the identity
+# the kernel states for contraction off.
 # It runs on every leg, the QEMU ones too.
 tap_dsp_add_gtest_executable(tap_dsp_chain_stages
-    SOURCES test_butterworth.cpp)
+    SOURCES test_butterworth.cpp
+            test_iir_block.cpp)
 target_compile_options(tap_dsp_chain_stages PRIVATE ${_tap_dsp_nocontract_cxx})
 target_link_libraries(tap_dsp_chain_stages PRIVATE
     tap::dsp

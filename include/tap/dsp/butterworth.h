@@ -52,13 +52,24 @@
 //     monotone in between.
 //   - A 1:1 sync_stage (chain.h): k_up = k_down = 1, channels() = Ch, any
 //     Ch >= 1, frames interleaved; process() writes exactly n frames
-//     (outputs_for(n) = n), noexcept, allocation-free, bit-identical for any
-//     chunking (the state is per channel and per sample); across channel
-//     counts and chain.h's flush and process paths too, at fft.h's
-//     fp-contraction policy (contraction off: tests/CMakeLists.txt's comment
-//     on tap_dsp_chain_stages says why). The arithmetic is iir_kernels.h's
+//     (outputs_for(n) = n), noexcept, allocation-free; in and out the same
+//     buffer or disjoint ones. Bit-identical for any chunking (the state is
+//     per channel and per sample), across channel counts and across chain.h's
+//     flush and process paths, at fft.h's fp-contraction policy (contraction
+//     off: tests/CMakeLists.txt's comment on tap_dsp_chain_stages says why).
+//     With contraction on, a compiler may fuse a call's expressions by the
+//     path it takes (a single frame or a block, a pair of channels or one:
+//     iir_kernels.h's biquad_cascade_block), so there the bits may depend on
+//     the chunking and the channel count on a target with a fused
+//     multiply-add, within the float-against-double bound below. Until 0.6.0
+//     the stage ran the per-sample kernel on every path and its chunking
+//     could not move a bit under any flags. The arithmetic is iir_kernels.h's
 //     floating biquad cascade, transposed direct form II, one state pair per
-//     section and channel.
+//     section and channel, run a block at a time (biquad_cascade_block: the
+//     per-sample kernel's expressions with the coefficients and state held
+//     in locals for the call; 0.26 to 0.52 of the per-sample stage's
+//     instructions at orders 2 to 8 on the family's embedded cores with an
+//     FPU, bench/README.md).
 //   - set_cutoff(fc): the constructor's design, in place. The sections, the
 //     kernel's table, the flush window, the nominal latency and the
 //     deviation are bit for bit what a stage constructed at fc holds (the
@@ -389,20 +400,12 @@ namespace tap::dsp {
         /// Precondition (debug builds, where a bit governs S): the calling
         /// thread flushes subnormals (subnormals.h).
         std::size_t process(const S* in, std::size_t n, S* out) noexcept {
-            for (std::size_t i = 0; i < n; ++i) {
-                for (std::size_t c = 0; c < Ch; ++c) {
-                    out[i * Ch + c] = biquad_cascade<S>(m_table, m_state[c].data(), in[i * Ch + c]);
-                }
-            }
+            biquad_cascade_block<S, N / 2, Ch>(m_table, m_state.data(), in, n, out);
             return n;
         }
 
         std::size_t outputs_for(std::size_t n) const noexcept { return n; }
-        void        reset() noexcept {
-            for (auto& st : m_state) {
-                st.fill(S(0));
-            }
-        }
+        void        reset() noexcept { m_state.fill(S(0)); }
 
         /// Zero input frames after which the exact recursion's state is below
         /// the smallest normal value of S (the residue after it: the file
@@ -429,11 +432,9 @@ namespace tap::dsp {
 
         /// True when every channel's state is exactly zero (silence from here on).
         bool is_silent() const noexcept {
-            for (const auto& st : m_state) {
-                for (const S v : st) {
-                    if (v != S(0)) {
-                        return false;
-                    }
+            for (const S v : m_state) {
+                if (v != S(0)) {
+                    return false;
                 }
             }
             return true;
@@ -464,13 +465,13 @@ namespace tap::dsp {
             m_deviation = dev;
         }
 
-        double                                      m_cutoff = 0.0;
-        std::array<iir_section, N / 2>              m_sections{};
-        biquad_cascade_table<S>                     m_table{};
-        std::array<std::array<iir_state<S>, N>, Ch> m_state{}; ///< z1 then z2 per section (iir_kernels.h)
-        std::size_t                                 m_window    = 0;
-        double                                      m_nominal   = 0.0;
-        double                                      m_deviation = 0.0;
+        double                           m_cutoff = 0.0;
+        std::array<iir_section, N / 2>   m_sections{};
+        biquad_cascade_table<S>          m_table{};
+        std::array<iir_state<S>, N * Ch> m_state{}; ///< per channel, z1 then z2 per section (iir_kernels.h)
+        std::size_t                      m_window    = 0;
+        double                           m_nominal   = 0.0;
+        double                           m_deviation = 0.0;
     };
 
     template <std::size_t Ch = 1>

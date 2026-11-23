@@ -17,9 +17,11 @@ the log-mel/PCEN feature extractor (`log_mel.h`) and the fixed-ratio decimators 
 the family's IIR stages (`iir_design.h`, `iir_tables.h`, `iir_kernels.h`, `subnormals.h`: the
 two-path allpass half-bands and the guard band filter, constexpr designs over `detail/cx_math.h`
 and kernels per format, with `chain.h`'s nominal latency), and the Butterworth low-pass stage over
-it (`butterworth.h`: a runtime-designed 1:1 chain stage on `iir_kernels.h`'s biquad cascade,
+it (`butterworth.h`: a runtime-designed 1:1 chain stage on `iir_kernels.h`'s biquad cascade, run a
+block at a time by `biquad_cascade_block`, the per-sample kernel's expressions with coefficients
+and state in locals, bit for bit the per-sample kernel with fp contraction off;
 redesigned in place by an allocation-free `set_cutoff()`; its battery is its own executable,
-`tap_dsp_chain_stages`, built without fp contraction) — plus the FIR substrate carried from
+`tap_dsp_chain_stages`, built without fp contraction, with the block kernel's identity test) — plus the FIR substrate carried from
 SampleRateTap for the family's two rate converters (its `async` and `bridge` engines): Kaiser prototype design
 (`kaiser.h`), the sample-format traits (`sample_traits.h`: double/float/Q15/Q31), the FIR dot kernels
 (`fir_kernels.h`), row-sum-preserving quantization (`quantize.h`), and the measurement
