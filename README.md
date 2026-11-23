@@ -8,8 +8,10 @@ Shared DSP primitives for the **Tap** family of audio libraries. Header-only,
 plain portable C++ (C++20, standard library only), no Max/Min or framework
 dependency — consumed as a git submodule by the individual libraries.
 
-Today it holds nine primitives (the ninth, the [recursive substrate](#the-recursive-substrate--two-path-half-bands-and-the-guard-band-filter)
-under the SampleRateTap family's IIR stages, since 0.3.0), plus the [FIR substrate](#the-fir-substrate) —
+Today it holds ten primitives (the ninth, the [recursive substrate](#the-recursive-substrate--two-path-half-bands-and-the-guard-band-filter)
+under the SampleRateTap family's IIR stages, since 0.3.0; the tenth, the
+[Butterworth low-pass stage](#tapdspbutterworth--the-butterworth-low-pass-stage)
+over it, since 0.6.0), plus the [FIR substrate](#the-fir-substrate) —
 the shared design-math / sample-format / kernel layer under the SampleRateTap
 family's two engines, `async` and `bridge` — and the [scalar helpers](#tapdspmathh--periodic-hann-and-decibel-helpers)
 (`tap/dsp/math.h`) the consuming libraries call instead of re-typing them:
@@ -673,6 +675,138 @@ the six of 0.3.0, about 1,100 s for the three Q15 measurements of 0.4.0; the
 `MAIN_FILTER` names them). The Q15 rows' structural pins, bit-exact Q1.14
 taps included, run on every leg. The FIR substrate's pins and the srdif
 fingerprints do not move.
+
+## `tap::dsp::butterworth` — the Butterworth low-pass stage
+
+`include/tap/dsp/butterworth.h` (since 0.6.0) designs an even-order
+Butterworth low-pass (order 2 … 16: the bilinear transform with pre-warping,
+Oppenheim & Schafer sec. 7.2) and runs it as a 1:1 `chain` stage over `Ch`
+interleaved channels: `basic_butterworth_lowpass<Sample, Order, Ch>`, float or
+double, with `butterworth4<Ch>` / `butterworth4_32<Ch>` and `butterworth8<Ch>`
+/ `butterworth8_32<Ch>` for orders 4 and 8. It runs `iir_kernels.h`'s biquad
+cascade (the [recursive
+substrate](#the-recursive-substrate--two-path-half-bands-and-the-guard-band-filter)
+above) per channel, under SampleRateTap's IIR plan's contracts for a recursive
+stage in a chain (`docs/IIR_PLAN.md`: I5 latency, I6 flush, I9 subnormals).
+
+```cpp
+tap::dsp::basic_butterworth_lowpass<float, 4, 2> lp(0.1); // stereo, -3 dB at 0.1 fs
+lp.process(in, frames, out);                             // interleaved, n in, n out
+double d = lp.nominal_latency_output_frames();           // group delay at DC: delay a dry path by this
+double e = lp.latency_deviation_output_frames();         // how far the passband strays from d
+lp.set_cutoff(0.05);                                     // redesign in place: noexcept, allocation-free
+```
+
+- **Design:** unity at DC, −3.0103 dB at the cutoff, a double zero at
+  Nyquist per section, monotone between; the sections in increasing pole
+  radius (`design_butterworth_lowpass<N>(fc)` returns them). In exact
+  arithmetic each section is the Audio EQ Cookbook low-pass biquad
+  (Bristow-Johnson) at Q_k = 1/α_k, the standard Butterworth Q set
+  (0.5412 and 1.3066 at order 4): a cookbook cascade at those Qs printed to
+  eight decimals is this design within 2.5e-9 per coefficient (measured,
+  `SectionsAreTheCookbookBiquadsAtTheButterworthQs`), so such a cascade can
+  be replaced by the stage.
+- **Cutoff range:** [1e-5, ½ − 1e-5] cycles per sample in double and
+  [1e-4, ½ − 1e-4] in float (`k_butterworth_min_cutoff<S>`,
+  `butterworth_supports_cutoff<S>`); the constructor rejects anything else
+  (`validate()`, then `raise<std::invalid_argument>`). Float's bound is
+  where its coefficient rounding stops threatening the poles: each
+  section's stability margin, 1 + a2 − |a1|, is 4K²/a0 at the low end, and
+  rounding a1 and a2 to float takes up to 9e-8 of it, so below fc = 4.7e-5
+  a float pole reaches the unit circle (measured, every even order, at
+  either end; `FloatRoundingKeepsThePolesInsideDownToTheFloatBound`).
+  Double's keeps the flush window in a 32-bit `size_t`: the window grows as
+  1/fc toward either end, up to 232,710,082 frames at order 16.
+- **`set_cutoff(fc)`:** the constructor's design, in place: the sections,
+  the kernel's table, the flush window, the nominal latency and the
+  deviation are bit for bit what a stage constructed at fc holds (the
+  constructor runs the same function; bit for bit under `fft.h`'s
+  fp-contraction policy, as every bit-exact claim here). `noexcept` and allocation-free
+  (pinned through the heap meter); its precondition,
+  `butterworth_supports_cutoff<S>(fc)`, is a `TAP_EXPECTS`, never a throw. It
+  leaves the state alone: the recursion continues under the new
+  coefficients, and a caller that wants a clean start calls `reset()`. Its
+  cost is one design, most of it the deviation's 1,025-point group-delay
+  scan: 45 to 78 µs at order 4 and 92 to 188 µs at order 8, float or double,
+  at the cutoffs 0.45/2 … 0.45/16 an oversampling kernel sets (x86-64, a
+  shared 2.1 GHz Xeon VM, GCC 13.3 `-O3`, medians of 401 calls over five
+  runs), and 1.6 ms at order 16 in double at its lowest cutoff; its stack is the flush
+  window's few matrices, GCC's `-fstack-usage` frames 728, 2,648 and 10,336
+  bytes at orders 4, 8 and 16 on the Cortex-M33. It is for occasional
+  changes — TapTools' kernels redesign their oversampling filters at
+  0.45 / os from `set_oversample()` — not for per-sample or per-block
+  modulation.
+- **Latency (I5):** no exact latency, since a recursive stage has no single
+  delay. It reports three numbers in frames (the double design's):
+  `group_delay_output_frames(f)`; `nominal_latency_output_frames()`, the DC
+  group delay, the delay to give a parallel path (a dry signal, a sibling
+  channel) to line it up; and `latency_deviation_output_frames()`, the
+  **passband group-delay deviation**, the largest |group delay − nominal| up
+  to the cutoff on a 1,024-point grid: the alignment error left after
+  compensating the nominal alone (order 4: 2.51 frames on a nominal of 4.02
+  at fc = 0.1, 2.39 on 1.31 at 0.25; a Butterworth's group delay peaks at the
+  band edge). `chain` composes all three with its exact stages.
+- **Flush (I6):** `window_frames()` is the count of zero frames after which
+  the exact recursion of the coefficients the kernel runs (the design
+  rounded to the format) is below the smallest normal value from any state:
+  the smallest n with ln(max) + ln ‖Aⁿ‖∞ < ln(min_normal), A the cascade's
+  state-transition matrix, plus a frame per section, found by binary lifting
+  over A^(2^j) with each power recomputed from A, so the stack holds a few
+  matrices whatever the window (780 frames in float and 6,207 in double at
+  order 4, fc = 0.1). What the arithmetic leaves after it is the host's:
+  usually exact silence; without FTZ a subnormal residue; under FTZ, for some
+  designs, a limit cycle just above the smallest normal value, because FTZ
+  flushes a2·y on its own while |a1| > 1 lifts the state again (the floating
+  biquad cascade's honest limit above). It grows about as 1/fc as the cutoff
+  falls: from full scale on x86-64, 124 times `FLT_MIN` at order 8,
+  fc = 0.002, 243 times at 0.001 and 2,351 times at float's bound; 99 times
+  `DBL_MIN` at order 4, fc = 0.002, and 12,474 times at double's bound
+  (in float, 2.8e-35 of full scale, about −690 dB); none for most designs between
+  0.01 and 0.3. Pinned below 256 times at the battery's cutoffs, 0.005 to
+  0.45, orders 4 and 8, either FTZ setting. So in a chain holding the stage,
+  `chain::flush()` equals zero padding up to that residue rather than bit
+  for bit (an all-FIR chain keeps the bit-for-bit equality), and what follows
+  it is the residue, not exact silence.
+- **Subnormals are the host's** (I9, `subnormals.h`): the kernel never
+  writes the control register and reads it as a debug-build precondition.
+  Non-finite input poisons the state until `reset()`.
+- **Formats:** float keeps its states, coefficients and products in float
+  (I14). Against double, the largest difference over 48,000 frames of white
+  noise at 0.9 of full scale (x86-64): order 4, 2.0e-7 at fc = 0.25, 4.5e-7
+  at 0.07, 9.5e-6 at 0.01, 1.1e-4 at 0.001 and 2.4e-3 at float's bound;
+  order 8, 2.6e-7, 8.9e-7, 1.2e-5, 8.3e-5 and 3.4e-3. Transposed DF II's
+  float error grows as the poles approach z = 1: below about 0.001 the
+  float stage is stable but far from the double one, and double is the
+  profile for low cutoffs. Q15 / Q31: the kernel has them (direct form I);
+  this stage does not offer them yet (a low cutoff needs section scaling).
+
+Pinned by `tests/test_butterworth.cpp`: the magnitude at DC, the cutoff and
+Nyquist at orders 4 and 8 over six cutoffs; the sections ordered by pole
+radius and equal to the cookbook biquads at the exact Qs within 1e-13 and at
+the printed ones within 1e-8; float and double against a double reference
+recursion; chunking and channel independence bit for bit; the group delay
+against the phase's numerical derivative, the nominal and the passband
+deviation; the tail after `window_frames()` below 256 times the smallest
+normal value, from full scale and from 10⁻⁶ of the format's largest value,
+under the host's FTZ; the window values, and the window at the bounds
+within a 32-bit `size_t`; float's bound (every pole inside from it, the
+margin gone at 3e-5); the limit cycle FTZ leaves an order-8 design in (the
+honest limit); `set_cutoff()` as a fresh construction bit for bit (design,
+window, latency members and, after `reset()`, the output) at orders 4 and
+8 across an oversampling kernel's cutoffs and the bounds, leaving the state
+alone, and asserting outside the range in a Debug build; construction,
+`set_cutoff()`, `process()` and `reset()` allocating nothing (the heap meter,
+`tap/dsp/analysis/heap_meter.h`); two stereo stages chained as the two in
+sequence for any chunking; the nominal latency, deviation and group delay
+composed with a decimator; flush equal to zero padding up to the recursive
+residue over a chain of the stage and a decimator; the control register never
+written; the rejections. Without FTZ,
+`tests/test_butterworth_subnormals.cpp` pins the tail below the smallest
+normal value (in `tap_dsp_iir_subnormals`, built with
+`TAP_DSP_ALLOW_SUBNORMALS`). `test_butterworth.cpp` is its own executable,
+`tap_dsp_chain_stages`, built without fp contraction (fft.h's policy for
+every bit-exact claim; `tests/CMakeLists.txt` says why) and carrying the heap
+meter's replacement operators. Every QEMU leg runs both whole.
 
 ## The FIR substrate
 

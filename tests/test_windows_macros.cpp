@@ -72,6 +72,8 @@
 
 #include "tap/dsp/analysis/multitone_analysis.h"
 #include "tap/dsp/analysis/sine_analysis.h"
+#include "tap/dsp/butterworth.h"
+#include "tap/dsp/chain.h"
 #include "tap/dsp/decimate.h"
 #include "tap/dsp/fft.h"
 #include "tap/dsp/fft/spectrum.h"
