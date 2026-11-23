@@ -8,9 +8,9 @@ on: [push, pull_request]
 
 jobs:
   drift:
-    uses: tap/taphouse/.github/workflows/drift-check.yml@v7
+    uses: tap/taphouse/.github/workflows/drift-check.yml@v8
     with:
-      ref: v7
+      ref: v8
 
   clang-tidy:
     runs-on: ubuntu-latest
@@ -21,9 +21,13 @@ jobs:
         run: scripts/apt_install.sh clang-tidy-18 cmake python3
       - name: Configure (compile database)
         run: cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DTAP_DSP_BUILD_TESTS=ON
+      # Each file once: `clang-tidy -p build <file>` checks every compile
+      # command the database holds for that file, so a source compiled more
+      # than once would be checked n^2 times (TapHouse's tidy.sh lists files
+      # the same way since v8).
       - name: clang-tidy (project TUs; third_party and fetched deps excluded)
         run: |
-          files=$(python3 -c "import json; print('\n'.join(e['file'] for e in json.load(open('build/compile_commands.json')) if 'third_party' not in e['file'] and '_deps' not in e['file']))")
+          files=$(python3 -c "import json; print('\n'.join(dict.fromkeys(e['file'] for e in json.load(open('build/compile_commands.json')) if 'third_party' not in e['file'] and '_deps' not in e['file'])))")
           fail=0
           for f in $files; do
             out=$(clang-tidy-18 -p build "$f" 2>/dev/null || true)
