@@ -1211,7 +1211,11 @@ and changes nothing an 0.3.0 consumer calls: every committed row before it is
 unchanged, bit for bit. 0.5.0 lets a chain report `window_frames()`, so a
 chain that holds a chain flushes, and changes nothing an 0.4.0 consumer
 calls: every chain that flushed before writes the same frames, and the
-sub-band round trip's window is the same number.
+sub-band round trip's window is the same number. 0.6.0 adds the Butterworth
+low-pass stage (`butterworth.h`: `basic_butterworth_lowpass`, redesigned in
+place by its allocation-free `set_cutoff()`, and `design_butterworth_lowpass`)
+and changes nothing an 0.5.0 consumer calls: no header an 0.5.0 consumer
+includes changes but `version.h`.
 
 ## Build
 
