@@ -383,6 +383,39 @@ jobs:
           esac
           exit $rc
 
+      # Interleaved against planar (bench/README.md, "Layout"): the
+      # Butterworth stage at orders 4 and 8 and a gain stage at 1, 2, 6 and
+      # 12 channels. Informational by decision: the binaries carry their own
+      # prefix, so the ratchet above never sees them, and --report-only
+      # gates nothing; continue-on-error keeps even a QEMU failure here from
+      # failing the key. Runs whatever the gate's verdict was. The second
+      # count is the set_cutoff() scenarios on the keys where double is soft
+      # float (tap_dsp_info_*, bench/icount/CMakeLists.txt): gated where
+      # double is hardware, reported here elsewhere; no binaries, no step.
+      - name: Layout counts (informational, never a gate)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python3 scripts/icount.py --target "$KEY" --build-dir "$BUILD_DIR" --plugin "$PLUGIN" \
+            --prefix tap_dsp_layout_ --report-only --record "layout-$KEY.json" | tee layout.txt
+          if find "$BUILD_DIR" -name 'tap_dsp_info_*' -type f | grep -q .; then
+            python3 scripts/icount.py --target "$KEY" --build-dir "$BUILD_DIR" --plugin "$PLUGIN" \
+              --prefix tap_dsp_info_ --report-only --record "info-$KEY.json" | tee -a layout.txt
+          fi
+          { echo "### layout $KEY (informational)"; echo '```'; cat layout.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload layout counts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: layout-${{ matrix.key }}
+          path: |
+            layout-${{ matrix.key }}.json
+            info-${{ matrix.key }}.json
+          if-no-files-found: ignore
+          retention-days: 30
+
       - name: Upload measured counts
         if: ${{ always() }}
         uses: actions/upload-artifact@v4

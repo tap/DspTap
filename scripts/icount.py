@@ -12,6 +12,22 @@ bench/baselines.json.
             --plugin LIB [--update] [--record FILE]
             [--baselines bench/baselines.json] [--tolerance 0.03]
   icount.py --merge FILE [FILE ...] [--baselines bench/baselines.json]
+  icount.py --target T --build-dir DIR --plugin LIB --prefix tap_dsp_layout_
+            --report-only [--record FILE]
+
+--report-only counts the binaries under --prefix and gates nothing: it
+prints each count, and for every <name>_p scenario with a <name>_i partner
+(bench/layout/: planar against interleaved) the ratio p / i and whether the
+two DONE checksums agree (they must: the same output, bit for bit). It
+exits nonzero only when a binary yields no count. The layout workloads are
+informational by decision (bench/README.md, "Layout"); a count among them
+becomes a gate only by moving it under the ratchet's own prefix.
+
+A scenario's count is its whole run, unless its DONE line declares
+brackets=<n> (bench/call_marker.h; the Butterworth stage's scenarios and the
+layout workloads): then it is the sum of the instructions inside its n
+brackets, and a run whose plugin line is missing or counts another number of
+brackets is a failed measurement, never the whole-run count instead.
 
 The gate is two-sided: exit nonzero if any scenario regresses beyond
 tolerance, improves beyond tolerance (the baseline must be re-recorded so
@@ -70,6 +86,12 @@ MACHINES = {
 PREFIX = "tap_dsp_icount_"
 DONE_MARKER = "TAP_DSP_ICOUNT_DONE ok=1"
 COUNT_RE = re.compile(r"TAP_DSP_INSN_COUNT (\d+)")
+# A bracketed workload (bench/call_marker.h) states how many brackets it
+# makes in its DONE line (brackets=<n>); the plugin's calls= must equal it.
+# Any other number is a counting fault (a marker once fired twice when its
+# code straddled a page boundary), and a missing plugin line means the
+# markers were not found: both are fatal, never a fall-back to the whole run.
+CALL_RE = re.compile(r"TAP_DSP_CALL_MAX (\d+) call=(\d+) calls=(\d+) total=(\d+)")
 DONE_RE = re.compile(r"TAP_DSP_ICOUNT_DONE ok=1 (.*)")
 
 
@@ -94,8 +116,12 @@ class MeasurementError(Exception):
 
 def measure(target: str, plugin: str, binary: str) -> tuple[int, dict[str, str]]:
     """Returns the instruction count and the DONE line's key=value fields
-    (engine, backend, scenario, checksum). Raises MeasurementError when the
-    binary produced no count; the QEMU output is echoed to stderr first."""
+    (engine, backend, scenario, checksum). The count is the whole run's,
+    unless the DONE line declares brackets=<n> (bench/call_marker.h): then it
+    is the sum over the n brackets, the plugin's total=, and the whole run's
+    count is kept in fields["whole_run"]. Raises MeasurementError when the
+    binary produced no count, or a bracketed one no bracket line or another
+    number of brackets; the QEMU output is echoed to stderr first."""
     try:
         proc = subprocess.run(qemu_cmd(target, plugin, binary), timeout=1200,
                               capture_output=True, text=True)
@@ -111,7 +137,20 @@ def measure(target: str, plugin: str, binary: str) -> tuple[int, dict[str, str]]
         raise MeasurementError(f"{binary}: no TAP_DSP_INSN_COUNT (plugin not loaded?)")
     done = DONE_RE.search(out)
     fields = dict(kv.split("=", 1) for kv in done.group(1).split() if "=" in kv) if done else {}
-    return int(m.group(1)), fields
+    fields["whole_run"] = m.group(1)
+    if "brackets" not in fields:
+        return int(m.group(1)), fields
+    # A bracketed workload: the count is the sum over its brackets.
+    calls = CALL_RE.search(out)
+    if not calls:
+        print(out, file=sys.stderr)
+        raise MeasurementError(f"{binary}: declares brackets={fields['brackets']} but the plugin "
+                               "printed no TAP_DSP_CALL_MAX (markers not found?)")
+    if calls.group(3) != fields["brackets"]:
+        raise MeasurementError(f"{binary}: the plugin saw {calls.group(3)} bracketed calls, "
+                               f"the workload declares {fields['brackets']}")
+    fields["call_max"] = calls.group(1)
+    return int(calls.group(4)), fields
 
 
 def write(path: pathlib.Path, baselines: dict) -> None:
@@ -132,8 +171,51 @@ def merge(path: pathlib.Path, files: list[str]) -> int:
 
 def describe(fields: dict[str, str]) -> str:
     """The DONE line's engine and backend fields, printed beside every count
-    so the log says what the binary measured (srdif, cmsis, fixed_point)."""
-    return f"[engine={fields.get('engine', '?')} backend={fields.get('backend', '?')}]"
+    so the log says what the binary measured (srdif, cmsis, fixed_point), and
+    brackets=<n> where the count is a bracket sum, not the whole run."""
+    brackets = f" brackets={fields['brackets']}" if "brackets" in fields else ""
+    return f"[engine={fields.get('engine', '?')} backend={fields.get('backend', '?')}{brackets}]"
+
+
+def report(args, prefix: str, binaries: list[str]) -> int:
+    """--report-only: counts, then the planar / interleaved ratio per pair.
+
+    A bracketed workload (bench/call_marker.h) reports the sum over its
+    brackets and its worst bracket beside it; a workload without markers
+    reports its whole-run count."""
+    measured, worst, fields = {}, {}, {}
+    for binary in binaries:
+        scenario = os.path.basename(binary).removeprefix(prefix)
+        try:
+            measured[scenario], fields[scenario] = measure(args.target, args.plugin, binary)
+        except MeasurementError as e:
+            raise SystemExit(str(e))
+        f = fields[scenario]
+        worst[scenario] = int(f.get("call_max", 0))
+        print(f"{scenario}: {measured[scenario]} insns bracketed, worst bracket {worst[scenario]}, "
+              f"whole run {f['whole_run']} {describe(f)}")
+    print()
+    print(f"{'pair':<22} {'interleaved':>13} {'planar':>13} {'p / i':>7} {'worst p / i':>12}  output")
+    def pair_order(name: str):
+        m = re.match(r"(.*)_ch(\d+)_", name)
+        return (m.group(1), int(m.group(2))) if m else (name, 0)
+
+    for scenario in sorted(measured, key=pair_order):
+        if not scenario.endswith("_p"):
+            continue
+        partner = scenario[:-2] + "_i"
+        if partner not in measured:
+            continue
+        i, p = measured[partner], measured[scenario]
+        same = fields[partner].get("checksum") == fields[scenario].get("checksum")
+        wr = worst[scenario] / worst[partner] if worst[partner] else float("nan")
+        print(f"{scenario[:-2]:<22} {i:>13} {p:>13} {p / i:>7.3f} {wr:>12.3f}  "
+              f"{'bit-identical' if same else 'DIFFERENT'}")
+    if args.record:
+        pathlib.Path(args.record).write_text(
+            json.dumps({args.target: measured}, indent=2, sort_keys=True) + "\n")
+        print(f"recorded {args.record}")
+    return 0
 
 
 def main() -> int:
@@ -147,6 +229,10 @@ def main() -> int:
     ap.add_argument("--record", metavar="FILE",
                     help="always write {target: measured} here, whatever the verdict")
     ap.add_argument("--merge", nargs="+", metavar="FILE")
+    ap.add_argument("--prefix", default=PREFIX,
+                    help="binary name prefix to count (default: the ratchet's)")
+    ap.add_argument("--report-only", action="store_true",
+                    help="print counts and layout ratios; gate nothing")
     args = ap.parse_args()
 
     path = pathlib.Path(args.baselines)
@@ -155,11 +241,14 @@ def main() -> int:
     if not (args.target and args.build_dir and args.plugin):
         ap.error("--target, --build-dir and --plugin are required (or --merge)")
 
-    binaries = sorted(glob.glob(os.path.join(args.build_dir, "**", PREFIX + "*"),
+    prefix = args.prefix
+    binaries = sorted(glob.glob(os.path.join(args.build_dir, "**", prefix + "*"),
                                 recursive=True))
     binaries = [b for b in binaries if os.access(b, os.X_OK) and os.path.isfile(b)]
     if not binaries:
-        raise SystemExit(f"no {PREFIX}* binaries under {args.build_dir}")
+        raise SystemExit(f"no {prefix}* binaries under {args.build_dir}")
+    if args.report_only:
+        return report(args, prefix, binaries)
 
     baselines = json.loads(path.read_text()) if path.exists() else {}
     base = baselines.get(args.target, {})
