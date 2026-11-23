@@ -386,7 +386,12 @@ if(NOT TAP_DSP_BARE_METAL)
             bench_fft:bench/bench_fft.cpp:-
             size_probe:bench/size_probe.cpp:-
             icount_float:bench/icount/icount_main.cpp:TAP_DSP_SC_PRECISION=0
-            icount_fixed:bench/icount/icount_main.cpp:TAP_DSP_SC_PRECISION=2)
+            icount_fixed:bench/icount/icount_main.cpp:TAP_DSP_SC_PRECISION=2
+            icount_stage:bench/icount/stage_main.cpp:TAP_DSP_ST_KIND=0
+            icount_stage_design:bench/icount/stage_main.cpp:TAP_DSP_ST_KIND=2
+            layout_bw:bench/layout/layout_main.cpp:TAP_DSP_LY_KIND=0
+            layout_gain:bench/layout/layout_main.cpp:TAP_DSP_LY_KIND=3
+            layout_bw_planar:bench/layout/layout_main.cpp:TAP_DSP_LY_PLANAR=1)
     endif()
     if(NOT TAP_DSP_BUILD_CAPI)
         list(APPEND _tap_dsp_tidy_only_tus

@@ -136,6 +136,43 @@ configure ignores it. The port/C ratio the retired pairs printed was what
 Stage 2b was judged on (the port within ±3 % of the C on every QEMU leg,
 audit Part 3); the outcome is in the table below.
 
+### The Butterworth stage's scenarios (bracket sums)
+
+Built from `icount/stage_main.cpp`, each measuring
+`basic_butterworth_lowpass<float, order, channels>` (`butterworth.h`) at
+fc = 0.1 over 16,384 interleaved frames:
+
+| scenario | order | channels | frames per `process()` | what it is there for | targets | gated |
+|---|---|---|---|---|---|---|
+| `bw4_f32_ch2` | 4 | 2 | 128 | the stage as an oversampling kernel runs it | all legs | yes |
+| `bw8_f32_ch2` | 8 | 2 | 128 | the order-8 cascade | all legs | yes |
+| `bw8_f32_ch1` | 8 | 1 | 128 | a mono stage (what a planar host runs per channel) | all legs | yes |
+| `bw4_f32_ch2_n4` | 4 | 2 | 4 | short calls: what a stage after a decimator in a `chain` is fed | all legs | yes |
+| `bw8_f32_set_cutoff` | 8 | 2 | n/a | four `set_cutoff()` calls at 0.45 / os, os = 2, 4, 8, 16 | all legs | where double is hardware: `hexagon`, `m55`, `m55-ooura` |
+| `bw8_f32_set_cutoff_deviation` | 8 | 2 | n/a | the same four calls, each followed by one read of `latency_deviation_output_frames()` | all legs | as above |
+
+**These counts are bracket sums, not whole runs.** Each step (one
+`process()` call, or one `set_cutoff()`) runs between `bench/call_marker.h`'s
+two markers, and the plugin sums the instructions between them
+(`TAP_DSP_CALL_MAX ... total=`). The workload's DONE line states
+`brackets=<n>`; `scripts/icount.py` then takes the bracket sum as the
+scenario's count and prints `brackets=<n>` beside it, and it aborts the run
+when the plugin's bracket line is missing or counts another number of
+brackets, so a bracketed scenario can never fall back to its whole-run count.
+The whole run would not do as the gate: the stage's design at construction is
+double, soft float on the M4 and the M33, where it is about 17 M instructions
+against 1.8 M of streaming for `bw4_f32_ch2`, so a quarter of the kernel's
+cost is 2.5 % of the whole run, inside the tolerance. On the `hexagon` key
+the bracket sum also leaves out qemu-hexagon's per-process offset (below): it
+is the same number for any environment and path.
+
+The two `set_cutoff()` scenarios run the design, which is double. On the keys
+where double is libgcc's soft float (`m4-softfp`, `m4f`, `m33`) they would
+gate the toolchain's library, the reason `rfft_f64_512` is not built there;
+there they are built as `tap_dsp_info_*`, outside the ratchet's glob, and the
+job's informational step prints their counts. `bench/icount/CMakeLists.txt`
+decides by compiling a check of `__ARM_FP`.
+
 ## Baselines and targets
 
 [`baselines.json`](baselines.json) is keyed by target, one dict per key:
@@ -446,7 +483,46 @@ m4-softfp identical to the record. Lesson, recorded in
 engine in the function it transforms in measures its own register
 allocation as much as the transform; this harness no longer does.
 
+## Layout: interleaved against planar (informational, never a gate)
+
+`bench/layout/` counts 1:1 chain stages in both channel layouts on every key
+the ratchet runs, so the question "does a planar host lose by calling an
+interleaved API?" has a number per core. It is informational by decision
+(the maintainer's, 2026-11-21): no baselines, no tolerance, no failure.
+
+- **Binaries:** `tap_dsp_layout_<kind>_f32_ch<C>_<i|p>`, kind `bw4` or `bw8`
+  (the Butterworth at order 4 or 8, fc = 0.1) or `gain` (a per-channel gain,
+  `bench_gain` in `layout_main.cpp`: the stateless case, bench-local, not a
+  primitive); C = 1, 2, 6, 12 (mono, stereo, 5.1, 7.1.4); `i` = one stage of
+  C channels over interleaved frames, `p` = C mono stages over contiguous
+  channel buffers. One channel builds `_i` only. 16,384 frames per channel
+  in calls of 128, float.
+- **What a count includes:** the bracket sum, as for the Butterworth
+  scenarios above: each 128-frame step (one `process()` interleaved, C calls
+  planar) between the markers. The worst single step is printed beside it.
+- **Agreement:** both layouts of a pair print the same checksum where the
+  compiler contracts the two instantiations alike; the job prints
+  `bit-identical` or `DIFFERENT` per pair, and on the host ctest pins it
+  (`tap_dsp_layout_<pair>_pair_agrees`, beside a smoke test per binary).
+- **The job:** the `Layout counts (informational, never a gate)` step of
+  `bench.yml`, after the ratchet's count, whatever its verdict:
+  `icount.py --prefix tap_dsp_layout_ --report-only` prints every count and
+  the p / i table to the step summary and uploads `layout-<key>.json`. The
+  binaries' prefix keeps them out of the ratchet's glob, and the step is
+  `continue-on-error`.
+
+The bench came from the branch `ccr-ef01ff18-nxz8n4` (`0fd75b2`), where it
+also measured an FFT FIR stage and its chain with the Butterworth;
+`fft_fir.h` is not on `main`, so those two kinds are not built here.
+
 ## Provenance
+
+`bench/call_marker.h`, the plugin's bracket feature and `bench/layout/` are
+this repository's, the bracket mechanism ported from SampleRateTap's
+(`tools/qemu_insn_plugin`, its `tools/probe/call_marker.h`; MIT, the
+SampleRateTap contributors) with the marker names and the output line
+renamed.
+
 
 `icount/icount_main.cpp`, `scripts/icount.py` and
 `tools/qemu_insn_plugin/insn_count.c` are adapted from MuTap's (MIT, MuTap
